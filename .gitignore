@@ -1,0 +1,4 @@
+endpoints.company.yaml
+__pycache__/
+*.pyc
+.env
