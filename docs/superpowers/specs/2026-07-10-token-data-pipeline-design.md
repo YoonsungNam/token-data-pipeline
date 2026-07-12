@@ -11,6 +11,7 @@
 | v1.0 | 2026-07-10 | 최초 작성 |
 | v1.1 | 2026-07-12 | 5렌즈 리뷰 확정 지적 22건 반영: 서비스 식별 정본 규칙(§5.0), 409/페이지네이션 원자성(§5.2·5.3), 부분 데이터 게이팅(§7.1 STEP 0), dim_user_org 이력화(§4.2), 물리 설계 표·분산 조인 표준(§4.0), BATCH_RESULT/SERVICE_RESULT 분리(§5.6), 소프트 데드라인(§5.2), 기준정보 확장(로스터·budget·anon 귀속, §6.1) 등 |
 | v1.2 | 2026-07-12 | 수집 확장 모델 신설(§5.9 적재 계약): API 미제공 소스(object storage·스냅샷 API) 확장 경로 + 비용 파생 원칙(§4.3). 2-포크 반박 검증 반영 — 어댑터 프레임워크 기각(YAGNI), 소스 유형별 별도 모듈 + 문서 계약 방식 채택. summary에 is_derived, dim_service에 source_type 추가 |
+| v1.3 | 2026-07-12 | 비용 2계층 확장 모델 신설(§4.4): Layer P(가격/차지백) / Layer C(GPU 타입·수행시간 기반 원가, PD분리 대응) 분리. 포크 검증 반영 — 동료 레포 실사(LLM 모델 개념 부재 확인), dim_model에 serving_type, 모델명 매핑 테이블 명시, 지표 이원화(총원가/실효원가), gpu_hours 할당 기준. 미결 12~15 추가 |
 
 ## 1. 배경과 목적
 
@@ -149,7 +150,7 @@ summary 행은 반드시 적재** — §5.2).
 |---|---|---|
 | `dim_service` | service — service_group, service, base_url, enabled UInt8, **source_type** LowCardinality(String) DEFAULT 'usage-api-v1', note, updated_at | 수집기가 시작 시 endpoints.yaml로 전량 교체. **수집 경로와 무관한 서비스 레지스트리** — 신규 소스 모듈도 자기 서비스를 여기 등록(§5.9 계약 6조) |
 | `dim_user_org` | **(user_id, effective_from)** — user_name, org_l1(사업부), org_l2(부서), org_l3(그룹), is_active UInt8, updated_at | assets/user-org |
-| `dim_model` | (model, effective_from) — provider, input/cache_read/cache_creation/output 단가(USD per MTok), currency, note | assets/model-catalog 시드 SQL |
+| `dim_model` | (model, effective_from) — provider, **serving_type**(internal\|external), input/cache_read/cache_creation/output 단가(USD per MTok), currency, note | assets/model-catalog 시드 SQL. serving_type은 §4.4 Layer C 대상 판별("원가 NULL"이 미수집인지 대상외인지 구분) |
 | `dim_budget` *(2단계, 선택)* | (scope_type: org\|service_group, scope, month) — budget_usd | 미결 §9-8 |
 | `view_token_usage_1d` | mart.token_usage_1d와 동일 컬럼 | mart STEP 2 |
 | `view_token_usage_service_1d` / `_org_1d` / `_model_1d` | 각 agg와 동일 컬럼 | mart STEP 2 |
@@ -193,6 +194,38 @@ summary 행은 반드시 적재** — §5.2).
   미등록 모델은 cost NULL (분해 도입 시에도 "미등록=전 비용 컬럼 NULL"로 단순화).
 - agg의 소스는 `mart.token_usage_1d`로 통일해 조직 조인 결과가 어긋나는 것을 방지한다
   (예외: `agg_token_service_1d`의 reported_* 컬럼만 `fact.raw_token_usage_summary_1d`를 조인).
+
+### 4.4 비용 2계층 확장 모델 — Layer P(가격) / Layer C(원가) (확장 슬롯)
+
+**배경**: 모델은 여러 GPU 타입에서 수행될 수 있다 (예: **PD분리** — prefill/decode를 서로 다른
+GPU 타입 인스턴스에 분리 서빙). 사내 서빙 모델의 "원가"는 토큰 단가표가 아니라 **GPU 타입별
+수행 시간**에서 나온다. 그러나 token-usage-api 계약에는 GPU 정보가 전혀 없다(소비 측 계약 —
+누가 어떤 모델로 몇 토큰). 원가는 **공급 측(서빙 인프라) 도메인**이므로 별도 수집 경로가 필수다.
+동료 레포 실사로 확인: `fact.raw_gpu_util_1m`의 태그는 host/gpu_index/**gpu_model(GPU 하드웨어
+모델명)**뿐이고 레포 전체에 LLM 모델 개념이 없다 → **서빙 플랫폼 메타(model→GPU 할당 이력)가
+반드시 필요**하다.
+
+**Layer P — 가격/차지백** (v1.2 구현 범위, §4.3 그대로): 토큰 수량 × dim_model 단가.
+소비 측 관점, 외부 API 모델은 실지불액. **차지백/청구는 이 계층만 사용한다.**
+
+**Layer C — 원가 분석** (확장 슬롯, `dim_model.serving_type='internal'` 모델 전용):
+**차지백에 사용하지 않는다** — 유휴 GPU 원가를 소비자에게 배분하는 논쟁을 원천 회피하고,
+원가는 공급 효율(가동률·마진) 분석 용도로 한정한다. 테이블 스케치 (DDL은 케이스 확정 시):
+
+| 스케치 | grain / 내용 |
+|---|---|
+| `fact.model_gpu_usage_1d` | date × model × **gpu_type [× phase(prefill\|decode)]** × gpu_hours. gpu_hours는 **할당(occupancy) 기준** — 전용 할당·MIG 슬라이스(gpu_type 세분) 지원, 시분할 다중 모델 공유는 범위 외(§9-15). 소스: 서빙 플랫폼 메타 + 동료 `fact.raw_gpu_util_1m`(읽기 전용, 보정/검증) |
+| `token_data.dim_gpu_cost` | (gpu_type, effective_from) × cost_per_gpu_hour. gpu_type은 동료의 gpu_model(하드웨어) 체계와 매핑 — 동료 `dimension.gpu_model_quota_info`(GPU 모델별 quota 단가 선례)와의 관계 확인 §9-14 |
+| `token_data.dim_model_serving_map` | token-usage-api의 `model` 문자열 ↔ 서빙 플랫폼 식별자(deployment명/모델 경로). **§5.0과 동형의 정본 문제** — 이 매핑 없이는 (date, model) 결합이 성립하지 않음 (§9-13) |
+| `mart.model_cost_1d` | date × model — **지표 이원화**: ① `total_cost`(Σ gpu_hours×단가 — 토큰과 무관한 총원가) ② `effective_cost_per_mtok`(총원가 ÷ 그날 모델 토큰 처리량). 저사용일의 $/MTok 급등은 버그가 아니라 **가동률 신호** — 저활용 경고와 함께 표기 |
+
+- **PD분리 안분**: phase별 원가를 prefill→input(+cache) 토큰, decode→output 토큰에 각각 귀속 —
+  PD분리 배포에서는 자연스럽게 해결된다. 통합 배포의 input/output 안분 가중치는 자의적이므로 §9-15.
+- **결합**: 두 Layer는 **(date, model)로만 결합**. 대시보드: 모델별 가격 vs 원가(마진), 실효 단가
+  추이, GPU 타입 믹스, 가동률. 서비스/부서별 "원가 참고 배분"은 토큰 비중 안분으로 가능하되
+  분석 용도로만(차지백 아님).
+- **소유권**: 이 확장은 본 레포 소관 — 동료 레포(RESPONSIBILITIES 기준)에는 서빙 메타에 해당하는
+  계층이 없고 소비자가 이쪽이다. 동료 테이블은 같은 ClickHouse에서 **읽기 전용 입력**으로만 조인.
 
 ## 5. collectors/token-usage
 
@@ -511,6 +544,10 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
 | 9 | **서비스 개명 시 과거 데이터 이관 정책**(이관/삭제/별도 시리즈 보존) | enabled=0 유지 + 신규 이름으로 신규 시리즈 | 첫 개명 사례 전 결정 |
 | 10 | **object storage 소스 계약** — manifest 스키마·경로 규약·파일 포맷·보존창·기준정보 A의 형식/이력 제공 여부 (§5.9) | 케이스 발생 시 모듈 신설 | 해당 소스 제공팀과 협의 |
 | 11 | **스냅샷 API 소스 계약** — readiness/finality 신호, 응답 크기 상한 (§5.9) | 케이스 발생 시 모듈 신설 | 해당 서비스팀과 협의 (표준 usage-api-v1 구현 유도가 1순위) |
+| 12 | **서빙 플랫폼 메타 소스** — model→GPU 할당 이력(gpu_type, phase, 시간) 제공 가능 여부 (§4.4 Layer C 전제) | Layer C 보류 | 서빙 플랫폼(kserve/vLLM) 운영팀 협의 |
+| 13 | **모델명 매핑 정본** — token-usage-api `model` ↔ 서빙 식별자 (dim_model_serving_map) | Layer C 보류 | §9-12와 함께 협의 |
+| 14 | **GPU 시간당 원가 소스** — 산정 정책(감가·전력·상면), 동료 `dimension.gpu_model_quota_info`와의 관계 | Layer C 보류 | 재무/인프라 정책 확인 |
+| 15 | **유휴·공유 GPU 정책** — 시분할 다중 모델 공유의 gpu_hours 안분, 통합 배포의 input/output 원가 가중치 | 범위 외 선언 | Layer C 설계 확정 시 |
 
 ## 10. 구현 순서 (권장)
 
