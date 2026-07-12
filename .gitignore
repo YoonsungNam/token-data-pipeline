@@ -2,3 +2,7 @@ endpoints.company.yaml
 __pycache__/
 *.pyc
 .env
+# v1.4 환경 데이터 경계: 실로스터/생성 SQL 레포 반입 금지 (스펙 §7.2)
+assets/user-org/data/
+*roster*.csv
+dim_user_org_insert*.sql

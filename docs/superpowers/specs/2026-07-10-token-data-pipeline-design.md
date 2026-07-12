@@ -1,6 +1,6 @@
 # token-data-pipeline 설계 문서
 
-- 작성일: 2026-07-10 · **개정 v1.1: 2026-07-12** (멀티렌즈 리뷰 확정 지적 22건 + 기준정보 3건 반영)
+- 작성일: 2026-07-10 · **현재 버전 v1.4 (2026-07-12)** — 개정 이력은 §0
 - 상태: 설계 확정 (사용자 승인), 구현 전
 - 참조: [gpu-data-pipeline 분석](../../gpu-data-pipeline-analysis.md), [token-usage-api-spec](https://github.com/YoonsungNam/token-usage-api-spec) (`token-usage-api.yaml` v1.1.0, 로컬 클론 `/home/mini/github/token-usage-api-spec`)
 
@@ -12,6 +12,7 @@
 | v1.1 | 2026-07-12 | 5렌즈 리뷰 확정 지적 22건 반영: 서비스 식별 정본 규칙(§5.0), 409/페이지네이션 원자성(§5.2·5.3), 부분 데이터 게이팅(§7.1 STEP 0), dim_user_org 이력화(§4.2), 물리 설계 표·분산 조인 표준(§4.0), BATCH_RESULT/SERVICE_RESULT 분리(§5.6), 소프트 데드라인(§5.2), 기준정보 확장(로스터·budget·anon 귀속, §6.1) 등 |
 | v1.2 | 2026-07-12 | 수집 확장 모델 신설(§5.9 적재 계약): API 미제공 소스(object storage·스냅샷 API) 확장 경로 + 비용 파생 원칙(§4.3). 2-포크 반박 검증 반영 — 어댑터 프레임워크 기각(YAGNI), 소스 유형별 별도 모듈 + 문서 계약 방식 채택. summary에 is_derived, dim_service에 source_type 추가 |
 | v1.3 | 2026-07-12 | 비용 2계층 확장 모델 신설(§4.4): Layer P(가격/차지백) / Layer C(GPU 타입·수행시간 기반 원가, PD분리 대응) 분리. 포크 검증 반영 — 동료 레포 실사(LLM 모델 개념 부재 확인), dim_model에 serving_type, 모델명 매핑 테이블 명시, 지표 이원화(총원가/실효원가), gpu_hours 할당 기준. 미결 12~15 추가 |
+| v1.4 | 2026-07-12 | 최종 리뷰 라운드(통합 정합·보안/개인정보·용량·premortem·준비도) 확정 16건 반영: dim_service source_type 스코프 교체(§5.9-6), 이벤트 분류→정책 표(§5.2), 적재 완료 데드라인 계약 9조, 조회 계정·데이터 경계·로깅 계약(보안 4건), 파티션 재설계(상세=일 단위)·deadline 산식 교정, 정정 프로토콜(§8.4)·백업/DR(§8.5), DB 소유권·GRANT 테이블 레벨 한정, mart 시간 계약, stage 환경 전제(실사). 미결 16~20 추가 |
 
 ## 1. 배경과 목적
 
@@ -32,7 +33,7 @@ ClickHouse에 적재하고, 기준정보와 조합해 대시보드용 테이블�
 | 환경 | **stage(홈랩) + company 2단계** (dev/kind 없음) | 로컬 검증은 CI가 담당 |
 | 수집 토폴로지 | **단일 수집기 CronJob이 전 서비스 순회** (usage-api-v1) | 서비스별 실패 격리. **API 미제공 소스는 적재 계약(§5.9)을 준수하는 별도 수집기 모듈로 확장** — 동료 assets/ 선례(소스별 독립 모듈) |
 | 수집 경로 | **API→ClickHouse 직행**, 서비스 단위 합계만 VictoriaMetrics 게이지 push | per-user 데이터는 VM에 넣지 않음 |
-| DB 배치 | fact(raw) / token_data(기준정보+view) / mart(집계) | 동료의 fact/gpu_data/mart 구조와 대칭 |
+| DB 배치 | fact(raw) / token_data(기준정보+view) / mart(집계) — **기본안: 전용 DB `token_fact`/`token_mart`**(+기존 `token_data`) | "동료 구조와 대칭"은 **계층 구조의 대칭**이지 DB명 공유가 아님. 동료 mart 계정이 `mart.*`에 DROP TABLE 광역 GRANT를 보유(실사: mart/s2job/ddl/accounts.sql:27)하므로 공유 DB는 상호 파괴 반경이 생김 — 공유 여부는 §9-18 선행 협의로 확정, 본 문서의 `fact.`/`mart.` 표기는 **논리 계층명**으로 읽는다 |
 | 대시보드 | 최종적으로 사내 대시보드가 `token_data`의 view table을 읽음. 사외(홈랩) 작업 중엔 Grafana 테스터 대시보드로 대체 | |
 
 ## 3. 아키텍처
@@ -43,7 +44,7 @@ ClickHouse에 적재하고, 기준정보와 조합해 대시보드용 테이블�
   ▼  매일 02:00 KST, date=어제
 collectors/token-usage ──► fact.raw_token_usage_1d          (사용자×모델 상세)
   │                    ──► fact.raw_token_usage_summary_1d  (서비스 보고 합계)
-  │                    ──► token_data.dim_service           (endpoints.yaml 전량 교체)
+  │                    ──► token_data.dim_service           (endpoints.yaml — 자기 source_type 범위 교체)
   │                    ──► VictoriaMetrics                  (서비스 단위 일합계 게이지)
   │
 assets/user-org      ──► token_data.dim_user_org  (전 직원 로스터, 이력형)
@@ -77,7 +78,7 @@ token-data-pipeline/
 │                               # tests/, tools/rerun.py, warning_messages.md
 ├── tools/
 │   ├── mock-provider/          # 스펙 구현 가짜 서비스 (FastAPI) + k8s + 시나리오 옵션
-│   └── delete_data.py          # (date범위[, service]) fact 일괄 삭제 + mutation 대기 (§8.3)
+│   └── delete_data.py          # (date범위[, service]) fact 삭제 + user_id 축 파기 모드 (§8.3)
 ├── docs/
 │   ├── monitoring/             # grafana_dashboard_token_usage.json + 가이드
 │   ├── operations/             # rerun.md (체이닝·VM 정정 절차 포함)
@@ -93,19 +94,29 @@ token-data-pipeline/
 ### 4.0 물리 설계 공통 (전 테이블)
 
 모든 테이블은 `<이름>_local`(ReplicatedMergeTree 계열) + `<이름>_dist`(Distributed) 쌍.
-`PARTITION BY toYYYYMM(date)`, 시간 컬럼은 `DateTime('Asia/Seoul')`, 문자열은 NOT NULL(빈 문자열 정규화),
-저카디널리티 컬럼은 `LowCardinality(String)`.
+시간 컬럼은 `DateTime('Asia/Seoul')`, 문자열은 NOT NULL(빈 문자열 정규화),
+저카디널리티 컬럼은 `LowCardinality(String)`. **파티션 단위는 테이블별로 확정**(아래 표) —
+(date, service) 단위 delete-then-insert가 **정례** 경로이므로, 행이 많은 상세 테이블은 일 단위
+파티션으로 뮤테이션 재작성 범위를 "월 파티션 병합 파트 전체 × 서비스 수"에서 "해당 일자 파트"로
+축소한다 (25개월 ≈ 760 파티션, 허용 범위). 소행수 테이블은 월 단위 유지.
 
-**테이블별 물리 설계 표** (리뷰 #20·#21 반영 — ORDER BY는 스펙 내 술어 패턴과 프리픽스 정합):
+**테이블별 물리 설계 표** (리뷰 #20·#21 + v1.4 파티션 재설계 반영):
 
-| 테이블 | ORDER BY | Distributed 샤딩키 | 비고 |
-|---|---|---|---|
-| `fact.raw_token_usage_1d` | `(date, service, user_type, user_id, model)` | `cityHash64(service, user_id)` | service_group은 일반 컬럼 (service의 종속 속성) |
-| `fact.raw_token_usage_summary_1d` | `(date, service)` | `cityHash64(service)` | |
-| `token_data.dim_*` 3종 | 각 키 | `rand()` | 소용량 — 조인은 GLOBAL(아래) |
-| `mart.token_usage_1d` | `(date, service, user_type, user_id, model)` | `cityHash64(service, user_id)` | raw와 co-location |
-| `mart.agg_token_*_1d` | `(date, <grain 키>)` | `cityHash64(service)` 또는 grain 키 해시 | |
-| `token_data.view_token_usage_*` | mart 대응 동일 | mart 대응 동일 | |
+| 테이블 | PARTITION BY | ORDER BY | Distributed 샤딩키 | 비고 |
+|---|---|---|---|---|
+| `fact.raw_token_usage_1d` | **toYYYYMMDD(date)** | `(date, service, user_type, user_id, model)` | `cityHash64(service, user_id)` | service_group은 일반 컬럼 |
+| `fact.raw_token_usage_summary_1d` | toYYYYMM(date) | `(date, service)` | `cityHash64(service)` | 소행수 |
+| `token_data.dim_*` | (파티션 없음/단일) | 각 키 | `rand()` | 소용량 — 조인은 GLOBAL(아래) |
+| `mart.token_usage_1d` | **toYYYYMMDD(date)** | `(date, service, user_type, user_id, model)` | `cityHash64(service, user_id)` | raw와 co-location |
+| `mart.agg_token_*_1d` | toYYYYMM(date) | `(date, <grain 키>)` | `cityHash64(service)` 또는 grain 키 해시 | 소행수 |
+| `token_data.view_token_usage_1d` | **toYYYYMMDD(date)** | mart 상세 동일 | mart 상세 동일 | |
+| `token_data.view_token_usage_*_1d` (agg 3종) | toYYYYMM(date) | mart agg 동일 | mart agg 동일 | |
+
+**정례 뮤테이션 절감 규칙** (공유 클러스터 배려 — 동료가 part 폭증·뮤테이션으로 하드닝을 겪은 클러스터임):
+(a) 정상 일일 경로는 DELETE 전에 해당 (date, service) 행 존재를 SELECT로 확인, 없으면 DELETE 스킵
+(첫 수집의 no-op 뮤테이션 제거 — 단일 작성자 CronJob + `concurrencyPolicy: Forbid` 전제라 경합 없음).
+(b) 다중 서비스 rerun은 `DELETE WHERE date=D AND service IN (...)` 배칭으로 뮤테이션 수를 O(서비스)→O(1)로.
+(c) 정례 뮤테이션 예산(예: 평상시 일 10건 이하)을 클러스터 소유자(동료)와 합의 — §9-18.
 
 **분산 조인 표준**: mart STEP 1의 `fact × dim` 조인은 **`GLOBAL LEFT JOIN`을 표준**으로 한다
 (dim 3종은 소용량이라 브로드캐스트 비용 무시 가능 — 동료 mart/aip에서 검증된 패턴.
@@ -148,7 +159,7 @@ summary 행은 반드시 적재** — §5.2).
 
 | 테이블 | grain / 컬럼 요지 | 관리 주체 |
 |---|---|---|
-| `dim_service` | service — service_group, service, base_url, enabled UInt8, **source_type** LowCardinality(String) DEFAULT 'usage-api-v1', note, updated_at | 수집기가 시작 시 endpoints.yaml로 전량 교체. **수집 경로와 무관한 서비스 레지스트리** — 신규 소스 모듈도 자기 서비스를 여기 등록(§5.9 계약 6조) |
+| `dim_service` | service — service_group, service, base_url, enabled UInt8, **source_type** LowCardinality(String) DEFAULT 'usage-api-v1', note, updated_at | **각 수집 모듈이 자기 source_type 범위만 원자 교체** (DELETE WHERE source_type='<자기 유형>' → INSERT, §5.9 계약 6조 — 전 테이블 교체 금지: 타 모듈 등록분 삭제 방지). 리뷰 #12의 "enabled=false 유지·항목 제거 금지"는 모듈별 범위 안에서 동일 적용 |
 | `dim_user_org` | **(user_id, effective_from)** — user_name, org_l1(사업부), org_l2(부서), org_l3(그룹), is_active UInt8, updated_at | assets/user-org |
 | `dim_model` | (model, effective_from) — provider, **serving_type**(internal\|external), input/cache_read/cache_creation/output 단가(USD per MTok), currency, note | assets/model-catalog 시드 SQL. serving_type은 §4.4 Layer C 대상 판별("원가 NULL"이 미수집인지 대상외인지 구분) |
 | `dim_budget` *(2단계, 선택)* | (scope_type: org\|service_group, scope, month) — budget_usd | 미결 §9-8 |
@@ -166,7 +177,7 @@ summary 행은 반드시 적재** — §5.2).
   이 WARN의 의미는 "단가 등록이 필요한 진짜 신규 모델"로 warning_messages.md에 명시.
 - `enabled=0`인 서비스는 수집 대상에서 제외 — flag 게이트 패턴.
   **폐기된 서비스는 endpoints.yaml에서 제거하지 않고 `enabled: false`로 유지**한다 (리뷰 #12 —
-  전량 교체 방식에서 dim_service 이력 유실과 잔존 데이터 조인 고아를 방지).
+  범위 교체 방식에서 dim_service 이력 유실과 잔존 데이터 조인 고아를 방지).
 - view/mart 테이블의 `created_by` LowCardinality(String)는 **DEFAULT 없음** (리뷰 #22).
   공유 테이블 쓰기 계약: **모든 작성자는 INSERT 시 created_by를 명시 삽입**(본 파이프라인은
   'token-pipeline' 고정). DDL에 `CONSTRAINT check_created_by CHECK created_by != ''`를 두어
@@ -241,7 +252,8 @@ ORDER BY·샤딩 키. 응답 원문은 `reported_service_group/reported_service`
 ### 5.1 정상 흐름 (CronJob 매일 02:00 KST)
 
 1. `target_date` = batch_time(기본 now) − 1일 (KST). batch_time은 ISO8601 위치 인자.
-2. endpoints.yaml 로드 → `token_data.dim_service` 전량 교체 (검증 후 DELETE→INSERT).
+2. endpoints.yaml 로드 → `token_data.dim_service`의 **자기 source_type 범위 교체**
+   (검증 후 `DELETE WHERE source_type='usage-api-v1'` → INSERT, mutations_sync=2).
 3. `enabled` 서비스 순회 — **서비스별 try/except 격리**:
    1. `GET /v1/usage/summary?date=<target_date>`
    2. `GET /v1/usage?date=...&limit=1000` → `nextCursor` 루프. cursor 사용 중 date/limit 고정(스펙 의무).
@@ -250,12 +262,15 @@ ORDER BY·샤딩 키. 응답 원문은 `reported_service_group/reported_service`
       **페이지 간 불변성 검사**(§5.3) 수행.
    3. 행 정규화·검증 (§5.4)
    4. 정합성: Σdetail vs summary 비교 → 불일치 시 `CHECK WARN` (적재는 진행)
-   5. `(date, service)` 단위 멱등 적재: `ALTER TABLE <local> ON CLUSTER DELETE WHERE date=... AND service=<정본>`
-      을 **`mutations_sync=2` 설정으로 실행**(전 레플리카 완료까지 동기 대기 — 동료 collector 방식,
-      폴링·추가 GRANT 불요, 리뷰 #8) → INSERT (detail·summary 모두, `insert_distributed_sync=1`).
-      **NODATA(빈 records)여도 summary 행은 반드시 적재** — mart STEP 0 커버리지 게이트의 기준 (리뷰 #16).
-      적재 시퀀스 시작 전 잔여 시간을 확인해(§5.2 소프트 데드라인), 완료 불가능하면 시작하지 않고
-      FAILURE 처리 (DELETE 후 INSERT 전 kill로 인한 유실 방지).
+   5. `(date, service)` 단위 멱등 적재: 기존 행 존재 확인(SELECT) 후 있을 때만
+      `ALTER TABLE <local> ON CLUSTER DELETE WHERE date=... AND service=<정본>`을
+      **`mutations_sync=2` 설정으로 실행**(전 레플리카 완료까지 동기 대기 — 동료 collector 방식,
+      폴링·추가 GRANT 불요, 리뷰 #8; no-op 뮤테이션 스킵은 §4.0 절감 규칙) → INSERT
+      (detail·summary 모두, `insert_distributed_sync=1`). DELETE 직전 기존 세대의 요약을
+      감사 이력에 보존(§8.4 정정 프로토콜). **NODATA(빈 records)여도 summary 행은 반드시 적재** —
+      mart STEP 0 커버리지 게이트의 기준 (리뷰 #16).
+      적재 시퀀스 시작 전 **잔여 시간 < 적재 시퀀스 예산(§5.2, 12분)** 이면 시작하지 않고
+      FAILURE 처리 (DELETE 후 INSERT 전 kill로 인한 유실 방지 — 판단 기준을 수치로 고정).
    6. VictoriaMetrics push: 서비스 단위 합계 게이지 (§5.5)
    7. 서비스별 결과 로그: **`SERVICE_RESULT` 마커** (§5.6)
 4. 전체 종료: **`BATCH_RESULT` 최종 1줄** (§5.6). 실패 서비스 ≥1 → `exit 1`
@@ -268,16 +283,26 @@ ORDER BY·샤딩 키. 응답 원문은 `reported_service_group/reported_service`
 
 ### 5.2 HTTP 에러 처리 매트릭스 (usage-api-v1의 이벤트 번역표)
 
-수집 오케스트레이션 정책(대기열·소프트 데드라인·FAILURE 전이·SERVICE_RESULT status)은
-**공통 이벤트 분류**(§5.9: NOT_READY / RETRYABLE / PERMANENT_ERROR / RETENTION / EMPTY /
-INVARIANT_BROKEN) 기준으로 1벌만 존재하며, 아래 표는 usage-api-v1 소스의 HTTP 신호를
-그 분류로 번역한 것이다. 신규 소스 모듈은 자기 신호의 번역표만 정의하면 된다.
+수집 오케스트레이션 정책은 **공통 이벤트 분류 → 정책 표 1벌**로 정의한다 (모든 소스 모듈 공통 —
+수치는 이 표에만 존재하고, 아래 HTTP 매트릭스와 §5.9 케이스 지침은 이 표를 참조하는 번역표다.
+신규 소스 모듈은 자기 신호의 번역표만 정의하면 된다):
 
-**전역 소프트 데드라인** (리뷰 #14): Job 경과 **50분**을 소프트 데드라인으로 두고,
-409 재방문 대기·429 Retry-After 대기·5xx 백오프·새 서비스 착수 전에 모두 체크한다.
-초과 시 남은 서비스를 FAILURE로 마킹하고 **정상 경로로 종료**해 최종 BATCH_RESULT 출력을 보장한다.
-`Retry-After`는 **`min(Retry-After, 300s)` 캡** 적용(초과 값 수신 시 WARN).
-`activeDeadlineSeconds: 3600` = 소프트 데드라인(50분) + mutation 대기 상한 + 종료 마진 10분 (하드 안전망).
+| 분류 | 수집기 동작 | 공통 예산 | SERVICE_RESULT status | exit 영향 |
+|---|---|---|---|---|
+| NOT_READY | 대기열 끝으로 후송, 대기 경과 후 **전체 재시작**으로 재방문 | 서비스당 누적 대기 30분 / 소프트 데드라인 | 초과 시 FAILURE | 실패 시 1 |
+| RETRYABLE | 대기(캡 300s) 또는 지수 백오프(5s→25s→125s) 후 재시도 | 최대 3회 | 초과 시 FAILURE | 실패 시 1 |
+| PERMANENT_ERROR | 재시도 없이 즉시 실패 (우리/소스 결함 신호) | — | FAILURE | 1 |
+| RETENTION | 회수 불가 — **실행 컨텍스트 분기**: 일일 정기=계약 위반 신호, 명시적 재수집=정상 예상 | — | 정기: FAILURE / 재수집: SKIPPED | 정기: 1 / 재수집: 0 |
+| EMPTY | 정상 처리 (0행) — summary 행은 적재 | — | NODATA | 0 |
+| INVARIANT_BROKEN | 수집분 폐기 후 처음부터 재시작 | 최대 2회 | 초과 시 FAILURE | 실패 시 1 |
+
+**전역 소프트 데드라인과 적재 시퀀스 예산** (리뷰 #14, v1.4 산식 교정): Job 경과 **50분**을
+소프트 데드라인으로 두고, 모든 대기·백오프·새 서비스 착수 전에 체크한다. 초과 시 남은 서비스를
+FAILURE로 마킹하고 **정상 경로로 종료**해 최종 BATCH_RESULT 출력을 보장한다.
+`Retry-After`는 **`min(Retry-After, 300s)` 캡**(초과 값 수신 시 WARN).
+**적재 시퀀스 예산 = 12분** (mutations_sync=2 클라이언트 타임아웃 300s × 2테이블 + INSERT/검증 여유 —
+이 타임아웃을 명시적 상한으로 계약에 포함). `activeDeadlineSeconds: 4320` = 소프트 데드라인(50분) +
+적재 시퀀스 예산(12분) + 종료 마진(10분) — 산식과 값을 일치시킴(구 3600은 예산이 0이 되는 자기모순).
 
 | 응답 | 의미 | 수집기 동작 |
 |---|---|---|
@@ -337,6 +362,12 @@ INVARIANT_BROKEN) 기준으로 1벌만 존재하며, 아래 표는 usage-api-v1 
 - §7.3: BATCH_RESULT는 기존 대시보드에 무수정 편입. 서비스별 드릴다운·**서비스 단위 연속 NODATA/SKIP 감시**는
   SERVICE_RESULT 기반 LogsQL 패널을 token-usage 대시보드에 별도 제공 ("전체 SUCCESS인데 한 서비스만 조용히
   빠지는" 경로 차단).
+- **로깅 계약 (v1.4, 개인정보)**: 모든 로그(마커·WARN·에러·디버그)에 **레코드 페이로드와 user_id 원문을
+  남기지 않는다** — 거부/중복/위반 사유는 카운트·페이지/행 인덱스·필드명·(필요 시) 솔트 고정 user_id
+  해시로만 표현하고, HTTP 오류·파싱 실패 시 응답 본문 덤프도 크기·구조 요약만 남긴다. stdout은
+  VictoriaLogs로 수집되어 ClickHouse 접근 통제를 우회하기 때문 — "per-user 데이터는 VM에 넣지 않음"(§2)
+  원칙의 로그 경로 확장. warning_messages.md는 WARN별 허용 로그 필드를 명세하고, CI E2E에 "거부 행 발생 시
+  로그에 user_id 원문 부재" 검증을 포함한다(§8.2). 신규 소스 모듈은 §5.9 계약 6조로 이 규칙을 상속.
 
 ### 5.7 파일 구성·환경변수
 
@@ -379,21 +410,32 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
    (§5.4의 "중복 키 SUM 병합 WARN"은 사전 집계를 계약하는 usage-api-v1 전용 규칙).
 2. **멱등성**: `(date, service)` 원자 교체 (delete-then-insert). 모듈 내부 스테이징 테이블을
    쓰는 경우 스테이징도 동일 키(또는 파일 키) 단위 멱등 — rerun 시 잔존물이 남지 않아야 한다.
+   기존 행이 있을 때만 DELETE(§4.0 no-op 스킵)하고, DELETE 직전 기존 세대의 요약을 감사 이력에
+   보존한다(§8.4). 모듈이 늘수록 delete-then-insert가 뮤테이션을 선형 증가시키므로 §4.0의
+   **정례 뮤테이션 예산을 준수**한다.
 3. **summary 행 필수**: 소스가 summary를 제공하지 않으면 detail 합산으로 파생 적재 + `is_derived=1`
    (§4.1의 파생 시맨틱: 검증 스킵·diff NULL·VM reported_* push 생략). NODATA여도 summary 행 적재 —
    mart STEP 0 커버리지 게이트의 전제.
-4. **readiness/finality 판정 규칙을 명시적으로 정의**하고 공통 이벤트 분류(NOT_READY / RETRYABLE /
-   PERMANENT_ERROR / RETENTION / EMPTY / INVARIANT_BROKEN)로 번역할 것 (§5.2가 usage-api-v1의 번역표).
+4. **readiness/finality 판정 규칙을 명시적으로 정의**하고 공통 이벤트 분류로 번역할 것 —
+   정책·예산·status 매핑은 §5.2의 분류→정책 표 1벌을 따른다(수치 재정의 금지, 소스 고유 값만
+   자기 번역표에). 모듈은 자기 **적재 시퀀스 예산**(§5.2와 동형)을 수치로 선언한다.
    "확정 데이터만 적재" 원칙은 소스가 무엇이든 불변.
 5. **서비스 식별 정본 = 해당 모듈의 설정 파일** (§5.0의 일반화). 소스 쪽 명칭은 reported_*에 보존.
-6. **관측**: 실행당 BATCH_RESULT 1줄 + 서비스별 SERVICE_RESULT(`source_type=` 포함), 자기 서비스를
-   `dim_service`(source_type 포함)에 등록 — coverage 게이트·기존 대시보드에 자동 편입.
+6. **관측·등록**: 실행당 BATCH_RESULT 1줄 + 서비스별 SERVICE_RESULT(`source_type=` 포함),
+   §5.6 로깅 계약(페이로드·user_id 원문 금지) 상속. `dim_service`에는 **자기 source_type 범위만
+   원자 교체**로 등록(`DELETE WHERE source_type='<자기 유형>'` → INSERT — 전 테이블 교체 금지,
+   타 모듈 등록분 보호) — coverage 게이트·기존 대시보드에 자동 편입.
 7. **기준정보 결합 원칙**: 전사 기준정보(B — dim_user_org/dim_model)는 **mart 시점 결합**(불변).
    소스가 제공하는 기준정보(A)는 **`token_data`의 dim으로 승격해 effective_from 이력 append**가
    기본 — 수집 시점 결합은 rerun 결정성(§7.1)을 깨므로, 불가피하면 "해당 date 파티션의 A 스냅샷만
    사용"(최신본 금지)으로 결정성을 확보한다.
 8. **테스트 대응물 의무**: 모듈은 CI용 mock 대응물(mock-provider 상당 — 예: mock-storage fixture)을
    함께 만든다. 3단 검증 체계(§8.2)가 새 소스에서도 성립해야 한다.
+9. **적재 완료 데드라인 (v1.4)**: 모듈은 **T+1 03:30 KST**(= mart 04:00 − 마진)까지 대상
+   (date, service)의 fact 적재를 완료해야 한다. 소스가 이를 구조적으로 보장할 수 없으면 온보딩
+   시점에 (a) mart 스케줄 조정 또는 (b) 해당 서비스의 지연 허용 등록(mart STEP 0 게이트의
+   expected-late 예외 목록)을 함께 확정한다 — 이 협의 없이는 §10의 "mart/view 무변경" 보장이
+   성립하지 않는다. §9-10·11 협의 안건에 "데이터 확정 시각(readiness SLO)" 포함.
 
 **케이스별 설계 지침** (구현은 소스 확정 시, §9-10·11):
 
@@ -403,7 +445,7 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
     설정된 보존창(retention_days) 밖 date=RETENTION. — 스토리지에는 409/404 구분이 없으므로
     이것이 readiness·retention 판정의 유일한 수단 (소스 제공팀과의 계약 필수, §9-10).
   - **§5.3의 등가 규칙**: 수집 시작 시 manifest를 스냅샷으로 고정, 그 목록만 다운로드 + 체크섬 대조.
-    수집 도중 파일 추가/교체 감지 시 INVARIANT_BROKEN(폐기 후 재시작 ≤2회).
+    수집 도중 파일 추가/교체 감지 시 INVARIANT_BROKEN (정책·예산은 §5.2 분류 표를 따름).
   - 파일 → 스테이징(`fact.stg_*`, 멱등) → 변환·집계 SQL → 계약 1조의 정규 출력. 무거운 의존성
     (S3 SDK, parquet)은 이 모듈 이미지에만 존재.
   - 다운로드·집계는 대기(wait)가 아닌 처리(work) 시간 — 소스별 time_budget을 설정으로 분리해
@@ -425,8 +467,18 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
 - **1단계**: `csv_to_dim_user_org_insert.py` — CSV → INSERT SQL **생성** 도구 (실행과 분리, 리뷰 가능).
   effective_from 컬럼 포함(TSV에 없으면 `--effective-from` 옵션, 기본 과거 기준일).
   적재는 이력 append + 사전 검증(키 중복·구간 검증) → count 검증. 갱신은 새 effective_from 행 추가
-  (기존 행 불변 — dim_model과 동일 규약).
-- **2단계**: 사내 인사/조직 DB 소스 확정 시 sync CronJob 추가 (미결 §9-2).
+  (기존 행 불변 — dim_model과 동일 규약. 단 **파기·가명화는 예외**로 아래 보존 규칙에 따름).
+- **2단계**: 사내 인사/조직 DB 소스 확정 시 sync CronJob 추가 (미결 §9-2 — 환경 데이터 경계 상속).
+- **환경 데이터 경계 (v1.4)**: 도구 자체는 사외에서 **합성 fixture CSV**로만 개발·테스트한다.
+  **실로스터 CSV와 생성 INSERT SQL은 레포·사외 환경 취급 금지** — 사내 반입 후 사내 절차로만
+  투입·리뷰 (.gitignore 선제 패턴 등록, §7.2 환경 데이터 경계).
+- **anonymous 매핑 취급 (v1.4)**: (1) 수령 게이트 — anon id↔조직/실명 매핑의 수령은 개인정보 처리
+  근거(정책 승인) 확인 후로 게이트(§9-2). (2) 저장 범위 — 승인되어도 anon 행은 `user_name`을
+  저장하지 않고(빈 문자열) 조직 귀속 컬럼만 채움 (실명 결합 금지). (3) 사용 범위 — anon 조직
+  귀속은 org 단위 집계에만 사용, per-user 상세(mart/view)의 조직 부착 여부는 §9-1 협의
+  (소규모 부서 재식별 우려 기록).
+- **보존 규칙 (v1.4)**: 퇴사(is_active=0) 후 N년 경과 행은 삭제 또는 user_name 가명화 —
+  N·방식은 사내 개인정보 보존 정책과 함께 확정(§9-7). 파기 요청 처리는 §8.3의 user_id 축 삭제 경로.
 - **미매핑 규칙** (리뷰 #13): 매핑 없는 user_id는 **org_l1/l2/l3 모두 'unknown'으로 통일**하며,
   이 규칙은 §4.0의 빈 문자열 정규화보다 우선한다 (''과 'unknown'의 의미 구분).
   anonymous 사용량을 'unknown'에 합산할지 별도 'anonymous' 버킷으로 분리할지는 §9-1 협의 안건.
@@ -441,10 +493,16 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
 
 ### 7.1 mart 배치 (CronJob 매일 04:00 KST)
 
+- **시간·CLI 계약 (v1.4)**: §5.1과 동일 — `target_date` = batch_time(기본 now) − 1일 (KST),
+  batch_time은 ISO8601 위치 인자, 과거 재수행은 `--from/--to` 날짜범위. STEP 0 게이트·STEP 1의
+  date 기준 유효 dim 선택·멱등 DELETE 술어·count 검증은 모두 target_date 기준이며, 날짜범위
+  rerun은 **날짜별로 STEP 0→2 전체(게이트·검증 포함)를 독립 반복**한다.
 - `batch.py`(I/O 오케스트레이션) + `mart.py`(순수 로직). 변환은 전부 **서버사이드
   `INSERT INTO ... SELECT`** (§4.0의 GLOBAL LEFT JOIN 표준, ClickHouse 파라미터 바인딩).
-- **STEP 0 — 서비스 커버리지 게이트** (리뷰 #16 — HIGH): `dim_service`의 enabled 집합 vs
-  당일 `fact.raw_token_usage_summary_1d` 행 존재를 비교 (NODATA도 summary는 적재되므로 FAILURE와 구분됨).
+- **STEP 0 — 서비스 커버리지 게이트** (리뷰 #16 — HIGH): `dim_service`의 enabled 집합
+  (**source_type과 무관하게 전체** — 게이트는 소스 유형을 모름) vs target_date의
+  `fact.raw_token_usage_summary_1d` 행 존재를 비교 (NODATA도 summary는 적재되므로 FAILURE와 구분됨).
+  §5.9 계약 9조의 expected-late 예외 목록에 등록된 서비스는 경고 대상에서 제외.
   정책: **적재는 진행하되 조용함 금지** — BATCH_RESULT에 `coverage=N/M missing_services=<목록>` 노출,
   누락 존재 시 LogsQL 경고 패널이 발화(§7.3). view의 불완전 마커 컬럼은 §9-1 대시보드 협의에 포함.
 - STEP 1: fact × dim GLOBAL LEFT JOIN → `mart.token_usage_1d` → 그로부터 agg 3종.
@@ -465,6 +523,39 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
 
 ### 7.2 배포 (stage/company)
 
+**환경 전제 — stage 홈랩 (v1.4, 2026-07-12 실사)**:
+- stage ClickHouse 클러스터명 = **'gpu-monitoring'** (CHI 'gpu-monitoring', 현재 1샤드×1레플리카) —
+  **동료 레포의 stage 관례('metrics')와 다름**: ddl/stage 작성 시 참조 모델의 ON CLUSTER 리터럴을
+  복사하지 말 것. `CH_CLUSTER` 환경변수 값과 DDL의 ON CLUSTER 리터럴은 항상 일치.
+- ClickHouse Operator 존재(chi-* 자동 탐색 성립), VictoriaMetrics 존재(§9-4 stage 검증 대상).
+- **VictoriaLogs 부재** → §5.6/§7.3의 BATCH_RESULT "무수정 편입"·SERVICE_RESULT LogsQL 패널은
+  stage에서 검증 불가 — 검증 시점을 company 반입 단계로 이관(또는 홈랩 VL 설치를 선행 작업으로).
+- 레플리카 1이므로 전-레플리카 항목(mutations_sync=2의 다중 레플리카 대기, clusterAllReplicas 폴링,
+  복제 lag count 재시도)의 실검증 여부는 §9-19 (레플리카 증설 vs company 단계 검증 이관).
+  ZK 블록 해시 dedup 검증은 레플리카 1에서도 가능하므로 stage 잔류.
+
+**환경 데이터 경계 (v1.4)**: **stage(사외 홈랩)에는 실사용자 식별자·실명 로스터·사내 실사용량
+데이터를 반입하지 않는다** — stage의 dim_user_org와 fact는 합성 데이터만 허용(mock-provider 합성
+원칙의 assets 경로 확장). 실로스터 CSV·생성 SQL은 사내 저장소에서만 취급하며 .gitignore에 선제
+패턴(`assets/user-org/data/`, `*roster*.csv`, `dim_user_org_insert*.sql`)을 등록한다 —
+endpoints.company.yaml과 동일한 분리 원칙의 확장.
+
+**계정·GRANT 경계 (v1.4)**:
+- 계정명은 **`token_` 접두사**(token_collector / token_mart / token_dashboard_reader) —
+  동료가 `collector`·`mart`를 선점했고 `CREATE USER IF NOT EXISTS`는 충돌 시 에러 없이 계정이
+  공유되므로 이름 분리가 필수.
+- GRANT는 전부 **자기 테이블에 테이블 레벨**(_dist/_local 각각)로 한정, **DB 레벨 GRANT 금지** —
+  동료 실물 accounts.sql이 `mart.*` DB 레벨 광역 GRANT(DROP TABLE 포함)를 쓰므로 공유 DB에서
+  광역 GRANT는 상호 파괴 반경. 신규 테이블 추가 시 accounts.sql GRANT 추가는 `migrate_add_*.sql`
+  절차의 일부.
+- **읽기 전용 대시보드 계정 `token_dashboard_reader`**: GRANT SELECT를 `token_data.view_*`로 한정
+  (fact·mart·dim 직접 조회 차단). stage Grafana 테스터가 이 계정을 사용해 권한 모델을 사외에서
+  먼저 검증 — 없으면 쓰기 권한을 가진 mart 계정을 Grafana가 재사용하는 나쁜 기본값이 생긴다.
+  개인별 상세가 필요한 소비자(감사 등)는 별도 계정 또는 ClickHouse ROW POLICY 원칙(§9-3과 함께 확정).
+- **DDL 실행 주체 분리**: `CREATE DATABASE`/`CREATE USER`/accounts.sql은 admin 수동 실행
+  (company에서는 클러스터 소유자/DBA 협의 절차 포함). install.sh의 chi-* 자동 DDL 적용 대상은
+  테이블 DDL·migrate로 한정. stage에서도 동일 경계 적용(습관 차이로 인한 반입 재작업 방지).
+
 - 스크립트 규약: `./build.sh <stage|company>` / `./install.sh <stage|company>` +
   `--registry/--tag/--context/--namespace`. 태그 기본 git short SHA. stage=ghcr.io 기본,
   company=`--registry` 필수(Harbor) + `BASE_IMAGE` 프록시 치환. `python:3.12-slim`,
@@ -472,16 +563,18 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
 - k8s: kustomize base + overlays(stage/company). CronJob 공통: `concurrencyPolicy: Forbid`,
   `backoffLimit: 1`, `timeZone: Asia/Seoul`, historyLimit 3, envFrom secretRef,
   **`imagePullSecrets: registry-pull-secret`** (base 명시, 단일 이름으로 통일 — company install.sh가
-  멱등 생성, 리뷰 #11). 수집기 `activeDeadlineSeconds: 3600`(산식 §5.2), mart `1800`.
+  멱등 생성, 리뷰 #11). 수집기 `activeDeadlineSeconds: 4320`(산식 §5.2 — v1.4 교정), mart `1800`.
 - install.sh: Secret 멱등 생성(`<module>-ch-secret`, y/N 확인), `chi-*` 파드 자동 탐색 후 DDL 적용,
   CH_CLUSTER 주입, **kube API 서버 호스트 NO_PROXY 자동 추가** + 수집기 프록시 env를 Secret에 포함(§5.7).
 - DDL: `ddl/{stage,company}/` 분리, 최소 권한 `accounts.sql` (리뷰 #8 반영):
-  - 수집기 계정: fact INSERT(dist/local) + local ALTER DELETE + token_data.dim_service 쓰기.
-    `mutations_sync=2` 방식이므로 system.mutations 권한 불요.
-  - mart 계정: fact·token_data 조회 + mart·view 쓰기(INSERT/ALTER DELETE) +
+  - `token_collector`: fact 자기 테이블 INSERT(dist/local) + local ALTER DELETE +
+    token_data.dim_service 쓰기 — 전부 **테이블 레벨**. `mutations_sync=2` 방식이므로
+    system.mutations 권한 불요.
+  - `token_mart`: fact·token_data 자기 테이블 조회 + mart·view 자기 테이블 쓰기(INSERT/ALTER DELETE) +
     **GRANT SELECT ON system.mutations + GRANT CREATE TEMPORARY TABLE ON \*.\***
     (clusterAllReplicas 폴링·GLOBAL JOIN에 필요).
-  - 이후 스키마 변경은 `migrate_add_*.sql` 관행.
+  - `token_dashboard_reader`: SELECT on `token_data.view_*`만 (위 계정·GRANT 경계 참조).
+  - 이후 스키마 변경은 `migrate_add_*.sql` 관행 (GRANT 추가 포함).
 - **endpoints.yaml 분리 원칙**: 레포에는 stage(mock-provider)용만 커밋. 사내 서비스 URL 목록은
   `endpoints.company.yaml`(.gitignore)에서 install.sh가 ConfigMap 생성.
 
@@ -524,30 +617,73 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
 
 - `tools/rerun.py` (모듈별): 날짜범위형 — CronJob 스펙에서 Job 생성 + command override + 로그 스트리밍 +
   완료 폴링. **collectors rerun은 완료 시 동일 날짜 mart rerun 명령을 출력하고 `--chain-mart` 옵션으로
-  직접 트리거** (리뷰 #7). 절차는 `docs/operations/rerun.md`에 의무로 명시.
-- **`tools/delete_data.py`** (리뷰 #12): (date범위[, service]) 기준 fact 일괄 삭제(ON CLUSTER +
-  mutation 대기). 삭제 후 해당 날짜 mart rerun으로 mart/view 재생성 — 서비스 폐기·정정 시 잔존 데이터 정리 경로.
+  직접 트리거** (리뷰 #7). **체이닝 날짜 전달 계약 (v1.4)**: collectors rerun의 `--from/--to`가
+  mart rerun에 **동일 값 그대로** 전파된다(--chain-mart가 이 인자로 mart Job command 구성) —
+  두 모듈의 유일한 접점 인자. 다중 서비스 rerun의 DELETE는 `service IN (...)` 배칭(§4.0).
+  절차는 `docs/operations/rerun.md`에 의무로 명시.
+- **`tools/delete_data.py`** (리뷰 #12 + v1.4 확장): ① (date범위[, service]) 기준 fact 일괄 삭제
+  (ON CLUSTER + mutation 대기) — 삭제 후 해당 날짜 mart rerun으로 재생성 (서비스 폐기·정정 경로).
+  ② **user_id 축 삭제 모드** — 파기 요청·퇴사자 처리용: fact·mart·view 3계층 직접 ALTER DELETE
+  (25개월치 mart rerun 우회는 비현실적), 절차는 rerun.md에 "파기 요청 처리"로 명시.
+  기존 두 계정의 ALTER DELETE GRANT로 충족되는지, 전용 운영 계정을 둘지는 accounts.sql 설계에서 확정.
 - `ddl/*/validation.sql`: 날짜 커버리지, dim 키·구간 중복, created_by 이상, raw 중복 등 상비 검증 쿼리.
+
+### 8.4 정정(restatement) 프로토콜 (v1.4)
+
+provider가 "확정" 보고한 값이 사후에 틀린 것으로 판명되는 시나리오(집계 버그 후 재확정)에 대한 3단 대응:
+
+1. **감지**: 매일 정기 수집에 **D-2~D-7 summary 경량 재조회**(서비스당 +6회 단건 GET — §5.2 예산과
+   §9-6 rate limit 협의에 계상)를 추가해, 저장된 (generated_at, 토큰 합계)와 비교. 차이 발견 시
+   `RESTATEMENT` 마커(SERVICE_RESULT 수준) 발화 → 운영자가 해당 (date, service) rerun 판단.
+   보조 수단으로 §9-6 협의 안건에 "확정 후 정정 시 통지 의무" 포함.
+2. **감사**: 재수집이 기존 (date, service)를 덮어쓸 때 DELETE 직전 기존 세대의 요약
+   (generated_at, collected_at, 토큰 5필드 합계, 행수)을 경량 감사 테이블
+   `fact.collect_audit_1d`(append-only)에 보존 — §5.9 계약 2조로 전 소스 모듈에 일관 적용.
+   delete-then-insert의 "1세대만 보존"이 차지백 정정 감사를 불가능하게 만드는 문제의 최소 비용 해소.
+3. **절차**: 보존창 밖(재수집 404) 정정의 수동 경로 — fact 수동 정정 INSERT 규약(정정분 식별:
+   collected_at 의미 규약)·mart rerun 연계·차지백 소비자 공지를 운영 문서로 정의 (§9-16).
+
+### 8.5 백업/DR — 유일 사본 보전 (v1.4)
+
+토큰 fact는 GPU 파이프라인과 달리 **원천이 소멸하는 데이터**다 (provider 보존창 경과 후 404 —
+ClickHouse가 유일 사본, 25개월 보존·차지백 근거). 동료 레포에도 백업 선례가 없어 패턴 재사용으로
+커버되지 않는다.
+
+- **사본 등급 분류**: 유일 사본 = `fact.raw_token_usage_1d`·`raw_token_usage_summary_1d`·
+  `fact.collect_audit_1d` + `dim_user_org` 이력(인사 소스의 이력 제공이 미확인인 동안 조건부) /
+  재생성 가능 = mart·view 전부(rerun), dim_model·dim_service(시드/yaml). **백업 대상은 유일 사본만**.
+- 백업 방식(ClickHouse BACKUP 또는 파티션 export)·주기·보관처·소유/비용은 클러스터 소유자(동료)와
+  합의 — §9-17, 사내 반입 전 확정.
+- **복구 런북 골격** (docs/operations/): 계정·DDL 재적용 → dim 시드/CSV 복원 → fact 백업 restore →
+  원천 보존창 내 잔여 기간 재수집(--from/--to) → mart rerun 체이닝. delete_data.py 오조작 복구도 동일 경로.
+- **최소 보존 하한**: §9-6 협의에 "서비스 최소 보존 하한(예: 30~35일 — 장애 감지~rerun 회수 창 + 여유)"
+  추가. endpoints.yaml에 서비스별 `retentionDays`를 기록해 rerun 도구가 회수 불능 구간 요청 시 사전
+  경고(§5.2 RETENTION 분기와 정합 — object storage 소스의 retention_days와 대칭).
 
 ## 9. 미결사항 (Open Questions)
 
 | # | 항목 | 임시 방침 | 확정 방법 |
 |---|---|---|---|
-| 1 | 사내 대시보드 view table 컬럼 계약 — **org 축 깊이(l2 vs l3), anonymous 버킷 표시, 불완전 데이터 마커 포함** | mart와 동일 스키마 | 대시보드 담당과 협의 |
-| 2 | dim_user_org 소스 시스템 (인사/조직 DB — **전 직원 로스터+이력 제공 가능 여부**) | CSV 시드(로스터 형식) | 사내 확인 후 2단계 sync 설계 |
-| 3 | company ClickHouse 클러스터명·네임스페이스·계정 정책 | 동료와 동일('gpu-monitoring') 가정 | 사내 반입 시 확인 |
+| 1 | 사내 대시보드 view table 컬럼 계약 — **org 축 깊이(l2 vs l3), anonymous 버킷 표시·per-user 행 조직 부착 여부, 불완전 데이터 마커, 노출 grain(per-user vs agg만), 소규모 부서(headcount 1~2) 셀 억제 기준** | mart와 동일 스키마 | 대시보드 담당과 협의 |
+| 2 | dim_user_org 소스 시스템 (인사/조직 DB — **전 직원 로스터+이력 제공 가능 여부**, **anon 매핑 제공의 정책 승인 여부**(별도 항목), §7.2 환경 데이터 경계 상속) | CSV 시드(로스터 형식) | 사내 확인 후 2단계 sync 설계 |
+| 3 | company ClickHouse 클러스터명·네임스페이스·계정 정책 (+per-user 조회의 ROW POLICY/계정 분리 정책) | 동료와 동일('gpu-monitoring') 가정 | 사내 반입 시 확인 |
 | 4 | VM push 엔드포인트(vminsert)와 사내 VM 정책 | stage 홈랩 VM으로 검증 | 사내 확인 |
 | 5 | 모델 단가 통화(USD/KRW)·환율·실계약가 | USD 고정, cost는 참고 지표 | 비용 리포트 요구 확정 시 |
-| 6 | 수집 시각(02:00 일괄)·서비스별 rate limit·**limit 상향(최대 5000) 협의** | 02:00 순차 + Retry-After 존중, limit 1000 | 서비스 구현팀들과 협의 |
-| 7 | raw/mart/view TTL 보존 기간 | 전 테이블 25개월 | 스토리지 검토 후 조정 |
+| 6 | 수집 시각(02:00 일괄)·서비스별 rate limit·**limit 상향(최대 5000)**·**최소 보존 하한(30~35일)**·**정정 통지 의무**·**D-2~D-7 재조회 예산** 협의 | 02:00 순차 + Retry-After 존중, limit 1000 | 서비스 구현팀들과 협의 |
+| 7 | raw/mart/view TTL 보존 기간 + **dim_user_org 퇴사자 파기/가명화 기준(N년)** — 사내 **개인정보 보존 정책 정합** | 전 테이블 25개월 | 스토리지 + 개인정보 담당 확인 (company 반입 게이트일 수 있음) |
 | 8 | **dim_budget 도입 여부와 예산 주체**(org 단위? 과제 단위?) — 예산 대비 소진율 요구 | 2단계 보류 | 경영/재무 요구 확인 |
 | 9 | **서비스 개명 시 과거 데이터 이관 정책**(이관/삭제/별도 시리즈 보존) | enabled=0 유지 + 신규 이름으로 신규 시리즈 | 첫 개명 사례 전 결정 |
-| 10 | **object storage 소스 계약** — manifest 스키마·경로 규약·파일 포맷·보존창·기준정보 A의 형식/이력 제공 여부 (§5.9) | 케이스 발생 시 모듈 신설 | 해당 소스 제공팀과 협의 |
-| 11 | **스냅샷 API 소스 계약** — readiness/finality 신호, 응답 크기 상한 (§5.9) | 케이스 발생 시 모듈 신설 | 해당 서비스팀과 협의 (표준 usage-api-v1 구현 유도가 1순위) |
+| 10 | **object storage 소스 계약** — manifest 스키마·경로 규약·파일 포맷·보존창·기준정보 A의 형식/이력 제공 여부·**데이터 확정 시각(readiness SLO, §5.9 계약 9조)** | 케이스 발생 시 모듈 신설 | 해당 소스 제공팀과 협의 |
+| 11 | **스냅샷 API 소스 계약** — readiness/finality 신호, 응답 크기 상한, **데이터 확정 시각(readiness SLO)** (§5.9) | 케이스 발생 시 모듈 신설 | 해당 서비스팀과 협의 (표준 usage-api-v1 구현 유도가 1순위) |
 | 12 | **서빙 플랫폼 메타 소스** — model→GPU 할당 이력(gpu_type, phase, 시간) 제공 가능 여부 (§4.4 Layer C 전제) | Layer C 보류 | 서빙 플랫폼(kserve/vLLM) 운영팀 협의 |
 | 13 | **모델명 매핑 정본** — token-usage-api `model` ↔ 서빙 식별자 (dim_model_serving_map) | Layer C 보류 | §9-12와 함께 협의 |
 | 14 | **GPU 시간당 원가 소스** — 산정 정책(감가·전력·상면), 동료 `dimension.gpu_model_quota_info`와의 관계 | Layer C 보류 | 재무/인프라 정책 확인 |
 | 15 | **유휴·공유 GPU 정책** — 시분할 다중 모델 공유의 gpu_hours 안분, 통합 배포의 input/output 원가 가중치 | 범위 외 선언 | Layer C 설계 확정 시 |
+| 16 | **보존창 밖 수동 정정 절차** — fact 수동 INSERT 규약·차지백 소비자 공지 (§8.4-3) | RESTATEMENT 감지·감사 이력은 설계 반영됨 | 운영 문서 작성 시 확정 |
+| 17 | **백업 방식·주기·보관처·소유/비용** (§8.5 — 유일 사본 한정) | 백업 없이 시작 금지(사내 반입 전 확정) | 클러스터 소유자(동료)와 합의 |
+| 18 | **DB 소유권 — fact/mart 공유 vs 전용 DB(token_fact/token_mart)** + 동료 계정의 `mart.*` 광역 DROP GRANT 협의 + **정례 뮤테이션 예산 합의**(§4.0) | 기본안 = 전용 DB (§2) | **구현 2단계(DDL) 전 선행 결정** — 동료와 직접 협의, 합의 기록 필수 |
+| 19 | **stage 레플리카 증설 여부** — 전-레플리카 검증 항목(§7.2 환경 전제)을 stage에서 할지 company로 이관할지 | 레플리카 1 유지 + company 이관 | stage 런북 작성 전 결정 |
+| 20 | **홈랩 VictoriaLogs 설치 여부** — BATCH_RESULT/SERVICE_RESULT 패널의 stage 검증 가능성 | 미설치 — company 단계 검증 | stage 대시보드 작업 전 결정 |
 
 ## 10. 구현 순서 (권장)
 
