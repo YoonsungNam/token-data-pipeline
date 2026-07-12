@@ -10,6 +10,7 @@
 |---|---|---|
 | v1.0 | 2026-07-10 | 최초 작성 |
 | v1.1 | 2026-07-12 | 5렌즈 리뷰 확정 지적 22건 반영: 서비스 식별 정본 규칙(§5.0), 409/페이지네이션 원자성(§5.2·5.3), 부분 데이터 게이팅(§7.1 STEP 0), dim_user_org 이력화(§4.2), 물리 설계 표·분산 조인 표준(§4.0), BATCH_RESULT/SERVICE_RESULT 분리(§5.6), 소프트 데드라인(§5.2), 기준정보 확장(로스터·budget·anon 귀속, §6.1) 등 |
+| v1.2 | 2026-07-12 | 수집 확장 모델 신설(§5.9 적재 계약): API 미제공 소스(object storage·스냅샷 API) 확장 경로 + 비용 파생 원칙(§4.3). 2-포크 반박 검증 반영 — 어댑터 프레임워크 기각(YAGNI), 소스 유형별 별도 모듈 + 문서 계약 방식 채택. summary에 is_derived, dim_service에 source_type 추가 |
 
 ## 1. 배경과 목적
 
@@ -28,7 +29,7 @@ ClickHouse에 적재하고, 기준정보와 조합해 대시보드용 테이블�
 | 범위 | collectors + assets + mart 3계층 전부 | |
 | 서비스 목록 | 레포 내 설정 파일(`endpoints.yaml`) → ConfigMap. **이 값이 서비스 식별의 정본(§5.0)** | 사내 URL은 레포에 커밋하지 않음 (§7.2) |
 | 환경 | **stage(홈랩) + company 2단계** (dev/kind 없음) | 로컬 검증은 CI가 담당 |
-| 수집 토폴로지 | **단일 수집기 CronJob이 전 서비스 순회** | 서비스별 실패 격리 |
+| 수집 토폴로지 | **단일 수집기 CronJob이 전 서비스 순회** (usage-api-v1) | 서비스별 실패 격리. **API 미제공 소스는 적재 계약(§5.9)을 준수하는 별도 수집기 모듈로 확장** — 동료 assets/ 선례(소스별 독립 모듈) |
 | 수집 경로 | **API→ClickHouse 직행**, 서비스 단위 합계만 VictoriaMetrics 게이지 push | per-user 데이터는 VM에 넣지 않음 |
 | DB 배치 | fact(raw) / token_data(기준정보+view) / mart(집계) | 동료의 fact/gpu_data/mart 구조와 대칭 |
 | 대시보드 | 최종적으로 사내 대시보드가 `token_data`의 view table을 읽음. 사외(홈랩) 작업 중엔 Grafana 테스터 대시보드로 대체 | |
@@ -66,6 +67,8 @@ token-data-pipeline/
 ├── collectors/token-usage/     # main.py, api_client.py, clickhouse_client.py, vm_push.py,
 │                               # config.py, endpoints.yaml(stage 예시), ddl/{stage,company}/,
 │                               # k8s/(base+overlays), build.sh, install.sh, tools/rerun.py, tests/
+│   # (향후) collectors/token-usage-snapshot/ · token-usage-storage/ —
+│   #        적재 계약(§5.9) 준수하는 독립 모듈로 클론 생성, 소스 확정 시
 ├── assets/
 │   ├── user-org/               # csv_to_dim_user_org_insert.py (SQL 생성), ddl/, (2단계: sync CronJob)
 │   └── model-catalog/          # ddl/ + seed_dim_model.sql (멱등 시드)
@@ -131,15 +134,20 @@ TTL: `date + INTERVAL 25 MONTH` (미결 §9-7).
 **`fact.raw_token_usage_summary_1d`** — grain: `date × service`
 
 summary 응답 원본: 토큰 5필드 + `distinct_users` UInt32 + `distinct_identified_users` Nullable(UInt32)
-(optional 필드) + `reported_service_group/reported_service` + `generated_at`, `collected_at`.
+(optional 필드) + `reported_service_group/reported_service` + **`is_derived` UInt8** + `generated_at`, `collected_at`.
 detail 합과의 정합성 검증 기준이자 mart STEP 0 커버리지 게이트의 기준(**NODATA인 서비스도
 summary 행은 반드시 적재** — §5.2).
+
+`is_derived=1` = 소스가 summary를 제공하지 않아 **detail에서 합산 파생한 행**(§5.9 계약 3조).
+파생 summary는 (a) Σdetail vs summary 검증을 스킵(자기 자신 비교 방지 — SERVICE_RESULT에
+`verify=skipped_derived`), (b) `agg_token_service_1d`의 reported_* diff 컬럼을 0이 아닌 **NULL**로,
+(c) §5.5 VM `reported_*` 게이지 push를 생략한다 ("보고값"이 아니므로).
 
 ### 4.2 token_data DB (기준정보 + view)
 
 | 테이블 | grain / 컬럼 요지 | 관리 주체 |
 |---|---|---|
-| `dim_service` | service — service_group, service, base_url, enabled UInt8, note, updated_at | 수집기가 시작 시 endpoints.yaml로 전량 교체 |
+| `dim_service` | service — service_group, service, base_url, enabled UInt8, **source_type** LowCardinality(String) DEFAULT 'usage-api-v1', note, updated_at | 수집기가 시작 시 endpoints.yaml로 전량 교체. **수집 경로와 무관한 서비스 레지스트리** — 신규 소스 모듈도 자기 서비스를 여기 등록(§5.9 계약 6조) |
 | `dim_user_org` | **(user_id, effective_from)** — user_name, org_l1(사업부), org_l2(부서), org_l3(그룹), is_active UInt8, updated_at | assets/user-org |
 | `dim_model` | (model, effective_from) — provider, input/cache_read/cache_creation/output 단가(USD per MTok), currency, note | assets/model-catalog 시드 SQL |
 | `dim_budget` *(2단계, 선택)* | (scope_type: org\|service_group, scope, month) — budget_usd | 미결 §9-8 |
@@ -176,6 +184,13 @@ summary 행은 반드시 적재** — §5.2).
 
 - `cost` = Σ(토큰별 단가 × 양) / 1e6. date 기준 유효 단가(`effective_from <= date` 최신 행) 사용.
   dim_model 미등록 모델은 cost NULL + 모델명 집합 CHECK WARN (`unknown`은 시드 포함으로 자연 제외).
+- **비용은 파생 데이터 (확장 원칙)**: mart에 토큰 4종 수량, dim_model에 단가 4종+이력이 있으므로
+  **유형별 비용 분해·캐시 절감액(cache_read × (input단가−cache_read단가))은 물리 컬럼 없이 쿼리로
+  언제든 계산 가능**하다. 분해 물리 컬럼이 필요해지는 조건(대시보드 성능·§9-1 계약 확정)이 오면
+  `migrate_add_*` + mart rerun으로 추가한다 — v1.1의 effective_from 이력 덕에 재계산이 결정적이라
+  안전. 단가 소급 정정도 동일 경로(dim 이력 정정 → 기간 rerun). 통화/환율은 §9-5 미결 상속.
+  **물리 컬럼 범위**: mart 상세·agg·view 모두 `cost`(합계, Nullable)만 보유 — 분해 컬럼은 보류.
+  미등록 모델은 cost NULL (분해 도입 시에도 "미등록=전 비용 컬럼 NULL"로 단순화).
 - agg의 소스는 `mart.token_usage_1d`로 통일해 조직 조인 결과가 어긋나는 것을 방지한다
   (예외: `agg_token_service_1d`의 reported_* 컬럼만 `fact.raw_token_usage_summary_1d`를 조인).
 
@@ -218,7 +233,12 @@ ORDER BY·샤딩 키. 응답 원문은 `reported_service_group/reported_service`
 `main.py --from <d1> --to <d2> [--service <name>]`으로 과거 구간·특정 서비스만 재실행한다.
 **collectors rerun 후에는 동일 날짜의 mart rerun이 의무** (§3, §8.3).
 
-### 5.2 HTTP 에러 처리 매트릭스 (스펙 대응)
+### 5.2 HTTP 에러 처리 매트릭스 (usage-api-v1의 이벤트 번역표)
+
+수집 오케스트레이션 정책(대기열·소프트 데드라인·FAILURE 전이·SERVICE_RESULT status)은
+**공통 이벤트 분류**(§5.9: NOT_READY / RETRYABLE / PERMANENT_ERROR / RETENTION / EMPTY /
+INVARIANT_BROKEN) 기준으로 1벌만 존재하며, 아래 표는 usage-api-v1 소스의 HTTP 신호를
+그 분류로 번역한 것이다. 신규 소스 모듈은 자기 신호의 번역표만 정의하면 된다.
 
 **전역 소프트 데드라인** (리뷰 #14): Job 경과 **50분**을 소프트 데드라인으로 두고,
 409 재방문 대기·429 Retry-After 대기·5xx 백오프·새 서비스 착수 전에 모두 체크한다.
@@ -279,7 +299,8 @@ ORDER BY·샤딩 키. 응답 원문은 `reported_service_group/reported_service`
   status 집계 규칙: 실패 서비스 ≥1 → FAILURE, 전 서비스 NODATA → NODATA, 그 외 SUCCESS.
   SKIP(재수집 404)은 exit code에 영향 없음(0).
 - **서비스별 결과는 별도 마커 `SERVICE_RESULT`**:
-  `SERVICE_RESULT status=SUCCESS|NODATA|SKIPPED|FAILURE module=token-usage service=<정본> rows= pages= warn= rejected=`
+  `SERVICE_RESULT status=SUCCESS|NODATA|SKIPPED|FAILURE module=token-usage service=<정본> source_type=usage-api-v1 rows= pages= warn= rejected=`
+  (`source_type=` 필드는 소스 유형별 지연·실패 특성을 모니터링에서 구분하기 위한 것 — 신규 모듈도 동일 필드 출력)
 - §7.3: BATCH_RESULT는 기존 대시보드에 무수정 편입. 서비스별 드릴다운·**서비스 단위 연속 NODATA/SKIP 감시**는
   SERVICE_RESULT 기반 LogsQL 패널을 token-usage 대시보드에 별도 제공 ("전체 SUCCESS인데 한 서비스만 조용히
   빠지는" 경로 차단).
@@ -303,7 +324,63 @@ services:
     service: "Mock Service A"      # ← 정본
     baseUrl: "http://mock-provider.token-pipeline.svc:8000"
     enabled: true                  # 폐기 시 false로 유지, 항목 제거 금지 (§4.2)
+    # type: usage-api-v1           # optional, 기본값. dim_service.source_type으로 전달.
+    #                              # 다른 유형은 별도 모듈의 설정 파일에서 관리 (§5.9)
 ```
+
+### 5.9 수집 확장 모델 — 적재 계약 (Sink Contract)
+
+**배경**: API(`token-usage-api`)를 구현하지 못하는 서비스가 있을 수 있다 — 예: (케이스 1) 기준정보 A와
+raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모두 담은 스냅샷 단건 API.
+**확장 방식은 코드 프레임워크가 아니라 문서 계약**이다 (2-포크 반박 검증 결론: 구현 1개뿐인
+어댑터 인터페이스는 추측성 추상화 — 동료 assets/의 소스별 독립 모듈 선례를 따름).
+신규 소스는 **이 계약을 준수하는 별도 수집기 모듈**(`collectors/token-usage-<type>/`)로 클론 생성하며,
+공용 코드는 §3의 승격 규칙(3회 중복 시 추출)을 따른다. **mart 이하 전 계층은 소스 유형을 모른다** —
+이것이 이 계약이 보장하는 확장성이다.
+
+**계약 조항** (모든 수집 모듈의 의무):
+
+1. **정규 출력(NormalizedUsage)**: `fact.raw_token_usage_1d` 스키마 그대로 — 논리 키 5개(date,
+   service, user_id, user_type, model) × 토큰 5필드, §5.4 정규화 규칙(null→'', 캐시 생략→0,
+   위반 행 거부) 적용. 소스가 이벤트/요청 수준 데이터면 **집계 책임은 해당 모듈에 있다**
+   (§5.4의 "중복 키 SUM 병합 WARN"은 사전 집계를 계약하는 usage-api-v1 전용 규칙).
+2. **멱등성**: `(date, service)` 원자 교체 (delete-then-insert). 모듈 내부 스테이징 테이블을
+   쓰는 경우 스테이징도 동일 키(또는 파일 키) 단위 멱등 — rerun 시 잔존물이 남지 않아야 한다.
+3. **summary 행 필수**: 소스가 summary를 제공하지 않으면 detail 합산으로 파생 적재 + `is_derived=1`
+   (§4.1의 파생 시맨틱: 검증 스킵·diff NULL·VM reported_* push 생략). NODATA여도 summary 행 적재 —
+   mart STEP 0 커버리지 게이트의 전제.
+4. **readiness/finality 판정 규칙을 명시적으로 정의**하고 공통 이벤트 분류(NOT_READY / RETRYABLE /
+   PERMANENT_ERROR / RETENTION / EMPTY / INVARIANT_BROKEN)로 번역할 것 (§5.2가 usage-api-v1의 번역표).
+   "확정 데이터만 적재" 원칙은 소스가 무엇이든 불변.
+5. **서비스 식별 정본 = 해당 모듈의 설정 파일** (§5.0의 일반화). 소스 쪽 명칭은 reported_*에 보존.
+6. **관측**: 실행당 BATCH_RESULT 1줄 + 서비스별 SERVICE_RESULT(`source_type=` 포함), 자기 서비스를
+   `dim_service`(source_type 포함)에 등록 — coverage 게이트·기존 대시보드에 자동 편입.
+7. **기준정보 결합 원칙**: 전사 기준정보(B — dim_user_org/dim_model)는 **mart 시점 결합**(불변).
+   소스가 제공하는 기준정보(A)는 **`token_data`의 dim으로 승격해 effective_from 이력 append**가
+   기본 — 수집 시점 결합은 rerun 결정성(§7.1)을 깨므로, 불가피하면 "해당 date 파티션의 A 스냅샷만
+   사용"(최신본 금지)으로 결정성을 확보한다.
+8. **테스트 대응물 의무**: 모듈은 CI용 mock 대응물(mock-provider 상당 — 예: mock-storage fixture)을
+   함께 만든다. 3단 검증 체계(§8.2)가 새 소스에서도 성립해야 한다.
+
+**케이스별 설계 지침** (구현은 소스 확정 시, §9-10·11):
+
+- **object storage 소스** (`collectors/token-usage-storage/`):
+  - **manifest 필수**: `<prefix>/<date>/_MANIFEST.json` (generatedAt, 파일 목록+체크섬, 행수).
+    manifest 부재=NOT_READY(대기열, 예산 합산) / manifest-파일 불일치=PERMANENT_ERROR /
+    설정된 보존창(retention_days) 밖 date=RETENTION. — 스토리지에는 409/404 구분이 없으므로
+    이것이 readiness·retention 판정의 유일한 수단 (소스 제공팀과의 계약 필수, §9-10).
+  - **§5.3의 등가 규칙**: 수집 시작 시 manifest를 스냅샷으로 고정, 그 목록만 다운로드 + 체크섬 대조.
+    수집 도중 파일 추가/교체 감지 시 INVARIANT_BROKEN(폐기 후 재시작 ≤2회).
+  - 파일 → 스테이징(`fact.stg_*`, 멱등) → 변환·집계 SQL → 계약 1조의 정규 출력. 무거운 의존성
+    (S3 SDK, parquet)은 이 모듈 이미지에만 존재.
+  - 다운로드·집계는 대기(wait)가 아닌 처리(work) 시간 — 소스별 time_budget을 설정으로 분리해
+    §5.2 소프트 데드라인 계상에서 구분.
+- **스냅샷 API 소스** (`collectors/token-usage-snapshot/`):
+  - 단건 GET(date 파라미터) → 전체 records(+summary). cursor 없음.
+  - readiness/finality 신호(HTTP 409 상당? 응답 내 필드?)를 소스 계약으로 확정해야 함 (§9-11).
+    매핑 불가 형식·코드는 PERMANENT_ERROR.
+  - **응답 크기 상한 + 스트리밍 파싱**(MAX_PAGES의 등가물) — 단건 대용량 응답의 OOM 방지
+    (동료 #133 교훈).
 
 ## 6. assets
 
@@ -403,7 +480,7 @@ services:
 
 1. **CI**: 단위(api_client cursor 루프·409/429·불변성 검사 분기 — Fake transport, 정규화, mart 검증 로직) +
    E2E(ClickHouse 컨테이너 + mock-provider → DDL → 수집기 → mart → `verify_expected_results.sql --expect-empty`) +
-   conformance.
+   conformance. **신규 소스 모듈은 자체 mock 대응물로 동일한 E2E를 구성** (§5.9 계약 8조).
 2. **stage 런북**: 실클러스터 특성(Replicated ZK 해시, 비동기 mutation — mutations_sync=2와
    clusterAllReplicas 폴링 각각, 계정 권한, GLOBAL JOIN) 수동 검증.
 3. **company 스팟체크** (`tests/company/inspect_*.sql`): view↔mart↔fact 합계 재계산, detail vs summary
@@ -432,6 +509,8 @@ services:
 | 7 | raw/mart/view TTL 보존 기간 | 전 테이블 25개월 | 스토리지 검토 후 조정 |
 | 8 | **dim_budget 도입 여부와 예산 주체**(org 단위? 과제 단위?) — 예산 대비 소진율 요구 | 2단계 보류 | 경영/재무 요구 확인 |
 | 9 | **서비스 개명 시 과거 데이터 이관 정책**(이관/삭제/별도 시리즈 보존) | enabled=0 유지 + 신규 이름으로 신규 시리즈 | 첫 개명 사례 전 결정 |
+| 10 | **object storage 소스 계약** — manifest 스키마·경로 규약·파일 포맷·보존창·기준정보 A의 형식/이력 제공 여부 (§5.9) | 케이스 발생 시 모듈 신설 | 해당 소스 제공팀과 협의 |
+| 11 | **스냅샷 API 소스 계약** — readiness/finality 신호, 응답 크기 상한 (§5.9) | 케이스 발생 시 모듈 신설 | 해당 서비스팀과 협의 (표준 usage-api-v1 구현 유도가 1순위) |
 
 ## 10. 구현 순서 (권장)
 
@@ -441,6 +520,10 @@ services:
 4. assets (model-catalog 시드 → user-org CSV 도구)
 5. Grafana 테스터 대시보드 + stage 런북 + rerun/delete 도구
 6. (사내 반입 후) company overlay·endpoints.company.yaml·대시보드 계약 반영
+
+**신규 소스 온보딩 절차** (케이스 발생 시): 소스 계약 협의(§9-10·11) → 표준 usage-api-v1 구현
+가능성 먼저 타진 → 불가하면 `collectors/token-usage-<type>/` 모듈 클론 → §5.9 적재 계약 준수 +
+CI mock 대응물 → dim_service 등록으로 coverage·모니터링 자동 편입 → mart/view는 무변경.
 
 작업 컨벤션은 동료 방식을 따른다: conventional commits(`type(scope): 설명`),
 `type/kebab-case` 브랜치, 소형 PR(feat → 하드닝 fix → docs 분리), BATCH_RESULT/SERVICE_RESULT 마커는
