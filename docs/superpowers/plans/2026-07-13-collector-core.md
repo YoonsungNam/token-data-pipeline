@@ -22,7 +22,7 @@
 - **로깅 계약** (§5.6): 로그에 레코드 페이로드·user_id 원문 금지 — 카운트·인덱스·필드명만.
 - **404 분기** (§5.2): 일일 정기(target=어제)=FAILURE / 명시적 재수집(--from/--to)=SKIPPED+WARN.
 - CLI (§5.1·§7.1과 동일 계약): `main.py [batch_time]`(ISO8601, 기본 now, target_date=−1일 KST), `--from/--to`(재수집 — VM push 기본 생략), `--service <name>`.
-- 테이블·DB명은 DDL 초안(PR #3) 기준: `token_fact.raw_token_usage_1d(_local/_dist)`, `raw_token_usage_summary_1d`, `collect_audit_1d`, `gpu_data.dim_service`. §9-18 협의로 DB명 변경 시 `config.py`의 상수 2개만 수정.
+- 테이블·DB명은 DDL 초안(PR #3) 기준: `fact.raw_token_usage_1d(_local/_dist)`, `raw_token_usage_summary_1d`, `collect_audit_1d`, `gpu_data.dim_token_service`. §9-18 확정(fact 공유): `config.py`의 상수 2개만 수정 완료.
 - 환경변수 계약 (§5.7): `CH_HOST/CH_PORT/CH_USER/CH_PASSWORD/CH_CLUSTER`(빈 값=ON CLUSTER 생략), `VM_PUSH_URL`(빈 값=push 생략), `ENDPOINTS_FILE`, `MAX_PAGES`(200), `SOFT_DEADLINE_MINUTES`(50), `MAX_BUFFER_ROWS`(20000), `NOT_READY_BUDGET_MINUTES`(30), `COLLECTOR_HTTPS_PROXY`(미설정=상속/빈 문자열=직접), `COLLECTOR_API_VERIFY`/`COLLECTOR_API_CA_BUNDLE`.
 - **Python 3.10+ 호환 문법** (개발 머신 3.10 / CI·컨테이너 3.12 — `StrEnum` 등 3.11+ 전용 금지), `random` 금지(테스트 포함), KST 규율(naive datetime 금지), 커밋 `type(collectors): 설명`, 테스트는 `cd collectors/token-usage && python -m pytest`.
 
@@ -36,7 +36,7 @@ collectors/token-usage/
 │   ├── events.py            # 공통 이벤트 분류(Enum) + CollectError(분류 캐리어)
 │   ├── api_client.py        # summary/usage pull, 페이지네이션+불변성 검사, HTTP→이벤트 번역
 │   ├── normalize.py         # 행 정규화·검증·SUM 병합·집계 (순수)
-│   ├── clickhouse_client.py # 멱등 적재(존재확인→DELETE→배치INSERT→감사), dim_service 범위 교체
+│   ├── clickhouse_client.py # 멱등 적재(존재확인→DELETE→배치INSERT→감사), dim_token_service 범위 교체
 │   ├── vm_push.py           # 서비스 합계 게이지 (reported_* — summary 보고값)
 │   └── main.py              # 오케스트레이터: 서비스 큐·데드라인·마커·SIGTERM·CLI
 ├── tests/
@@ -985,8 +985,8 @@ import clickhouse_connect
 
 from app.config import Config, ServiceEntry
 
-DB_FACT = "token_fact"   # §9-18: 공유 fact DB 확정 시 "fact"로 변경
-DB_DIM = "gpu_data"      # 이슈 #1 확정
+DB_FACT = "fact"   # §9-18 확정(2026-07-13): 기존 fact DB 공유 — GRANT는 테이블 레벨 한정(§7.2)
+DB_DIM = "gpu_data"      # 이슈 #1 확정 — dim_token_* 접두사 규칙(협의 확정)
 
 KST = timezone(timedelta(hours=9))
 
@@ -1116,13 +1116,13 @@ class CHWriter:
                              source_type: str = "usage-api-v1") -> None:
         """자기 source_type 범위만 원자 교체 (§5.9 계약 6조 — 타 모듈 등록분 보호)."""
         self.client.command(
-            f"ALTER TABLE {DB_DIM}.dim_service_local{self._on_cluster()} "
+            f"ALTER TABLE {DB_DIM}.dim_token_service_local{self._on_cluster()} "
             f"DELETE WHERE source_type = %(stype)s",
             parameters={"stype": source_type},
             settings={"mutations_sync": 2})
         now = now_kst_naive()
         self.client.insert(
-            f"{DB_DIM}.dim_service_dist",
+            f"{DB_DIM}.dim_token_service_dist",
             [[e.service_group, e.service, e.base_url, 1 if e.enabled else 0,
               e.source_type, "", now] for e in entries],
             column_names=DIM_COLS)

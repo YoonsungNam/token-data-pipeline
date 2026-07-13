@@ -9,8 +9,8 @@ import clickhouse_connect
 
 from app.config import Config, ServiceEntry
 
-DB_FACT = "token_fact"   # §9-18: 공유 fact DB 확정 시 "fact"로 변경
-DB_DIM = "gpu_data"      # 이슈 #1 확정 — 접두사 여부는 §9-18 잔여 협의
+DB_FACT = "fact"   # §9-18 확정(2026-07-13): 기존 fact DB 공유 — GRANT는 테이블 레벨 한정(§7.2)
+DB_DIM = "gpu_data"      # 이슈 #1 확정 — dim_token_* 접두사 규칙(협의 확정)
 
 KST = timezone(timedelta(hours=9))
 
@@ -140,13 +140,13 @@ class CHWriter:
                              source_type: str = "usage-api-v1") -> None:
         """자기 source_type 범위만 원자 교체 (§5.9 계약 6조 — 타 모듈 등록분 보호)."""
         self.client.command(
-            f"ALTER TABLE {DB_DIM}.dim_service_local{self._on_cluster()} "
+            f"ALTER TABLE {DB_DIM}.dim_token_service_local{self._on_cluster()} "
             f"DELETE WHERE source_type = %(stype)s",
             parameters={"stype": source_type},
             settings={"mutations_sync": 2})
         now = now_kst_naive()
         self.client.insert(
-            f"{DB_DIM}.dim_service_dist",
+            f"{DB_DIM}.dim_token_service_dist",
             [[e.service_group, e.service, e.base_url, 1 if e.enabled else 0,
               e.source_type, "", now] for e in entries],
             column_names=DIM_COLS)

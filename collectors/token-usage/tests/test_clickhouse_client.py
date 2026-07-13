@@ -112,9 +112,9 @@ def test_dim_replace_scopes_to_source_type():
     w.replace_dim_services([ENTRY])
     deletes = [c for c in ch.commands if "DELETE" in c[0]]
     assert len(deletes) == 1
-    assert "source_type" in deletes[0][0] and "dim_service_local" in deletes[0][0]
+    assert "source_type" in deletes[0][0] and "dim_token_service_local" in deletes[0][0]
     assert deletes[0][1] == {"stype": "usage-api-v1"}
-    assert any(i[0].endswith("dim_service_dist") for i in ch.inserts)
+    assert any(i[0].endswith("dim_token_service_dist") for i in ch.inserts)
 
 
 def test_fetch_prev_summary_covers_nodata_generation():
@@ -136,7 +136,7 @@ def test_dim_rows_carry_entry_source_type():
                             enabled=True, source_type="snapshot-api")]
     w.replace_dim_services(entries)
     table, n, cols = ch.inserts[-1]
-    assert table.endswith("dim_service_dist") and n == 2
+    assert table.endswith("dim_token_service_dist") and n == 2
     dim_data = ch.insert_rows[-1][1]
     assert dim_data[0][4] == "usage-api-v1"   # first entry source_type
     assert dim_data[1][4] == "snapshot-api"   # second entry source_type
