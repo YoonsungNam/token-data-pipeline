@@ -3,9 +3,7 @@
 distinct_users는 비가산(교차 sum 금지) — 게이지명에 reported_ 접두로 의미 고정.
 push 실패는 WARN (CH가 원천). rerun 경로는 main이 이 함수를 호출하지 않는다(기본 생략).
 """
-from datetime import datetime, timedelta, timezone
-
-KST = timezone(timedelta(hours=9))
+from datetime import datetime
 
 GAUGES = (("token_usage_daily_input_tokens", "inputTokens"),
           ("token_usage_daily_cache_read_tokens", "cacheReadTokens"),

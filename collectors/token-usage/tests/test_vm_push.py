@@ -44,3 +44,10 @@ def test_push_failure_is_warn_not_raise():
     warns = push_service_summary(Config(vm_push_url="http://vm:8480"), ENTRY,
                                  "2026-06-15", SUMMARY, s)
     assert len(warns) == 1 and "vm_push_failed" in warns[0]
+
+
+def test_push_skipped_when_summary_is_derived():
+    s = FakeSession()
+    warns = push_service_summary(Config(vm_push_url="http://vm:8480"), ENTRY,
+                                 "2026-06-15", {**SUMMARY, "is_derived": 1}, s)
+    assert warns == [] and s.posts == []
