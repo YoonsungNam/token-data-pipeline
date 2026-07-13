@@ -96,7 +96,9 @@ def test_non_numeric_limit_is_400(client):
 
 
 def test_bad_date_and_limit_are_400(client):
-    assert client.get("/v1/usage", params={"date": "2026/06/15"}).status_code == 400
+    for bad in ("2026/06/15", "20260615", "2026-W25-1"):
+        r = client.get("/v1/usage", params={"date": bad})
+        assert r.status_code == 400 and r.json()["code"] == "invalid_date"
     today = main.now_kst().date().isoformat()
     for d in (today, (main.now_kst().date() + timedelta(days=1)).isoformat()):
         r = client.get("/v1/usage", params={"date": d})

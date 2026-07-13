@@ -1,3 +1,4 @@
+import re
 import time
 from dataclasses import fields as dc_fields
 from datetime import date as date_cls, datetime, timedelta, timezone
@@ -48,6 +49,8 @@ def _shared_gate() -> JSONResponse | None:
 
 def _date_gate(raw_date: str) -> tuple[date_cls | None, JSONResponse | None]:
     """계약의 date 규칙: 당일/미래 400, 보존 초과 404, 미확정 409."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_date):
+        return None, _err(400, "invalid_date", "date must be YYYY-MM-DD")
     try:
         d = date_cls.fromisoformat(raw_date)
     except ValueError:
