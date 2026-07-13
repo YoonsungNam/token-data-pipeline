@@ -155,3 +155,14 @@ def test_identity_drift_counted_as_warn(capsys):
     code, _ = run([E1], lambda e, d, c, s: payload(entry=e, group="G-DRIFT"))
     assert code == 0
     assert "warn=1" in capsys.readouterr().out  # §5.0 CHECK WARN
+
+
+def test_naive_batch_time_interpreted_as_kst(monkeypatch):
+    import argparse
+    from app.main import _target_dates
+    args = argparse.Namespace(batch_time="2026-07-11T23:30:00", from_date=None,
+                              to_date=None, service=None)
+    dates, is_rerun = _target_dates(args)
+    assert dates == ["2026-07-10"] and is_rerun is False   # KST 해석 — 호스트 TZ 무관
+    args.batch_time = "2026-07-11T23:30:00+09:00"
+    assert _target_dates(args)[0] == ["2026-07-10"]
