@@ -1034,20 +1034,28 @@ class CHWriter:
             settings={"mutations_sync": 2})
 
     def fetch_prev_summary(self, service: str, date: str) -> dict | None:
-        """교체 전 세대 요약 — 감사(§8.4)용. detail이 없으면 None."""
-        r = self.client.query(
+        """교체 전 세대 요약 — 감사(§8.4)용. summary 행 존재를 앵커로 사용
+        (NODATA 세대는 detail 0행 + summary 1행 — 이 경우도 감사 대상)."""
+        s = self.client.query(
+            f"SELECT generated_at, collected_at "
+            f"FROM {DB_FACT}.raw_token_usage_summary_1d_dist "
+            f"WHERE date = %(d)s AND service = %(s)s "
+            f"ORDER BY collected_at DESC LIMIT 1",
+            parameters={"d": date, "s": service})
+        if not s.result_rows:
+            return None
+        gen, col = s.result_rows[0]
+        d = self.client.query(
             f"SELECT count(), sum(input_tokens), sum(cache_read_tokens), "
-            f"sum(cache_creation_tokens), sum(output_tokens), sum(requests), "
-            f"max(generated_at), max(collected_at) "
+            f"sum(cache_creation_tokens), sum(output_tokens), sum(requests) "
             f"FROM {DB_FACT}.raw_token_usage_1d_dist "
             f"WHERE date = %(d)s AND service = %(s)s",
             parameters={"d": date, "s": service})
-        if not r.result_rows or not r.result_rows[0][0]:
-            return None
-        c, i, cr, cc, o, q, gen, col = r.result_rows[0]
-        return {"prev_row_count": c, "prev_input_tokens": i, "prev_cache_read_tokens": cr,
-                "prev_cache_creation_tokens": cc, "prev_output_tokens": o,
-                "prev_requests": q, "prev_generated_at": gen, "prev_collected_at": col}
+        c, i, cr, cc, o, q = (d.result_rows[0] if d.result_rows else (0, 0, 0, 0, 0, 0))
+        return {"prev_row_count": c, "prev_input_tokens": i or 0,
+                "prev_cache_read_tokens": cr or 0, "prev_cache_creation_tokens": cc or 0,
+                "prev_output_tokens": o or 0, "prev_requests": q or 0,
+                "prev_generated_at": gen, "prev_collected_at": col}
 
     def replace_service_day(self, entry: ServiceEntry, date: str, rows_iter,
                             summary_row: dict, audit_prev: dict | None) -> int:
@@ -1116,14 +1124,14 @@ class CHWriter:
         self.client.insert(
             f"{DB_DIM}.dim_service_dist",
             [[e.service_group, e.service, e.base_url, 1 if e.enabled else 0,
-              source_type, "", now] for e in entries],
+              e.source_type, "", now] for e in entries],
             column_names=DIM_COLS)
 ```
 
 - [ ] **Step 4: 통과 확인** (전체 회귀)
 
 Run: `cd collectors/token-usage && python -m pytest tests/ -v`
-Expected: 24 passed
+Expected: 26 passed (24+2)
 
 - [ ] **Step 5: Commit**
 

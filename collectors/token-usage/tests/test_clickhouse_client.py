@@ -15,6 +15,7 @@ class FakeCH:
     def __init__(self, existing_count=0):
         self.commands = []      # (sql, parameters)
         self.inserts = []       # (table, row_count, column_names)
+        self.insert_rows = []   # (table, data) for detailed inspection
         self.existing_count = existing_count
 
     def command(self, sql, parameters=None, settings=None):
@@ -27,6 +28,23 @@ class FakeCH:
 
     def insert(self, table, data, column_names=None):
         self.inserts.append((table, len(data), tuple(column_names or ())))
+        self.insert_rows.append((table, data))
+
+
+class TableAwareFakeCH(FakeCH):
+    """summary 존재/부재와 detail 합계를 테이블별로 분리 응답."""
+
+    def __init__(self, summary_row=None, detail_agg=(0, 0, 0, 0, 0, 0)):
+        super().__init__()
+        self.summary_row = summary_row
+        self.detail_agg = detail_agg
+
+    def query(self, sql, parameters=None):
+        if "raw_token_usage_summary_1d_dist" in sql and "generated_at" in sql:
+            return FakeResult([list(self.summary_row)] if self.summary_row else [])
+        if "count()" in sql:
+            return FakeResult([list(self.detail_agg)])
+        return FakeResult([])
 
 
 def rows(n):
@@ -97,3 +115,28 @@ def test_dim_replace_scopes_to_source_type():
     assert "source_type" in deletes[0][0] and "dim_service_local" in deletes[0][0]
     assert deletes[0][1] == {"stype": "usage-api-v1"}
     assert any(i[0].endswith("dim_service_dist") for i in ch.inserts)
+
+
+def test_fetch_prev_summary_covers_nodata_generation():
+    ch = TableAwareFakeCH(summary_row=("2026-06-16 02:05:00", "2026-06-16 02:10:00"),
+                          detail_agg=(0, 0, 0, 0, 0, 0))
+    w = CHWriter(Config(), client=ch)
+    prev = w.fetch_prev_summary("S", DATE)
+    assert prev is not None and prev["prev_row_count"] == 0
+    assert prev["prev_generated_at"] == "2026-06-16 02:05:00"
+    ch2 = TableAwareFakeCH(summary_row=None)
+    assert CHWriter(Config(), client=ch2).fetch_prev_summary("S", DATE) is None
+
+
+def test_dim_rows_carry_entry_source_type():
+    ch = FakeCH()
+    w = CHWriter(Config(), client=ch)
+    entries = [ENTRY,
+               ServiceEntry(service_group="G", service="S3", base_url="http://c",
+                            enabled=True, source_type="snapshot-api")]
+    w.replace_dim_services(entries)
+    table, n, cols = ch.inserts[-1]
+    assert table.endswith("dim_service_dist") and n == 2
+    dim_data = ch.insert_rows[-1][1]
+    assert dim_data[0][4] == "usage-api-v1"   # first entry source_type
+    assert dim_data[1][4] == "snapshot-api"   # second entry source_type
