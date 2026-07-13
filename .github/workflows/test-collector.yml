@@ -35,3 +35,17 @@ jobs:
         run: docker build -t token-mock-provider:e2e tools/mock-provider
       - name: Run E2E
         run: ./collectors/token-usage/tests/e2e/run_e2e.sh
+
+  image:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: collectors/token-usage
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t token-usage-collector:ci .
+      - name: Container smoke test
+        run: |
+          # CH 없이 argparse 도움말이 exit 0으로 떠야 함 (이미지 엔트리 검증)
+          docker run --rm token-usage-collector:ci python -m app.main --help
