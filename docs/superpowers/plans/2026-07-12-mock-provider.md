@@ -1061,6 +1061,10 @@ docker stop mock-smoke
 
 Expected: `{"status":"ok"}` + summary JSON에 `"service": "Smoke Svc"` 포함, 컨테이너 정상 종료.
 
+> **적용된 편차**: 개발 머신에 docker 부재(kubeadm/containerd 노드) — 로컬 스모크는 동일
+> 엔트리포인트의 uvicorn 직접 기동으로 대체, 이미지 빌드 검증은 CI 워크플로의 docker build
+> 스텝(Task 9)으로 이관.
+
 - [ ] **Step 3: Commit**
 
 ```bash
