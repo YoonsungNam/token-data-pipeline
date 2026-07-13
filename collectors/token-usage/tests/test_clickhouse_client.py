@@ -144,3 +144,16 @@ def test_dim_rows_carry_entry_source_type():
     dim_data = ch.insert_rows[-1][1]
     assert dim_data[0][4] == "usage-api-v1"   # first entry source_type
     assert dim_data[1][4] == "snapshot-api"   # second entry source_type
+
+
+def test_insert_date_values_are_date_objects():
+    from datetime import date as date_t
+    ch = FakeCH(existing_count=5)
+    w = CHWriter(Config(max_buffer_rows=10), client=ch)
+    prev = {"prev_row_count": 5, "prev_input_tokens": 9, "prev_cache_read_tokens": 0,
+            "prev_cache_creation_tokens": 0, "prev_output_tokens": 9, "prev_requests": 9,
+            "prev_generated_at": now_kst(), "prev_collected_at": now_kst()}
+    w.replace_service_day(ENTRY, DATE, rows(1), summary_row(), audit_prev=prev)
+    assert len(ch.insert_rows) == 3                    # audit + detail + summary
+    for _table, data in ch.insert_rows:
+        assert type(data[0][0]) is date_t              # 드라이버 Date 직렬화 요건 (str 불가)

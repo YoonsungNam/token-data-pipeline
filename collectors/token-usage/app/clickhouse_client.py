@@ -3,7 +3,7 @@
 시퀀스: 존재 SELECT → (있으면) 감사 append + DELETE(mutations_sync=2, _local[+ON CLUSTER])
 → 배치 INSERT(insert_distributed_sync=1). DB명은 §9-18 협의 변경 지점 — 아래 상수 2개만 수정.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import date as date_t, datetime, timedelta, timezone
 
 import clickhouse_connect
 
@@ -89,12 +89,14 @@ class CHWriter:
         detail_local = f"{DB_FACT}.raw_token_usage_1d_local"
         summary_dist = f"{DB_FACT}.raw_token_usage_summary_1d_dist"
         summary_local = f"{DB_FACT}.raw_token_usage_summary_1d_local"
+        # 네이티브 INSERT의 Date 직렬화는 date 객체 필요 (쿼리 파라미터는 문자열 허용)
+        date_v = date_t.fromisoformat(date)
         if self._exists(detail_dist, date, entry.service) or \
            self._exists(summary_dist, date, entry.service):
             if audit_prev:
                 self.client.insert(
                     f"{DB_FACT}.collect_audit_1d_dist",
-                    [[date, entry.service, audit_prev["prev_generated_at"],
+                    [[date_v, entry.service, audit_prev["prev_generated_at"],
                       audit_prev["prev_collected_at"], audit_prev["prev_input_tokens"],
                       audit_prev["prev_cache_read_tokens"],
                       audit_prev["prev_cache_creation_tokens"],
@@ -115,7 +117,7 @@ class CHWriter:
                 buf = []
 
         for row in rows_iter:
-            buf.append([date, entry.service_group, entry.service,
+            buf.append([date_v, entry.service_group, entry.service,
                         summary_row["reported_service_group"],
                         summary_row["reported_service"], row.user_id, row.user_type,
                         row.model, row.input_tokens, row.cache_read_tokens,
@@ -128,7 +130,7 @@ class CHWriter:
 
         self.client.insert(
             summary_dist,
-            [[date, entry.service_group, entry.service,
+            [[date_v, entry.service_group, entry.service,
               summary_row["reported_service_group"], summary_row["reported_service"],
               summary_row["input_tokens"], summary_row["cache_read_tokens"],
               summary_row["cache_creation_tokens"], summary_row["output_tokens"],
