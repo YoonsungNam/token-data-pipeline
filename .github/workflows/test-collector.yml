@@ -49,3 +49,25 @@ jobs:
         run: |
           # CH 없이 argparse 도움말이 exit 0으로 떠야 함 (이미지 엔트리 검증)
           docker run --rm token-usage-collector:ci python -m app.main --help
+
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render overlays
+        run: |
+          kubectl kustomize collectors/token-usage/k8s/overlays/stage   > /tmp/stage.yaml
+          kubectl kustomize collectors/token-usage/k8s/overlays/company > /tmp/company.yaml
+      - name: Contract fields locked (§5.2/§7.2)
+        run: |
+          for f in /tmp/stage.yaml /tmp/company.yaml; do
+            grep -q 'activeDeadlineSeconds: 4320' "$f"
+            grep -q 'concurrencyPolicy: Forbid' "$f"
+            grep -q 'timeZone: Asia/Seoul' "$f"
+            grep -q 'schedule: 0 2 \* \* \*' "$f"
+            grep -q 'memory: 1Gi' "$f"
+            grep -q 'name: registry-pull-secret' "$f"
+            grep -q 'name: token-usage-ch-secret' "$f"
+            grep -q 'name: token-usage-endpoints' "$f"
+          done
+          grep -q 'ghcr.io/yoonsungnam/token-usage-collector' /tmp/stage.yaml

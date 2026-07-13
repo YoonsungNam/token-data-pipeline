@@ -1,0 +1,63 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: token-usage-collector
+spec:
+  # 매일 02:00 KST 실행 (§5.1) — mart 배치(04:00 KST)가 이 잡의 완료를 전제 (§3 cron 오프셋 의존)
+  schedule: "0 2 * * *"
+  timeZone: Asia/Seoul
+  # §4.0 no-op DELETE 스킵 규칙의 전제: 단일 작성자 (경합 금지)
+  concurrencyPolicy: Forbid
+  # 컨트롤러 일시 중단 등으로 02:00을 놓쳐도 1시간 내에는 따라잡는다 (스펙 미명시 — 선택값)
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      # §5.2 산식 계약: soft deadline 50분 + 적재 시퀀스 예산 12분 + 종료 마진 10분 = 4320s
+      # 산식과 연동된 값 — 단독 수정 금지
+      activeDeadlineSeconds: 4320
+      template:
+        spec:
+          # Never: 실패 시 새 파드로 1회 재시도(backoffLimit) — 파드 로그가 실행 단위와 1:1이 되어
+          # BATCH_RESULT '1 실행 = 1 마커 라인'(§5.6) 소비가 깔끔 (mart/s2job 관례)
+          restartPolicy: Never
+          imagePullSecrets:
+            - name: registry-pull-secret
+          containers:
+            - name: token-usage-collector
+              image: token-usage-collector:latest
+              imagePullPolicy: Always
+              envFrom:
+                - secretRef:
+                    name: token-usage-ch-secret
+              env:
+                - name: ENDPOINTS_FILE
+                  value: /etc/token-usage/endpoints.yaml
+              volumeMounts:
+                - name: endpoints
+                  mountPath: /etc/token-usage
+                  readOnly: true
+                - name: ca-bundle
+                  mountPath: /etc/token-usage-ca
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  # §7.2 (v1.6 OOM 실경험): limits 없는 배포 금지.
+                  # MAX_BUFFER_ROWS 20,000행 flush 전제의 1Gi
+                  memory: 1Gi
+              # CA 번들은 install.sh가 ConfigMap으로 주입(선택) — 있으면
+              # COLLECTOR_API_CA_BUNDLE=/etc/token-usage-ca/ca-bundle.pem (Secret 키)
+          volumes:
+            - name: endpoints
+              configMap:
+                name: token-usage-endpoints
+            - name: ca-bundle
+              configMap:
+                name: token-usage-ca-bundle
+                optional: true
