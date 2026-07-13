@@ -1,6 +1,6 @@
 # token-data-pipeline 설계 문서
 
-- 작성일: 2026-07-10 · **현재 버전 v1.4 (2026-07-12)** — 개정 이력은 §0
+- 작성일: 2026-07-10 · **현재 버전 v1.5 (2026-07-13)** — 개정 이력은 §0
 - 상태: 설계 확정 (사용자 승인), 구현 전
 - 참조: [gpu-data-pipeline 분석](../../gpu-data-pipeline-analysis.md), [token-usage-api-spec](https://github.com/YoonsungNam/token-usage-api-spec) (`token-usage-api.yaml` v1.1.0, 로컬 클론 `/home/mini/github/token-usage-api-spec`)
 
@@ -13,6 +13,7 @@
 | v1.2 | 2026-07-12 | 수집 확장 모델 신설(§5.9 적재 계약): API 미제공 소스(object storage·스냅샷 API) 확장 경로 + 비용 파생 원칙(§4.3). 2-포크 반박 검증 반영 — 어댑터 프레임워크 기각(YAGNI), 소스 유형별 별도 모듈 + 문서 계약 방식 채택. summary에 is_derived, dim_service에 source_type 추가 |
 | v1.3 | 2026-07-12 | 비용 2계층 확장 모델 신설(§4.4): Layer P(가격/차지백) / Layer C(GPU 타입·수행시간 기반 원가, PD분리 대응) 분리. 포크 검증 반영 — 동료 레포 실사(LLM 모델 개념 부재 확인), dim_model에 serving_type, 모델명 매핑 테이블 명시, 지표 이원화(총원가/실효원가), gpu_hours 할당 기준. 미결 12~15 추가 |
 | v1.4 | 2026-07-12 | 최종 리뷰 라운드(통합 정합·보안/개인정보·용량·premortem·준비도) 확정 16건 반영: dim_service source_type 스코프 교체(§5.9-6), 이벤트 분류→정책 표(§5.2), 적재 완료 데드라인 계약 9조, 조회 계정·데이터 경계·로깅 계약(보안 4건), 파티션 재설계(상세=일 단위)·deadline 산식 교정, 정정 프로토콜(§8.4)·백업/DR(§8.5), DB 소유권·GRANT 테이블 레벨 한정, mart 시간 계약, stage 환경 전제(실사). 미결 16~20 추가 |
+| v1.5 | 2026-07-13 | **조직 모델을 고정 3레벨(org_l1~l3)에서 가변 깊이 경로 배열(org_path Array)로 전환** — 사용자 확인: 실조직이 가변 깊이 위계. dim_user_org·mart 상세·org agg·미매핑 규칙·§9-1 협의 항목 일괄 개정. 서브트리 질의는 prefix 비교 표준 |
 
 ## 1. 배경과 목적
 
@@ -108,7 +109,7 @@ token-data-pipeline/
 | `fact.raw_token_usage_summary_1d` | toYYYYMM(date) | `(date, service)` | `cityHash64(service)` | 소행수 |
 | `token_data.dim_*` | (파티션 없음/단일) | 각 키 | `rand()` | 소용량 — 조인은 GLOBAL(아래) |
 | `mart.token_usage_1d` | **toYYYYMMDD(date)** | `(date, service, user_type, user_id, model)` | `cityHash64(service, user_id)` | raw와 co-location |
-| `mart.agg_token_*_1d` | toYYYYMM(date) | `(date, <grain 키>)` | `cityHash64(service)` 또는 grain 키 해시 | 소행수 |
+| `mart.agg_token_*_1d` | toYYYYMM(date) | `(date, <grain 키>)` | `cityHash64(service)` 또는 grain 키 해시 | 소행수. org agg는 grain 키가 `org_path Array(String)` — ORDER BY에 Array 허용, 샤딩키는 `cityHash64(arrayStringConcat(org_path, '>'))` |
 | `token_data.view_token_usage_1d` | **toYYYYMMDD(date)** | mart 상세 동일 | mart 상세 동일 | |
 | `token_data.view_token_usage_*_1d` (agg 3종) | toYYYYMM(date) | mart agg 동일 | mart agg 동일 | |
 
@@ -160,7 +161,7 @@ summary 행은 반드시 적재** — §5.2).
 | 테이블 | grain / 컬럼 요지 | 관리 주체 |
 |---|---|---|
 | `dim_service` | service — service_group, service, base_url, enabled UInt8, **source_type** LowCardinality(String) DEFAULT 'usage-api-v1', note, updated_at | **각 수집 모듈이 자기 source_type 범위만 원자 교체** (DELETE WHERE source_type='<자기 유형>' → INSERT, §5.9 계약 6조 — 전 테이블 교체 금지: 타 모듈 등록분 삭제 방지). 리뷰 #12의 "enabled=false 유지·항목 제거 금지"는 모듈별 범위 안에서 동일 적용 |
-| `dim_user_org` | **(user_id, effective_from)** — user_name, org_l1(사업부), org_l2(부서), org_l3(그룹), is_active UInt8, updated_at | assets/user-org |
+| `dim_user_org` | **(user_id, effective_from)** — user_name, **org_path Array(String)**(최상위→말단, 가변 깊이 — 예: `['DS부문','반도체연구소','공정연구팀','소자파트']`), org_depth UInt8, is_active UInt8, updated_at | assets/user-org |
 | `dim_model` | (model, effective_from) — provider, **serving_type**(internal\|external), input/cache_read/cache_creation/output 단가(USD per MTok), currency, note | assets/model-catalog 시드 SQL. serving_type은 §4.4 Layer C 대상 판별("원가 NULL"이 미수집인지 대상외인지 구분) |
 | `dim_budget` *(2단계, 선택)* | (scope_type: org\|service_group, scope, month) — budget_usd | 미결 §9-8 |
 | `view_token_usage_1d` | mart.token_usage_1d와 동일 컬럼 | mart STEP 2 |
@@ -182,16 +183,16 @@ summary 행은 반드시 적재** — §5.2).
   공유 테이블 쓰기 계약: **모든 작성자는 INSERT 시 created_by를 명시 삽입**(본 파이프라인은
   'token-pipeline' 고정). DDL에 `CONSTRAINT check_created_by CHECK created_by != ''`를 두어
   컬럼 생략을 INSERT 에러로 조기 검출하고, `validation.sql`에 "created_by='' 또는 예상 외 값 검출" 쿼리 상비.
-- view table의 최종 컬럼 계약은 사내 대시보드 협의로 확정 (미결 §9-1 — org 축 깊이(l2 vs l3),
+- view table의 최종 컬럼 계약은 사내 대시보드 협의로 확정 (미결 §9-1 — org 롤업 기본 표시 깊이,
   anonymous 버킷 표시, 불완전 데이터 마커 포함). 확정 전에는 mart와 동일 스키마로 운영.
 
 ### 4.3 mart DB (1차 집계)
 
 | 테이블 | grain | 내용 |
 |---|---|---|
-| `mart.token_usage_1d` | date × service × user × model | raw + 조직(org_l1~l3) + `total_input_tokens`(=input+cache_read+cache_creation) + `cost` Nullable(Float64) + created_by |
+| `mart.token_usage_1d` | date × service × user × model | raw + 조직(**org_path Array** + 편의 파생 `org_top`=org_path[1], `org_leaf`=말단) + `total_input_tokens`(=input+cache_read+cache_creation) + `cost` Nullable(Float64) + created_by |
 | `mart.agg_token_service_1d` | date × service_group × service | 토큰 합계, requests, distinct_users(detail에서 uniqExact, user_id≠''), reported_* 컬럼(=`fact.raw_token_usage_summary_1d`에서 조인한 서비스 보고값)과 차이 컬럼 |
-| `mart.agg_token_org_1d` | date × org_l1 × org_l2 | 부서별 합계 + distinct_users + **headcount**(로스터 기준 정원) + **adoption_rate**(=distinct_users/headcount) |
+| `mart.agg_token_org_1d` | **date × org_path (말단 경로 단위)** | 조직별 합계 + distinct_users + **headcount**(로스터에서 해당 경로 소속 정원) + **adoption_rate**. 상위 레벨 롤업은 쿼리 시 `arraySlice(org_path, 1, k)` GROUP BY — 조직 수 × 일 수준의 소행수라 사전 롤업 불요. **서브트리 질의 표준 = prefix 비교**: `arraySlice(org_path, 1, length(P)) = P` (조직명 전역 유니크에 의존하지 않음 — 부서장 "내 하위 전체" 뷰) |
 | `mart.agg_token_model_1d` | date × model × provider | 모델별 합계 + 서비스 수 |
 
 - `cost` = Σ(토큰별 단가 × 양) / 1e6. date 기준 유효 단가(`effective_from <= date` 최신 행) 사용.
@@ -461,7 +462,9 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
 
 ### 6.1 user-org (전 직원 로스터 → 조직 dimension)
 
-- **목표 데이터**: 사용 이력 여부와 무관한 **전 직원 로스터** + 조직 3레벨 + `(user_id, effective_from)` 이력.
+- **목표 데이터**: 사용 이력 여부와 무관한 **전 직원 로스터** + **조직 전체 경로(가변 깊이)** +
+  `(user_id, effective_from)` 이력. CSV 형식: 경로는 구분자 `>` 단일 컬럼(예:
+  `DS부문>반도체연구소>공정연구팀`) — 생성 도구가 `org_path` 배열로 분해(빈 세그먼트 거부).
   이것이 있어야 도입률(활성/정원)·1인당 사용량·미사용자 파악이 가능하다 (관점 분석 반영).
   **anonymous 계정 매핑이 제공되면 로스터에 포함**해 부서 귀속(미제공 시 unknown 버킷).
 - **1단계**: `csv_to_dim_user_org_insert.py` — CSV → INSERT SQL **생성** 도구 (실행과 분리, 리뷰 가능).
@@ -479,9 +482,10 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
   (소규모 부서 재식별 우려 기록).
 - **보존 규칙 (v1.4)**: 퇴사(is_active=0) 후 N년 경과 행은 삭제 또는 user_name 가명화 —
   N·방식은 사내 개인정보 보존 정책과 함께 확정(§9-7). 파기 요청 처리는 §8.3의 user_id 축 삭제 경로.
-- **미매핑 규칙** (리뷰 #13): 매핑 없는 user_id는 **org_l1/l2/l3 모두 'unknown'으로 통일**하며,
-  이 규칙은 §4.0의 빈 문자열 정규화보다 우선한다 (''과 'unknown'의 의미 구분).
-  anonymous 사용량을 'unknown'에 합산할지 별도 'anonymous' 버킷으로 분리할지는 §9-1 협의 안건.
+- **미매핑 규칙** (리뷰 #13, v1.5 개정): 매핑 없는 user_id는 **`org_path = ['unknown']`, org_depth=1**로
+  통일하며, 이 규칙은 §4.0의 빈 문자열 정규화보다 우선한다 (빈 배열과 'unknown'의 의미 구분 —
+  어떤 깊이의 롤업에서도 'unknown' 버킷이 최상위 1개로 나타남).
+  anonymous 사용량을 'unknown'에 합산할지 별도 `['anonymous']` 버킷으로 분리할지는 §9-1 협의 안건.
 
 ### 6.2 model-catalog (모델 단가)
 
@@ -664,8 +668,8 @@ ClickHouse가 유일 사본, 25개월 보존·차지백 근거). 동료 레포�
 
 | # | 항목 | 임시 방침 | 확정 방법 |
 |---|---|---|---|
-| 1 | 사내 대시보드 view table 컬럼 계약 — **org 축 깊이(l2 vs l3), anonymous 버킷 표시·per-user 행 조직 부착 여부, 불완전 데이터 마커, 노출 grain(per-user vs agg만), 소규모 부서(headcount 1~2) 셀 억제 기준** | mart와 동일 스키마 | 대시보드 담당과 협의 |
-| 2 | dim_user_org 소스 시스템 (인사/조직 DB — **전 직원 로스터+이력 제공 가능 여부**, **anon 매핑 제공의 정책 승인 여부**(별도 항목), §7.2 환경 데이터 경계 상속) | CSV 시드(로스터 형식) | 사내 확인 후 2단계 sync 설계 |
+| 1 | 사내 대시보드 view table 컬럼 계약 — **org 롤업 기본 표시 깊이·서브트리 필터 UX(가변 깊이 전제), anonymous 버킷 표시·per-user 행 조직 부착 여부, 불완전 데이터 마커, 노출 grain(per-user vs agg만), 소규모 조직(headcount 1~2) 셀 억제 기준** | mart와 동일 스키마 | 대시보드 담당과 협의 |
+| 2 | dim_user_org 소스 시스템 (인사/조직 DB — **전 직원 로스터+이력+조직 전체 경로(가변 깊이) 제공 가능 여부**, **anon 매핑 제공의 정책 승인 여부**(별도 항목), §7.2 환경 데이터 경계 상속) | CSV 시드(경로 `>` 구분 컬럼) | 사내 확인 후 2단계 sync 설계 |
 | 3 | company ClickHouse 클러스터명·네임스페이스·계정 정책 (+per-user 조회의 ROW POLICY/계정 분리 정책) | 동료와 동일('gpu-monitoring') 가정 | 사내 반입 시 확인 |
 | 4 | VM push 엔드포인트(vminsert)와 사내 VM 정책 | stage 홈랩 VM으로 검증 | 사내 확인 |
 | 5 | 모델 단가 통화(USD/KRW)·환율·실계약가 | USD 고정, cost는 참고 지표 | 비용 리포트 요구 확정 시 |
