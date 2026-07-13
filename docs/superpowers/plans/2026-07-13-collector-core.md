@@ -860,7 +860,7 @@ git commit -m "feat(collectors): pure normalization with contract validation and
   - `CHWriter.replace_service_day(entry, date, rows_iter, summary_row, audit_prev) -> int` — 시퀀스: (1) 기존 행 존재 SELECT (2) 있으면 audit append 후 detail+summary DELETE(`mutations_sync=2`, `_local` [+ON CLUSTER]) (3) rows_iter를 `max_buffer_rows` 단위 배치 INSERT (4) summary 1행 INSERT. 반환: 적재 행수
   - `CHWriter.fetch_prev_summary(service, date) -> dict | None` — audit용 기존 세대 요약 (detail 합계+행수, summary의 generated_at/collected_at)
   - `CHWriter.replace_dim_services(entries, source_type='usage-api-v1')` — 자기 source_type 범위 교체 (§5.9 계약 6조)
-  - 상수: `DB_FACT = "token_fact"`, `DB_DIM = "gpu_data"` (§9-18 협의 변경 지점 — 주석 명시)
+  - 상수: `DB_FACT = "fact"` (§9-18 확정: 공유), `DB_DIM = "gpu_data"` (§9-18 협의 변경 지점 — 주석 명시)
 
 - [ ] **Step 1: 실패하는 테스트** — `collectors/token-usage/tests/test_clickhouse_client.py`
 
@@ -961,9 +961,9 @@ def test_dim_replace_scopes_to_source_type():
     w.replace_dim_services([ENTRY])
     deletes = [c for c in ch.commands if "DELETE" in c[0]]
     assert len(deletes) == 1
-    assert "source_type" in deletes[0][0] and "dim_service_local" in deletes[0][0]
+    assert "source_type" in deletes[0][0] and "dim_token_service_local" in deletes[0][0]
     assert deletes[0][1] == {"stype": "usage-api-v1"}
-    assert any(i[0].endswith("dim_service_dist") for i in ch.inserts)
+    assert any(i[0].endswith("dim_token_service_dist") for i in ch.inserts)
 ```
 
 - [ ] **Step 2: 실패 확인**
@@ -1789,34 +1789,34 @@ if __name__ == "__main__":
 -- 실행 전 치환: {DATE} {SERVICE} {EXP_ROWS} {EXP_INPUT} {EXP_REQ}
 
 SELECT 'detail_row_count_mismatch' AS check_name, count() AS actual, {EXP_ROWS} AS expected
-FROM token_fact.raw_token_usage_1d_dist
+FROM fact.raw_token_usage_1d_dist
 WHERE date = '{DATE}' AND service = '{SERVICE}'
 HAVING count() != {EXP_ROWS}
 
 UNION ALL
 
 SELECT 'detail_input_sum_mismatch', sum(input_tokens), {EXP_INPUT}
-FROM token_fact.raw_token_usage_1d_dist
+FROM fact.raw_token_usage_1d_dist
 WHERE date = '{DATE}' AND service = '{SERVICE}'
 HAVING sum(input_tokens) != {EXP_INPUT}
 
 UNION ALL
 
 SELECT 'summary_row_missing', count(), 1
-FROM token_fact.raw_token_usage_summary_1d_dist
+FROM fact.raw_token_usage_summary_1d_dist
 WHERE date = '{DATE}' AND service = '{SERVICE}'
 HAVING count() != 1
 
 UNION ALL
 
 SELECT 'summary_matches_detail', s.requests, {EXP_REQ}
-FROM token_fact.raw_token_usage_summary_1d_dist AS s
+FROM fact.raw_token_usage_summary_1d_dist AS s
 WHERE s.date = '{DATE}' AND s.service = '{SERVICE}' AND s.requests != {EXP_REQ}
 
 UNION ALL
 
-SELECT 'dim_service_registered', count(), 1
-FROM gpu_data.dim_service_dist
+SELECT 'dim_token_service_registered', count(), 1
+FROM gpu_data.dim_token_service_dist
 WHERE service = '{SERVICE}' AND source_type = 'usage-api-v1'
 HAVING count() != 1
 
@@ -1824,7 +1824,7 @@ UNION ALL
 
 -- 재수집 멱등성: 2회 실행 후에도 행수 동일 (E2E 스크립트가 2회 실행)
 SELECT 'no_duplicate_after_rerun', count(), {EXP_ROWS}
-FROM token_fact.raw_token_usage_1d_dist
+FROM fact.raw_token_usage_1d_dist
 WHERE date = '{DATE}' AND service = '{SERVICE}'
 HAVING count() != {EXP_ROWS}
 ```
