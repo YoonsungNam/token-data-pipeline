@@ -1,4 +1,5 @@
 import time
+from dataclasses import fields as dc_fields
 from datetime import date as date_cls, datetime, timedelta, timezone
 
 from fastapi import FastAPI, Query, Request
@@ -133,3 +134,21 @@ def get_usage_summary(date: str | None = Query(None)):
     group, service = _identity()
     return {"serviceGroup": group, "service": service, "date": date,
             "generatedAt": generated_at(date), **summary}
+
+
+@app.post("/__mock/scenario")
+def set_scenario(payload: dict):
+    allowed = {f.name for f in dc_fields(ScenarioState)}
+    unknown = set(payload) - allowed
+    if unknown:
+        return _err(400, "invalid_scenario", f"unknown scenario fields: {sorted(unknown)}")
+    for key, value in payload.items():
+        setattr(SCN, key, value)
+    return {f.name: getattr(SCN, f.name) for f in dc_fields(ScenarioState)}
+
+
+@app.post("/__mock/reset")
+def reset_scenario():
+    global SCN
+    SCN = ScenarioState()
+    return {"status": "reset"}
