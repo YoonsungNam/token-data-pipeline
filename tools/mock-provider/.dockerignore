@@ -1,0 +1,4 @@
+tests/
+contract/
+__pycache__/
+*.pyc

@@ -1,0 +1,47 @@
+name: test-mock-provider
+
+on:
+  push:
+    branches: [main]
+    paths: ["tools/mock-provider/**", ".github/workflows/test-mock-provider.yml"]
+  pull_request:
+    paths: ["tools/mock-provider/**", ".github/workflows/test-mock-provider.yml"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/mock-provider
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -r requirements-dev.txt
+      - name: Unit tests
+        run: python -m pytest tests/ -v
+      - name: Conformance (계약 준수 — 시나리오 OFF 불변식)
+        run: ./run_conformance.sh
+
+  image:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/mock-provider
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t token-mock-provider:ci .
+      - name: Container smoke test
+        run: |
+          docker run -d --rm --name mock-smoke -p 18000:8000 \
+            -e MOCK_SERVICE="CI Smoke Svc" token-mock-provider:ci
+          for i in $(seq 1 25); do
+            if curl -sf http://127.0.0.1:18000/healthz > /dev/null; then break; fi
+            sleep 0.4
+          done
+          curl -sf http://127.0.0.1:18000/healthz
+          curl -sf "http://127.0.0.1:18000/v1/usage/summary?date=$(TZ=Asia/Seoul date -d yesterday +%F)" | grep -q "CI Smoke Svc"
+          docker stop mock-smoke

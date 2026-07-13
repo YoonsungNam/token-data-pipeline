@@ -319,9 +319,10 @@ def build_records(cfg: Config, date: str) -> list[UsageRecord]:
         uid = f"anon-{i:04d}"
         model = cfg.models[_det_int(cfg.seed, date, uid, "pick", lo=0, hi=len(cfg.models) - 1)]
         records.append(_record(cfg, date, uid, "anonymous", model))
-    # unclassified: userId null + 모델 단위 합산 행 (첫 모델 1행 + 'unknown' 1행)
-    records.append(_record(cfg, date, None, "unclassified", cfg.models[0]))
-    records.append(_record(cfg, date, None, "unclassified", "unknown"))
+    # unclassified: userId null + 모델 단위 합산 행 (첫 모델 1행 + 'unknown' 1행 — 중복 키 방지)
+    unclassified_models = list(dict.fromkeys([cfg.models[0], "unknown"]))
+    for model in unclassified_models:
+        records.append(_record(cfg, date, None, "unclassified", model))
     return records
 
 
@@ -447,7 +448,7 @@ def decode_cursor(cursor: str, date: str, limit: int) -> int:
         offset, c_date, c_limit = data["o"], data["d"], data["l"]
     except (binascii.Error, UnicodeDecodeError, ValueError, KeyError, TypeError) as exc:
         raise CursorError("cursor is malformed; restart pagination without cursor") from exc
-    if not isinstance(offset, int) or offset < 0:
+    if type(offset) is not int or offset < 0:
         raise CursorError("cursor is malformed; restart pagination without cursor")
     if c_date != date or c_limit != limit:
         raise CursorError("date/limit must match the first call of this pagination")
@@ -719,6 +720,11 @@ def get_usage_summary(date: str = Query(...)):
     return {"serviceGroup": group, "service": service, "date": date,
             "generatedAt": generated_at(date), **summary}
 ```
+
+> **적용된 편차 (리뷰 픽스)**: FastAPI 기본 422 검증 응답이 계약의 `{"code","message"}` 규약을 깨므로,
+> 실제 구현은 (a) `date: str | None = Query(None)` + 수동 누락 검증(400 invalid_date),
+> (b) `limit: str = Query("1000")` + 수동 int 파싱(400 invalid_limit),
+> (c) `RequestValidationError` 핸들러(400 invalid_request 안전망)를 사용한다.
 
 - [ ] **Step 5: 통과 확인**
 
@@ -1054,6 +1060,10 @@ docker stop mock-smoke
 ```
 
 Expected: `{"status":"ok"}` + summary JSON에 `"service": "Smoke Svc"` 포함, 컨테이너 정상 종료.
+
+> **적용된 편차**: 개발 머신에 docker 부재(kubeadm/containerd 노드) — 로컬 스모크는 동일
+> 엔트리포인트의 uvicorn 직접 기동으로 대체, 이미지 빌드 검증은 CI 워크플로의 docker build
+> 스텝(Task 9)으로 이관.
 
 - [ ] **Step 3: Commit**
 
