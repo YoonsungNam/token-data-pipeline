@@ -1,15 +1,19 @@
 -- =============================================================
--- Company/Stage ClickHouse DDL — gpu_data.dim_service
+-- Company/Stage ClickHouse DDL — gpu_data.dim_token_service
 -- Target cluster: gpu-monitoring
 -- Writer: token_collector — 각 수집 모듈이 자기 source_type 범위만
 --         원자 교체 (DELETE WHERE source_type='<유형>' → INSERT,
 --         mutations_sync=2 — 스펙 §4.2·§5.9 계약 6조)
 -- 주의: gpu_data는 기존(동료 소유) DB — CREATE DATABASE 하지 않음.
 --       이슈 #1에서 dim·view의 gpu_data 배치 확정.
--- 협의 지점: 테이블명 접두사(dim_token_service?) — ddl/README.md
+-- 네이밍(확정): dim_token_* 접두사 사용 — gpu_data는 공유 DB이므로
+--   (1) 기존/향후 GPU 파이프라인 테이블과의 이름 충돌 예방,
+--   (2) 테이블명만으로 토큰 파이프라인 소유임을 식별(정리·마이그레이션 시
+--       오조작 방지)이 목적. 토큰 파이프라인이 gpu_data에 만드는 모든
+--   테이블(dim_token_*, view_token_usage_*)이 같은 규칙을 따른다.
 -- =============================================================
 
-CREATE TABLE IF NOT EXISTS gpu_data.dim_service_local
+CREATE TABLE IF NOT EXISTS gpu_data.dim_token_service_local
 ON CLUSTER 'gpu-monitoring'
 (
     service_group LowCardinality(String) COMMENT '과제명 (endpoints.yaml 정본)',
@@ -21,13 +25,13 @@ ON CLUSTER 'gpu-monitoring'
     updated_at    DateTime('Asia/Seoul') COMMENT '레지스트리 교체 시각'
 )
 ENGINE = ReplicatedMergeTree(
-    '/clickhouse/tables/{shard}/gpu_data/dim_service_local',
+    '/clickhouse/tables/{shard}/gpu_data/dim_token_service_local',
     '{replica}'
 )
 ORDER BY (service)
 SETTINGS index_granularity = 8192;
 
-CREATE TABLE IF NOT EXISTS gpu_data.dim_service_dist
+CREATE TABLE IF NOT EXISTS gpu_data.dim_token_service_dist
 ON CLUSTER 'gpu-monitoring'
 (
     service_group LowCardinality(String),
@@ -38,4 +42,4 @@ ON CLUSTER 'gpu-monitoring'
     note          String,
     updated_at    DateTime('Asia/Seoul')
 )
-ENGINE = Distributed('gpu-monitoring', 'gpu_data', 'dim_service_local', rand());
+ENGINE = Distributed('gpu-monitoring', 'gpu_data', 'dim_token_service_local', rand());

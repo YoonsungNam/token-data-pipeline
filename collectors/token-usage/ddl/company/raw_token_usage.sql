@@ -1,12 +1,12 @@
 -- =============================================================
--- Company/Stage ClickHouse DDL — token_fact 수집 원본 3테이블
+-- Company/Stage ClickHouse DDL — fact 수집 원본 3테이블
 -- Target cluster: gpu-monitoring (company 2s×2r / stage 1s×1r)
 -- Writer: token_collector (스펙 v1.6 §4.0~4.1, §8.4)
--- 협의 지점: token_fact 전용 DB는 §9-18 기본안 — 공유 fact DB로
+-- 협의 지점: fact 전용 DB는 §9-18 기본안 — 공유 fact DB로
 --            확정되면 DB명만 치환 (ddl/README.md 참조)
 -- =============================================================
 
-CREATE DATABASE IF NOT EXISTS token_fact
+CREATE DATABASE IF NOT EXISTS fact
 ON CLUSTER 'gpu-monitoring';
 
 -- -------------------------------------------------------------
@@ -15,7 +15,7 @@ ON CLUSTER 'gpu-monitoring';
 --    뮤테이션 재작성 범위 축소 (§4.0 v1.4 파티션 재설계)
 -- -------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS token_fact.raw_token_usage_1d_local
+CREATE TABLE IF NOT EXISTS fact.raw_token_usage_1d_local
 ON CLUSTER 'gpu-monitoring'
 (
     date                   Date                   COMMENT '사용량 발생 일자 (KST)',
@@ -35,7 +35,7 @@ ON CLUSTER 'gpu-monitoring'
     collected_at           DateTime('Asia/Seoul') COMMENT '수집기 적재 시각'
 )
 ENGINE = ReplicatedMergeTree(
-    '/clickhouse/tables/{shard}/token_fact/raw_token_usage_1d_local',
+    '/clickhouse/tables/{shard}/fact/raw_token_usage_1d_local',
     '{replica}'
 )
 PARTITION BY toYYYYMMDD(date)
@@ -43,7 +43,7 @@ ORDER BY (date, service, user_type, user_id, model)
 TTL date + INTERVAL 25 MONTH
 SETTINGS index_granularity = 8192;
 
-CREATE TABLE IF NOT EXISTS token_fact.raw_token_usage_1d_dist
+CREATE TABLE IF NOT EXISTS fact.raw_token_usage_1d_dist
 ON CLUSTER 'gpu-monitoring'
 (
     date                   Date,
@@ -62,7 +62,7 @@ ON CLUSTER 'gpu-monitoring'
     generated_at           DateTime('Asia/Seoul'),
     collected_at           DateTime('Asia/Seoul')
 )
-ENGINE = Distributed('gpu-monitoring', 'token_fact', 'raw_token_usage_1d_local',
+ENGINE = Distributed('gpu-monitoring', 'fact', 'raw_token_usage_1d_local',
                      cityHash64(service, user_id));
 
 -- -------------------------------------------------------------
@@ -71,7 +71,7 @@ ENGINE = Distributed('gpu-monitoring', 'token_fact', 'raw_token_usage_1d_local',
 --    detail 합산 + is_derived=1 (§4.1·§5.9 계약 3조)
 -- -------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS token_fact.raw_token_usage_summary_1d_local
+CREATE TABLE IF NOT EXISTS fact.raw_token_usage_summary_1d_local
 ON CLUSTER 'gpu-monitoring'
 (
     date                      Date                   COMMENT '사용량 발생 일자 (KST)',
@@ -91,7 +91,7 @@ ON CLUSTER 'gpu-monitoring'
     collected_at              DateTime('Asia/Seoul')
 )
 ENGINE = ReplicatedMergeTree(
-    '/clickhouse/tables/{shard}/token_fact/raw_token_usage_summary_1d_local',
+    '/clickhouse/tables/{shard}/fact/raw_token_usage_summary_1d_local',
     '{replica}'
 )
 PARTITION BY toYYYYMM(date)
@@ -99,7 +99,7 @@ ORDER BY (date, service)
 TTL date + INTERVAL 25 MONTH
 SETTINGS index_granularity = 8192;
 
-CREATE TABLE IF NOT EXISTS token_fact.raw_token_usage_summary_1d_dist
+CREATE TABLE IF NOT EXISTS fact.raw_token_usage_summary_1d_dist
 ON CLUSTER 'gpu-monitoring'
 (
     date                      Date,
@@ -118,7 +118,7 @@ ON CLUSTER 'gpu-monitoring'
     generated_at              DateTime('Asia/Seoul'),
     collected_at              DateTime('Asia/Seoul')
 )
-ENGINE = Distributed('gpu-monitoring', 'token_fact', 'raw_token_usage_summary_1d_local',
+ENGINE = Distributed('gpu-monitoring', 'fact', 'raw_token_usage_summary_1d_local',
                      cityHash64(service));
 
 -- -------------------------------------------------------------
@@ -127,7 +127,7 @@ ENGINE = Distributed('gpu-monitoring', 'token_fact', 'raw_token_usage_summary_1d
 --    세대의 요약을 보존 — 차지백 정정 감사의 최소 비용 장치
 -- -------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS token_fact.collect_audit_1d_local
+CREATE TABLE IF NOT EXISTS fact.collect_audit_1d_local
 ON CLUSTER 'gpu-monitoring'
 (
     date                       Date                   COMMENT '교체된 데이터의 대상 일자',
@@ -143,7 +143,7 @@ ON CLUSTER 'gpu-monitoring'
     replaced_at                DateTime('Asia/Seoul') COMMENT '교체(재수집) 시각'
 )
 ENGINE = ReplicatedMergeTree(
-    '/clickhouse/tables/{shard}/token_fact/collect_audit_1d_local',
+    '/clickhouse/tables/{shard}/fact/collect_audit_1d_local',
     '{replica}'
 )
 PARTITION BY toYYYYMM(date)
@@ -151,7 +151,7 @@ ORDER BY (date, service, replaced_at)
 TTL date + INTERVAL 25 MONTH
 SETTINGS index_granularity = 8192;
 
-CREATE TABLE IF NOT EXISTS token_fact.collect_audit_1d_dist
+CREATE TABLE IF NOT EXISTS fact.collect_audit_1d_dist
 ON CLUSTER 'gpu-monitoring'
 (
     date                       Date,
@@ -166,5 +166,5 @@ ON CLUSTER 'gpu-monitoring'
     prev_row_count             UInt64,
     replaced_at                DateTime('Asia/Seoul')
 )
-ENGINE = Distributed('gpu-monitoring', 'token_fact', 'collect_audit_1d_local',
+ENGINE = Distributed('gpu-monitoring', 'fact', 'collect_audit_1d_local',
                      cityHash64(service));

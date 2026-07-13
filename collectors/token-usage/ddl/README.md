@@ -7,20 +7,24 @@
 
 | 파일 | 내용 |
 |---|---|
-| `company/raw_token_usage.sql` | `token_fact` DB + 수집 원본 3테이블 (raw 상세 / summary / 교체 감사) — local+dist 쌍 |
-| `company/dim_service.sql` | `gpu_data.dim_service` — 서비스 레지스트리 (이슈 #1 확정: gpu_data 공유) |
+| `company/raw_token_usage.sql` | `fact` DB + 수집 원본 3테이블 (raw 상세 / summary / 교체 감사) — local+dist 쌍 |
+| `company/dim_service.sql` | `gpu_data.dim_token_service` — 서비스 레지스트리 (이슈 #1 확정: gpu_data 공유) |
 | `company/accounts.sql` | 계정 3종(`token_collector`/`token_mart`/`token_dashboard_reader`) + **테이블 레벨** GRANT |
 
-## 협의가 필요한 결정 지점 (§9-18 — 이 초안의 기본값)
+## 확정된 결정 (2026-07-13, 소유자 협의)
 
-1. **fact DB**: 초안은 **전용 DB `token_fact`** 사용. 이유: 기존 `mart` 계정이 `mart.*`에
-   DB 레벨 광역 권한(DROP TABLE 포함)을 갖고 있어, 같은 패턴이 `fact`에도 있다면 상호 정리
-   스크립트의 사정권을 분리하는 게 안전하다고 판단. **기존 `fact` DB 공유가 더 낫다면 이
-   파일에서 DB명만 치환하면 됨** — 그 경우 기존 계정들의 `fact.*` 권한 범위 확인 필요.
-2. **테이블 이름 접두사**: `gpu_data.dim_service`는 범용 이름 — gpu_data에 추가하실 미래
-   테이블과 충돌 우려가 있으면 `dim_token_service` 등 접두사로 변경 가능.
-3. **정례 뮤테이션**: 수집이 (date, service) 단위 delete-then-insert라 서비스 30개 기준
-   일 ~60건 (기존 행 없으면 스킵, rerun은 IN 배칭). 허용 수준인지 확인 요청.
+1. **fact DB 공유 확정** — 전용 token_fact 안을 폐기하고 기존 `fact` DB에 `raw_token_usage_*`·
+   `collect_audit_1d`를 둔다. 우리 계정 GRANT는 테이블 레벨 한정 유지.
+2. **`gpu_data.dim_token_service`로 확정** — `dim_token_*` 접두사 규칙 채택
+   (사유는 dim_token_service.sql 헤더 주석 참조 — 공유 DB 내 충돌 예방 + 소유 식별).
+   gpu_data에 만드는 토큰 파이프라인 테이블 전부(view_token_usage_* 포함)가 이 규칙을 따른다.
+3. **정례 뮤테이션 예산 (제안)** — 동료 파이프라인 실측: 기존 정례 뮤테이션은
+   시간당 snap 배치 6건(dim 3테이블 × 2배치) + 일배치 mart 11건 ≈ **일 ~155건**이 이미 운영 중.
+   토큰 파이프라인 추가분은 일 ~68건(수집 30서비스×2테이블 + mart 8테이블)으로 기존의 절반 이하.
+   제안 예산: **일 총량 150건 / 피크 창(02:00~03:00) 80건** — 상세 테이블이 일 단위 파티션이라
+   뮤테이션당 재작성 범위가 동료의 월 파티션 케이스보다 작고, mutations_sync=2 직렬 실행이라
+   큐 적체 없음. 초과 시 대응: rerun IN 배칭(설계 반영됨)·no-op 스킵 확대.
+   → 소유자 확인 후 스펙 §4.0에 확정 수치로 반영 예정.
 
 ## 환경 방침
 
