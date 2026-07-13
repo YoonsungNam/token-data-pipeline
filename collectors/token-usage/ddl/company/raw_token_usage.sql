@@ -1,0 +1,169 @@
+-- =============================================================
+-- Company/Stage ClickHouse DDL — fact 수집 원본 3테이블
+-- Target cluster: gpu-monitoring (company 2s×2r / stage 1s×1r)
+-- Writer: token_collector (스펙 v1.6 §4.0~4.1, §8.4)
+-- §9-18 확정(2026-07-13): 공유 fact DB 사용 (ddl/README.md 참조)
+-- =============================================================
+
+CREATE DATABASE IF NOT EXISTS fact
+ON CLUSTER 'gpu-monitoring';
+
+-- -------------------------------------------------------------
+-- 1) 사용자×모델 일별 상세 (API detail 원본)
+--    멱등 단위: (date, service) delete-then-insert — 일 파티션으로
+--    뮤테이션 재작성 범위 축소 (§4.0 v1.4 파티션 재설계)
+-- -------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS fact.raw_token_usage_1d_local
+ON CLUSTER 'gpu-monitoring'
+(
+    date                   Date                   COMMENT '사용량 발생 일자 (KST)',
+    service_group          LowCardinality(String) COMMENT '과제명 — 정본 = endpoints.yaml (§5.0)',
+    service                LowCardinality(String) COMMENT '서비스 식별자 — 정본 = endpoints.yaml (§5.0)',
+    reported_service_group LowCardinality(String) COMMENT '응답 원문 보존 (감사·계약 위반 추적)',
+    reported_service       LowCardinality(String) COMMENT '응답 원문 보존',
+    user_id                String                 COMMENT '사내 id — unclassified는 빈 문자열 (§5.4)',
+    user_type              LowCardinality(String) COMMENT 'identified | anonymous | unclassified',
+    model                  LowCardinality(String) COMMENT 'LLM 모델 — unknown 허용 (계약 표준값)',
+    input_tokens           UInt64                 COMMENT '순수 input (cache read/creation 제외)',
+    cache_read_tokens      UInt64                 COMMENT '생략 시 0 정규화',
+    cache_creation_tokens  UInt64                 COMMENT '생략 시 0 정규화',
+    output_tokens          UInt64                 COMMENT 'reasoning 포함',
+    requests               UInt64                 COMMENT 'provider API 호출 수',
+    generated_at           DateTime('Asia/Seoul') COMMENT '마지막 페이지의 generatedAt (§5.3 불변성 검사 통과값)',
+    collected_at           DateTime('Asia/Seoul') COMMENT '수집기 적재 시각'
+)
+ENGINE = ReplicatedMergeTree(
+    '/clickhouse/tables/{shard}/fact/raw_token_usage_1d_local',
+    '{replica}'
+)
+PARTITION BY toYYYYMMDD(date)
+ORDER BY (date, service, user_type, user_id, model)
+TTL date + INTERVAL 25 MONTH
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS fact.raw_token_usage_1d_dist
+ON CLUSTER 'gpu-monitoring'
+(
+    date                   Date,
+    service_group          LowCardinality(String),
+    service                LowCardinality(String),
+    reported_service_group LowCardinality(String),
+    reported_service       LowCardinality(String),
+    user_id                String,
+    user_type              LowCardinality(String),
+    model                  LowCardinality(String),
+    input_tokens           UInt64,
+    cache_read_tokens      UInt64,
+    cache_creation_tokens  UInt64,
+    output_tokens          UInt64,
+    requests               UInt64,
+    generated_at           DateTime('Asia/Seoul'),
+    collected_at           DateTime('Asia/Seoul')
+)
+ENGINE = Distributed('gpu-monitoring', 'fact', 'raw_token_usage_1d_local',
+                     cityHash64(service, user_id));
+
+-- -------------------------------------------------------------
+-- 2) 서비스 일별 summary (API summary 원본 — 대사 기준 + coverage 게이트)
+--    NODATA여도 이 행은 반드시 적재 (§5.2), summary 미제공 소스는
+--    detail 합산 + is_derived=1 (§4.1·§5.9 계약 3조)
+-- -------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS fact.raw_token_usage_summary_1d_local
+ON CLUSTER 'gpu-monitoring'
+(
+    date                      Date                   COMMENT '사용량 발생 일자 (KST)',
+    service_group             LowCardinality(String) COMMENT '정본 = endpoints.yaml',
+    service                   LowCardinality(String) COMMENT '정본 = endpoints.yaml',
+    reported_service_group    LowCardinality(String) COMMENT '응답 원문 보존',
+    reported_service          LowCardinality(String) COMMENT '응답 원문 보존',
+    input_tokens              UInt64,
+    cache_read_tokens         UInt64,
+    cache_creation_tokens     UInt64,
+    output_tokens             UInt64,
+    requests                  UInt64,
+    distinct_users            UInt32                 COMMENT '서비스 보고값 — 비가산(교차 합산 금지)',
+    distinct_identified_users Nullable(UInt32)       COMMENT 'optional 필드 — 미제공 시 NULL',
+    is_derived                UInt8                  COMMENT '1 = detail 합산 파생 (검증 스킵·diff NULL — §4.1)',
+    generated_at              DateTime('Asia/Seoul'),
+    collected_at              DateTime('Asia/Seoul')
+)
+ENGINE = ReplicatedMergeTree(
+    '/clickhouse/tables/{shard}/fact/raw_token_usage_summary_1d_local',
+    '{replica}'
+)
+PARTITION BY toYYYYMM(date)
+ORDER BY (date, service)
+TTL date + INTERVAL 25 MONTH
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS fact.raw_token_usage_summary_1d_dist
+ON CLUSTER 'gpu-monitoring'
+(
+    date                      Date,
+    service_group             LowCardinality(String),
+    service                   LowCardinality(String),
+    reported_service_group    LowCardinality(String),
+    reported_service          LowCardinality(String),
+    input_tokens              UInt64,
+    cache_read_tokens         UInt64,
+    cache_creation_tokens     UInt64,
+    output_tokens             UInt64,
+    requests                  UInt64,
+    distinct_users            UInt32,
+    distinct_identified_users Nullable(UInt32),
+    is_derived                UInt8,
+    generated_at              DateTime('Asia/Seoul'),
+    collected_at              DateTime('Asia/Seoul')
+)
+ENGINE = Distributed('gpu-monitoring', 'fact', 'raw_token_usage_summary_1d_local',
+                     cityHash64(service));
+
+-- -------------------------------------------------------------
+-- 3) 교체 감사 이력 (§8.4 정정 프로토콜 — append-only)
+--    재수집이 기존 (date, service)를 덮어쓸 때 DELETE 직전 기존
+--    세대의 요약을 보존 — 차지백 정정 감사의 최소 비용 장치
+-- -------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS fact.collect_audit_1d_local
+ON CLUSTER 'gpu-monitoring'
+(
+    date                       Date                   COMMENT '교체된 데이터의 대상 일자',
+    service                    LowCardinality(String) COMMENT '정본 서비스명',
+    prev_generated_at          DateTime('Asia/Seoul') COMMENT '교체 전 세대의 generatedAt',
+    prev_collected_at          DateTime('Asia/Seoul') COMMENT '교체 전 세대의 적재 시각',
+    prev_input_tokens          UInt64                 COMMENT '교체 전 세대 합계',
+    prev_cache_read_tokens     UInt64,
+    prev_cache_creation_tokens UInt64,
+    prev_output_tokens         UInt64,
+    prev_requests              UInt64,
+    prev_row_count             UInt64                 COMMENT '교체 전 세대 detail 행수',
+    replaced_at                DateTime('Asia/Seoul') COMMENT '교체(재수집) 시각'
+)
+ENGINE = ReplicatedMergeTree(
+    '/clickhouse/tables/{shard}/fact/collect_audit_1d_local',
+    '{replica}'
+)
+PARTITION BY toYYYYMM(date)
+ORDER BY (date, service, replaced_at)
+TTL date + INTERVAL 25 MONTH
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS fact.collect_audit_1d_dist
+ON CLUSTER 'gpu-monitoring'
+(
+    date                       Date,
+    service                    LowCardinality(String),
+    prev_generated_at          DateTime('Asia/Seoul'),
+    prev_collected_at          DateTime('Asia/Seoul'),
+    prev_input_tokens          UInt64,
+    prev_cache_read_tokens     UInt64,
+    prev_cache_creation_tokens UInt64,
+    prev_output_tokens         UInt64,
+    prev_requests              UInt64,
+    prev_row_count             UInt64,
+    replaced_at                DateTime('Asia/Seoul')
+)
+ENGINE = Distributed('gpu-monitoring', 'fact', 'collect_audit_1d_local',
+                     cityHash64(service));

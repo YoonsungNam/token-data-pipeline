@@ -1,0 +1,37 @@
+name: test-collector
+
+on:
+  push:
+    branches: [main]
+    paths: ["collectors/token-usage/**", "tools/mock-provider/**",
+            ".github/workflows/test-collector.yml"]
+  pull_request:
+    paths: ["collectors/token-usage/**", "tools/mock-provider/**",
+            ".github/workflows/test-collector.yml"]
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: collectors/token-usage
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest tests/ -v --ignore=tests/e2e
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r collectors/token-usage/requirements-dev.txt
+      - name: Build mock image
+        run: docker build -t token-mock-provider:e2e tools/mock-provider
+      - name: Run E2E
+        run: ./collectors/token-usage/tests/e2e/run_e2e.sh
