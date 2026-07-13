@@ -18,7 +18,7 @@ def decode_cursor(cursor: str, date: str, limit: int) -> int:
         offset, c_date, c_limit = data["o"], data["d"], data["l"]
     except (binascii.Error, UnicodeDecodeError, ValueError, KeyError, TypeError) as exc:
         raise CursorError("cursor is malformed; restart pagination without cursor") from exc
-    if not isinstance(offset, int) or offset < 0:
+    if type(offset) is not int or offset < 0:
         raise CursorError("cursor is malformed; restart pagination without cursor")
     if c_date != date or c_limit != limit:
         raise CursorError("date/limit must match the first call of this pagination")
