@@ -1,3 +1,5 @@
+import pytest
+
 from app.config import load_config
 
 
@@ -20,3 +22,18 @@ def test_env_override(monkeypatch):
     cfg = load_config()
     assert cfg.users == 3
     assert cfg.models == ["m1", "m2"]
+
+
+def test_models_deduped(monkeypatch):
+    monkeypatch.setenv("MOCK_MODELS", "m1,m2,m1")
+    assert load_config().models == ["m1", "m2"]
+
+
+def test_negative_env_rejected(monkeypatch):
+    monkeypatch.setenv("MOCK_RETENTION_DAYS", "-1")
+    with pytest.raises(ValueError):
+        load_config()
+    monkeypatch.delenv("MOCK_RETENTION_DAYS")
+    monkeypatch.setenv("MOCK_USERS", "-5")
+    with pytest.raises(ValueError):
+        load_config()

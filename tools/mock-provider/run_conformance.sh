@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 PORT="${PORT:-8000}"
-DATE_ARG="${1:-$(date -d "yesterday" +%F)}"
+DATE_ARG="${1:-$(TZ=Asia/Seoul date -d "yesterday" +%F)}"
 PYTHON="${PYTHON:-python3}"
 export MOCK_USERS="${MOCK_USERS:-600}"
 

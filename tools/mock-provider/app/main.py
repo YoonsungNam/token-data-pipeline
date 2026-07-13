@@ -34,6 +34,11 @@ async def _validation_error_handler(request: Request, exc: RequestValidationErro
     return _err(400, "invalid_request", "malformed or missing query parameters")
 
 
+@app.exception_handler(Exception)
+async def _internal_error_handler(request: Request, exc: Exception):
+    return _err(500, "internal_error", "unexpected server error")
+
+
 def _shared_gate() -> JSONResponse | None:
     """요청 공통 게이트: 429/503 주기 시나리오 (OFF면 통과)."""
     SCN.request_count += 1
@@ -58,13 +63,13 @@ def _date_gate(raw_date: str) -> tuple[date_cls | None, JSONResponse | None]:
     today = now_kst().date()
     if d >= today:
         return None, _err(400, "invalid_date", "date must be a past day (KST)")
-    if d < today - timedelta(days=CFG.retention_days):
-        return None, _err(404, "data_not_retained",
-                          "usage data for the requested date is past the retention window")
     if time.monotonic() - STARTED_AT < SCN.not_ready_until_uptime_s:
         return None, _err(409, "data_not_ready",
                           "usage for the requested date is not finalized yet; retry later",
                           retry_after=SCN.retry_after_s)
+    if d < today - timedelta(days=CFG.retention_days):
+        return None, _err(404, "data_not_retained",
+                          "usage data for the requested date is past the retention window")
     return d, None
 
 
@@ -139,12 +144,33 @@ def get_usage_summary(date: str | None = Query(None)):
             "generatedAt": generated_at(date), **summary}
 
 
+_SCENARIO_RULES: dict[str, tuple[type, int | float]] = {
+    # field: (required type, minimum)
+    "not_ready_until_uptime_s": (float, 0),
+    "retry_after_s": (int, 1),            # 계약 Retry-After minimum: 1
+    "rate_limit_every": (int, 0),
+    "error_503_every": (int, 0),
+    "summary_extra_pct": (int, -99),      # -100 이하면 음수 토큰 → 계약 minimum: 0 위반
+    "name_drift": (str, 0),
+    "generated_at_change_at_page": (int, 0),
+    "not_ready_at_page": (int, 0),
+}
+
+
 @app.post("/__mock/scenario")
 def set_scenario(payload: dict):
-    allowed = {f.name for f in dc_fields(ScenarioState)}
-    unknown = set(payload) - allowed
+    unknown = set(payload) - set(_SCENARIO_RULES)
     if unknown:
         return _err(400, "invalid_scenario", f"unknown scenario fields: {sorted(unknown)}")
+    for key, value in payload.items():
+        want, minimum = _SCENARIO_RULES[key]
+        if want is float and type(value) is int:
+            value = float(value)                      # uptime 초는 int 입력 허용
+        if type(value) is not want:                   # bool 거부 포함 (type is 비교)
+            return _err(400, "invalid_scenario", f"{key} must be {want.__name__}")
+        if want is not str and value < minimum:
+            return _err(400, "invalid_scenario", f"{key} must be >= {minimum}")
+        payload[key] = value
     for key, value in payload.items():
         setattr(SCN, key, value)
     return {f.name: getattr(SCN, f.name) for f in dc_fields(ScenarioState)}

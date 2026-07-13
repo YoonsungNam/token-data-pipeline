@@ -69,3 +69,29 @@ def test_409_at_page(client):
     p2 = client.get("/v1/usage", params={"date": d, "limit": 3,
                                          "cursor": p1.json()["nextCursor"]})
     assert p2.status_code == 409
+
+
+def test_scenario_value_type_and_bounds_rejected(client):
+    for bad in ({"rate_limit_every": "3"}, {"rate_limit_every": True},
+                {"retry_after_s": 0}, {"summary_extra_pct": -150},
+                {"name_drift": 5}, {"request_count": 0}):
+        r = client.post("/__mock/scenario", json=bad)
+        assert r.status_code == 400, bad
+        assert r.json()["code"] == "invalid_scenario"
+
+
+def test_unhandled_exception_returns_contract_500(client, monkeypatch):
+    def boom(cfg, date):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(main, "build_records", boom)
+    raising_client = TestClient(main.app, raise_server_exceptions=False)
+    r = raising_client.get("/v1/usage", params={"date": yday()})
+    assert r.status_code == 500
+    assert r.json() == {"code": "internal_error", "message": "unexpected server error"}
+
+
+def test_not_ready_beats_retention(client):
+    client.post("/__mock/scenario", json={"not_ready_until_uptime_s": 10 ** 9})
+    old = (main.now_kst().date() - timedelta(days=main.CFG.retention_days + 1)).isoformat()
+    r = client.get("/v1/usage", params={"date": old})
+    assert r.status_code == 409          # 409가 404보다 우선 (문서 정합)
