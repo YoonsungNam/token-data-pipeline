@@ -319,9 +319,10 @@ def build_records(cfg: Config, date: str) -> list[UsageRecord]:
         uid = f"anon-{i:04d}"
         model = cfg.models[_det_int(cfg.seed, date, uid, "pick", lo=0, hi=len(cfg.models) - 1)]
         records.append(_record(cfg, date, uid, "anonymous", model))
-    # unclassified: userId null + 모델 단위 합산 행 (첫 모델 1행 + 'unknown' 1행)
-    records.append(_record(cfg, date, None, "unclassified", cfg.models[0]))
-    records.append(_record(cfg, date, None, "unclassified", "unknown"))
+    # unclassified: userId null + 모델 단위 합산 행 (첫 모델 1행 + 'unknown' 1행 — 중복 키 방지)
+    unclassified_models = list(dict.fromkeys([cfg.models[0], "unknown"]))
+    for model in unclassified_models:
+        records.append(_record(cfg, date, None, "unclassified", model))
     return records
 
 

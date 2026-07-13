@@ -60,3 +60,12 @@ def test_api_dict_omits_zero_cache_fields():
 
 def test_generated_at_kst_format():
     assert generated_at("2026-06-15") == "2026-06-16T02:05:00+09:00"
+
+
+def test_unknown_as_first_model_does_not_duplicate_keys():
+    cfg = Config(users=1, anon_users=0, models=["unknown", "m-b"], seed="t")
+    recs = build_records(cfg, DATE)
+    keys = [(r.user_id, r.user_type, r.model) for r in recs]
+    assert len(keys) == len(set(keys))
+    unknown = [r for r in recs if r.user_type == "unclassified" and r.model == "unknown"]
+    assert len(unknown) == 1
