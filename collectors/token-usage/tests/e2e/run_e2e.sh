@@ -10,7 +10,10 @@ SEED="e2e-seed-1"
 docker network create tokene2e 2>/dev/null || true
 trap 'docker rm -f ch-e2e mock-e2e >/dev/null 2>&1 || true; docker network rm tokene2e >/dev/null 2>&1 || true' EXIT
 
+# CLICKHOUSE_SKIP_USER_SETUP=1: 공식 이미지는 비밀번호 미설정 시 default 유저의
+# 네트워크 접근을 차단(localhost 전용) — published port 경유(브리지 IP) 쿼리가 403이 됨
 docker run -d --rm --name ch-e2e --network tokene2e -p 18123:8123 \
+  -e CLICKHOUSE_SKIP_USER_SETUP=1 \
   clickhouse/clickhouse-server:24.8
 docker run -d --rm --name mock-e2e --network tokene2e -p 18000:8000 \
   -e MOCK_SERVICE_GROUP="Mock Group" -e MOCK_SERVICE="Mock Service A" \
@@ -50,7 +53,12 @@ sql = re.sub(r"\bdim_service_(local|dist)\b", r"dim_token_service_\1", sql)
 for stmt in sql.split(";"):
     if stmt.strip():
         req = urllib.request.Request("http://127.0.0.1:18123/", data=(stmt + ";").encode())
-        urllib.request.urlopen(req).read()
+        try:
+            urllib.request.urlopen(req).read()
+        except urllib.error.HTTPError as e:
+            print(f"DDL failed (HTTP {e.code}): {e.read().decode(errors='replace')}")
+            print(f"statement: {stmt.strip()[:200]}")
+            raise SystemExit(1)
 print("DDL applied (single-node transformed)")
 PY
 
