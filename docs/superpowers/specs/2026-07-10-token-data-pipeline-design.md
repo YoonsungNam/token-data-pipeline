@@ -1,7 +1,7 @@
 # token-data-pipeline 설계 문서
 
-- 작성일: 2026-07-10 · **현재 버전 v1.7 (2026-07-13)** — 개정 이력은 §0
-- 상태: 설계 확정 (사용자 승인), 구현 전
+- 작성일: 2026-07-10 · **현재 버전 v1.8 (2026-07-13)** — 개정 이력은 §0
+- 상태: 설계 확정 (사용자 승인) — 구현 진행 중 (Plan 1 mock-provider·Plan 2a collector core 머지)
 - 참조: [gpu-data-pipeline 분석](../../gpu-data-pipeline-analysis.md), [token-usage-api-spec](https://github.com/YoonsungNam/token-usage-api-spec) (`token-usage-api.yaml` v1.1.0, 로컬 클론 `/home/mini/github/token-usage-api-spec`)
 
 ## 0. 개정 이력
@@ -16,6 +16,7 @@
 | v1.5 | 2026-07-13 | **조직 모델을 고정 3레벨(org_l1~l3)에서 가변 깊이 경로 배열(org_path Array)로 전환** — 사용자 확인: 실조직이 가변 깊이 위계. dim_user_org·mart 상세·org agg·미매핑 규칙·§9-1 협의 항목 일괄 개정. 서브트리 질의는 prefix 비교 표준 |
 | v1.7 | 2026-07-13 | **§9-18 협의 확정** (사용자·소유자): ① fact DB **공유**(token_fact 폐기 — GRANT 테이블 레벨 유지), ② gpu_data 내 토큰 테이블은 **`*_token_*` 접두사 규칙**(dim_token_service 등 — 충돌 예방·소유 식별), ③ 정례 뮤테이션 예산 **제안: 일 150건/피크 창 80건**(동료 실측 일 ~155건 근거 — 소유자 최종 확인 대기). DDL(PR #3)·수집기 코드 반영 완료 |
 | v1.6 | 2026-07-13 | **동료(클러스터 소유자) 리뷰 반영** (GitHub 이슈 #1 + 구두 확정): ① dim·view의 DB = **`gpu_data`**(동료 소유 공유 — token_data 폐지, §9-18 부분 확정), ② company 클러스터 **2샤드×2레플리카** 명시(§9-3 부분 해소), ③ §7.3 모니터링 방안 소유자 승인, ④ OOM 실경험 반영 — 페이지 배치 flush(MAX_BUFFER_ROWS)·Pod resources 명세(§5.1·§7.2), ⑤ §10에 DDL 초안 선리뷰 절차 추가 |
+| v1.8 | 2026-07-13 | 정례 뮤테이션 예산 **확정 적용: 일 총량 150건 / 피크 창(02:00~03:00) 80건** (사용자 결정 — 소유자 사후 컨펌 진행 중, 이슈 #1). §4.0(c) 갱신 |
 
 ## 1. 배경과 목적
 
@@ -119,7 +120,7 @@ token-data-pipeline/
 (a) 정상 일일 경로는 DELETE 전에 해당 (date, service) 행 존재를 SELECT로 확인, 없으면 DELETE 스킵
 (첫 수집의 no-op 뮤테이션 제거 — 단일 작성자 CronJob + `concurrencyPolicy: Forbid` 전제라 경합 없음).
 (b) 다중 서비스 rerun은 `DELETE WHERE date=D AND service IN (...)` 배칭으로 뮤테이션 수를 O(서비스)→O(1)로.
-(c) 정례 뮤테이션 예산 — **제안 확정치: 일 총량 150건 / 피크 창(02:00~03:00) 80건** (동료 파이프라인 실측: snap 시간당 6건 + mart 일 11건 ≈ 일 155건 기운영 — §9-18, 소유자 최종 확인 대기).
+(c) 정례 뮤테이션 예산 — **확정: 일 총량 150건 / 피크 창(02:00~03:00) 80건** (동료 파이프라인 실측: snap 시간당 6건 + mart 일 11건 ≈ 일 155건 기운영, 토큰 추가분 ≈ 일 68건 — §9-18. 2026-07-13 확정 적용, 소유자 사후 컨펌 진행 중: 이슈 #1).
 
 **분산 조인 표준**: mart STEP 1의 `fact × dim` 조인은 **`GLOBAL LEFT JOIN`을 표준**으로 한다
 (dim 3종은 소용량이라 브로드캐스트 비용 무시 가능 — 동료 mart/aip에서 검증된 패턴.
