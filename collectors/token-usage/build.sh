@@ -8,7 +8,8 @@
 #   company: --registry 필수 (사내 Harbor) — BASE_IMAGE를 Harbor proxy로 치환
 #   태그 기본: git short SHA (git 밖이면 latest)
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
+SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+cd "$(dirname "${SCRIPT_PATH}")"
 
 IMAGE_NAME="token-usage-collector"
 REGISTRY=""
@@ -16,7 +17,7 @@ TAG=""
 ENV=""
 
 usage() {
-  grep '^#' "$0" | head -8; exit 1
+  grep '^# ' "${SCRIPT_PATH}" | head -8; exit 1
 }
 
 while [[ $# -gt 0 ]]; do
