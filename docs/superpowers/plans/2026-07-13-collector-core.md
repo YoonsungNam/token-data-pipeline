@@ -24,7 +24,7 @@
 - CLI (§5.1·§7.1과 동일 계약): `main.py [batch_time]`(ISO8601, 기본 now, target_date=−1일 KST), `--from/--to`(재수집 — VM push 기본 생략), `--service <name>`.
 - 테이블·DB명은 DDL 초안(PR #3) 기준: `token_fact.raw_token_usage_1d(_local/_dist)`, `raw_token_usage_summary_1d`, `collect_audit_1d`, `gpu_data.dim_service`. §9-18 협의로 DB명 변경 시 `config.py`의 상수 2개만 수정.
 - 환경변수 계약 (§5.7): `CH_HOST/CH_PORT/CH_USER/CH_PASSWORD/CH_CLUSTER`(빈 값=ON CLUSTER 생략), `VM_PUSH_URL`(빈 값=push 생략), `ENDPOINTS_FILE`, `MAX_PAGES`(200), `SOFT_DEADLINE_MINUTES`(50), `MAX_BUFFER_ROWS`(20000), `NOT_READY_BUDGET_MINUTES`(30), `COLLECTOR_HTTPS_PROXY`(미설정=상속/빈 문자열=직접), `COLLECTOR_API_VERIFY`/`COLLECTOR_API_CA_BUNDLE`.
-- Python 3.12, `random` 금지(테스트 포함), KST 규율(naive datetime 금지), 커밋 `type(collectors): 설명`, 테스트는 `cd collectors/token-usage && python -m pytest`.
+- **Python 3.10+ 호환 문법** (개발 머신 3.10 / CI·컨테이너 3.12 — `StrEnum` 등 3.11+ 전용 금지), `random` 금지(테스트 포함), KST 규율(naive datetime 금지), 커밋 `type(collectors): 설명`, 테스트는 `cd collectors/token-usage && python -m pytest`.
 
 ## File Structure
 
@@ -293,7 +293,7 @@ git commit -m "feat(collectors): scaffold collector with config and endpoints re
 **Interfaces:**
 - Consumes: `ServiceEntry`, `Config` (Task 1)
 - Produces:
-  - `events.Event` (StrEnum): `NOT_READY, RETRYABLE, PERMANENT_ERROR, RETENTION, EMPTY, INVARIANT_BROKEN`
+  - `events.Event` (str-mixin Enum, 3.10 호환): `NOT_READY, RETRYABLE, PERMANENT_ERROR, RETENTION, EMPTY, INVARIANT_BROKEN`
   - `events.CollectError(Exception)` — 필드: `event: Event`, `message: str`, `retry_after_s: int`(기본 0)
   - `api_client.UsagePayload` (dataclass): `records: list[dict]`(원시 JSON dict), `summary: dict | None`, `generated_at: str`(마지막 페이지), `reported_service_group: str`, `reported_service: str`, `pages: int`
   - `api_client.fetch_service(entry, date: str, cfg, session) -> UsagePayload` — summary→detail 전체 수집. 실패는 전부 `CollectError`로 번역. **호출자가 재시도하지 않도록 RETRYABLE(429/5xx/네트워크)은 내부에서 최대 3회 소진 후 던짐**. 409는 즉시 `CollectError(NOT_READY, retry_after_s=캡 적용값)` — 재방문(전체 재시작)은 main의 큐가 담당. INVARIANT_BROKEN(페이지 간 메타 변화)도 즉시 던짐 — 재시작 ≤2회는 main 담당.
@@ -456,10 +456,10 @@ Expected: FAIL — `No module named 'app.events'`
 정책(대기열·예산·status 매핑·exit 영향)은 main.py 오케스트레이터에 1벌만 존재한다.
 api_client는 HTTP 신호를 이 분류로 번역만 한다 — 신규 소스 모듈(§5.9)도 동일 분류 사용.
 """
-from enum import StrEnum
+from enum import Enum
 
 
-class Event(StrEnum):
+class Event(str, Enum):  # StrEnum은 3.11+ — 3.10 호환 형태 사용
     NOT_READY = "NOT_READY"                # 대기열 후송, 재방문=전체 재시작
     RETRYABLE = "RETRYABLE"                # 내부 재시도 소진 후 FAILURE
     PERMANENT_ERROR = "PERMANENT_ERROR"    # 즉시 FAILURE
@@ -470,7 +470,7 @@ class Event(StrEnum):
 
 class CollectError(Exception):
     def __init__(self, event: Event, message: str, retry_after_s: int = 0):
-        super().__init__(f"{event}: {message}")
+        super().__init__(f"{event.value}: {message}")
         self.event = event
         self.message = message
         self.retry_after_s = retry_after_s
@@ -1623,7 +1623,7 @@ def run_collection(cfg: Config, entries: list[ServiceEntry], target_date: str, *
                                                status="SKIPPED", reason="retention"))
             else:
                 outcomes.append(ServiceOutcome(service=item.entry.service,
-                                               reason=str(err.event)))
+                                               reason=err.event.value))
         except Exception as exc:                          # 예상 밖 — 서비스 격리 유지
             outcomes.append(ServiceOutcome(service=item.entry.service,
                                            reason=f"unexpected:{type(exc).__name__}"))
