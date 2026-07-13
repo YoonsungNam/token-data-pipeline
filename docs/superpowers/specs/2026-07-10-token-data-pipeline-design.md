@@ -1,6 +1,6 @@
 # token-data-pipeline 설계 문서
 
-- 작성일: 2026-07-10 · **현재 버전 v1.6 (2026-07-13)** — 개정 이력은 §0
+- 작성일: 2026-07-10 · **현재 버전 v1.7 (2026-07-13)** — 개정 이력은 §0
 - 상태: 설계 확정 (사용자 승인), 구현 전
 - 참조: [gpu-data-pipeline 분석](../../gpu-data-pipeline-analysis.md), [token-usage-api-spec](https://github.com/YoonsungNam/token-usage-api-spec) (`token-usage-api.yaml` v1.1.0, 로컬 클론 `/home/mini/github/token-usage-api-spec`)
 
@@ -14,6 +14,7 @@
 | v1.3 | 2026-07-12 | 비용 2계층 확장 모델 신설(§4.4): Layer P(가격/차지백) / Layer C(GPU 타입·수행시간 기반 원가, PD분리 대응) 분리. 포크 검증 반영 — 동료 레포 실사(LLM 모델 개념 부재 확인), dim_model에 serving_type, 모델명 매핑 테이블 명시, 지표 이원화(총원가/실효원가), gpu_hours 할당 기준. 미결 12~15 추가 |
 | v1.4 | 2026-07-12 | 최종 리뷰 라운드(통합 정합·보안/개인정보·용량·premortem·준비도) 확정 16건 반영: dim_service source_type 스코프 교체(§5.9-6), 이벤트 분류→정책 표(§5.2), 적재 완료 데드라인 계약 9조, 조회 계정·데이터 경계·로깅 계약(보안 4건), 파티션 재설계(상세=일 단위)·deadline 산식 교정, 정정 프로토콜(§8.4)·백업/DR(§8.5), DB 소유권·GRANT 테이블 레벨 한정, mart 시간 계약, stage 환경 전제(실사). 미결 16~20 추가 |
 | v1.5 | 2026-07-13 | **조직 모델을 고정 3레벨(org_l1~l3)에서 가변 깊이 경로 배열(org_path Array)로 전환** — 사용자 확인: 실조직이 가변 깊이 위계. dim_user_org·mart 상세·org agg·미매핑 규칙·§9-1 협의 항목 일괄 개정. 서브트리 질의는 prefix 비교 표준 |
+| v1.7 | 2026-07-13 | **§9-18 협의 확정** (사용자·소유자): ① fact DB **공유**(token_fact 폐기 — GRANT 테이블 레벨 유지), ② gpu_data 내 토큰 테이블은 **`*_token_*` 접두사 규칙**(dim_token_service 등 — 충돌 예방·소유 식별), ③ 정례 뮤테이션 예산 **제안: 일 150건/피크 창 80건**(동료 실측 일 ~155건 근거 — 소유자 최종 확인 대기). DDL(PR #3)·수집기 코드 반영 완료 |
 | v1.6 | 2026-07-13 | **동료(클러스터 소유자) 리뷰 반영** (GitHub 이슈 #1 + 구두 확정): ① dim·view의 DB = **`gpu_data`**(동료 소유 공유 — token_data 폐지, §9-18 부분 확정), ② company 클러스터 **2샤드×2레플리카** 명시(§9-3 부분 해소), ③ §7.3 모니터링 방안 소유자 승인, ④ OOM 실경험 반영 — 페이지 배치 flush(MAX_BUFFER_ROWS)·Pod resources 명세(§5.1·§7.2), ⑤ §10에 DDL 초안 선리뷰 절차 추가 |
 
 ## 1. 배경과 목적
@@ -35,7 +36,7 @@ ClickHouse에 적재하고, 기준정보와 조합해 대시보드용 테이블�
 | 환경 | **stage(홈랩) + company 2단계** (dev/kind 없음) | 로컬 검증은 CI가 담당 |
 | 수집 토폴로지 | **단일 수집기 CronJob이 전 서비스 순회** (usage-api-v1) | 서비스별 실패 격리. **API 미제공 소스는 적재 계약(§5.9)을 준수하는 별도 수집기 모듈로 확장** — 동료 assets/ 선례(소스별 독립 모듈) |
 | 수집 경로 | **API→ClickHouse 직행**, 서비스 단위 합계만 VictoriaMetrics 게이지 push | per-user 데이터는 VM에 넣지 않음 |
-| DB 배치 | fact(raw) / **gpu_data(기준정보+view — 동료 소유 DB 공유, 이슈 #1로 확정)** / mart(집계) | gpu_data는 "소스 연관 데이터만이 아니라 mart에서 정리된 데이터가 있는 곳"(소유자 설명) — 우리 dim·view가 정확히 이 역할. **fact/mart는 전용 DB(`token_fact`/`token_mart`) 기본안 유지** — 동료 mart 계정의 `mart.*` 광역 DROP GRANT(실사: mart/s2job/ddl/accounts.sql:27) 때문이며, 공유 전환 여부는 §9-18 잔여 협의. 본 문서의 `fact.`/`mart.` 표기는 **논리 계층명**. gpu_data 내 우리 테이블의 GRANT는 테이블 레벨 한정(§7.2) |
+| DB 배치 | **fact(공유 — §9-18 확정)** / **gpu_data(기준정보+view — 공유, 이슈 #1 확정)** / mart(집계 — 공유/전용 여부는 Plan 3 DDL 협의에서 확정) | fact 공유 확정(2026-07-13): token_fact 안 폐기. 안전장치 = **전 계정 테이블 레벨 GRANT**(§7.2) + `*_token_*` 네이밍. gpu_data 내 토큰 테이블은 **`*_token_*` 접두사 규칙**(dim_token_service, view_token_usage_* — 충돌 예방·소유 식별) |
 | 대시보드 | 최종적으로 사내 대시보드가 `gpu_data`의 view table을 읽음. 사외(홈랩) 작업 중엔 Grafana 테스터 대시보드로 대체 | |
 
 ## 3. 아키텍처
@@ -46,7 +47,7 @@ ClickHouse에 적재하고, 기준정보와 조합해 대시보드용 테이블�
   ▼  매일 02:00 KST, date=어제
 collectors/token-usage ──► fact.raw_token_usage_1d          (사용자×모델 상세)
   │                    ──► fact.raw_token_usage_summary_1d  (서비스 보고 합계)
-  │                    ──► gpu_data.dim_service           (endpoints.yaml — 자기 source_type 범위 교체)
+  │                    ──► gpu_data.dim_token_service           (endpoints.yaml — 자기 source_type 범위 교체)
   │                    ──► VictoriaMetrics                  (서비스 단위 일합계 게이지)
   │
 assets/user-org      ──► gpu_data.dim_user_org  (전 직원 로스터, 이력형)
@@ -118,7 +119,7 @@ token-data-pipeline/
 (a) 정상 일일 경로는 DELETE 전에 해당 (date, service) 행 존재를 SELECT로 확인, 없으면 DELETE 스킵
 (첫 수집의 no-op 뮤테이션 제거 — 단일 작성자 CronJob + `concurrencyPolicy: Forbid` 전제라 경합 없음).
 (b) 다중 서비스 rerun은 `DELETE WHERE date=D AND service IN (...)` 배칭으로 뮤테이션 수를 O(서비스)→O(1)로.
-(c) 정례 뮤테이션 예산(예: 평상시 일 10건 이하)을 클러스터 소유자(동료)와 합의 — §9-18.
+(c) 정례 뮤테이션 예산 — **제안 확정치: 일 총량 150건 / 피크 창(02:00~03:00) 80건** (동료 파이프라인 실측: snap 시간당 6건 + mart 일 11건 ≈ 일 155건 기운영 — §9-18, 소유자 최종 확인 대기).
 
 **분산 조인 표준**: mart STEP 1의 `fact × dim` 조인은 **`GLOBAL LEFT JOIN`을 표준**으로 한다
 (dim 3종은 소용량이라 브로드캐스트 비용 무시 가능 — 동료 mart/aip에서 검증된 패턴.
@@ -162,11 +163,11 @@ summary 행은 반드시 적재** — §5.2).
 동료 확인(이슈 #1): 기준정보·대시보드용 정제 테이블은 기존 **`gpu_data`** DB에 둔다.
 기존 테이블(dim_project_info/dim_unit_environment/dim_project_unit/dim_division_mapping 등)과
 이름 충돌 없음을 확인함. 공유 DB이므로 우리 테이블 GRANT는 테이블 레벨 한정(§7.2)이며,
-`dim_service`·`dim_model` 같은 범용 이름의 접두사 필요 여부는 §9-18 잔여 협의 항목.
+`dim_token_service`·`dim_model` 같은 범용 이름의 접두사 필요 여부는 §9-18 잔여 협의 항목.
 
 | 테이블 | grain / 컬럼 요지 | 관리 주체 |
 |---|---|---|
-| `dim_service` | service — service_group, service, base_url, enabled UInt8, **source_type** LowCardinality(String) DEFAULT 'usage-api-v1', note, updated_at | **각 수집 모듈이 자기 source_type 범위만 원자 교체** (DELETE WHERE source_type='<자기 유형>' → INSERT, §5.9 계약 6조 — 전 테이블 교체 금지: 타 모듈 등록분 삭제 방지). 리뷰 #12의 "enabled=false 유지·항목 제거 금지"는 모듈별 범위 안에서 동일 적용 |
+| `dim_token_service` | service — service_group, service, base_url, enabled UInt8, **source_type** LowCardinality(String) DEFAULT 'usage-api-v1', note, updated_at | **각 수집 모듈이 자기 source_type 범위만 원자 교체** (DELETE WHERE source_type='<자기 유형>' → INSERT, §5.9 계약 6조 — 전 테이블 교체 금지: 타 모듈 등록분 삭제 방지). 리뷰 #12의 "enabled=false 유지·항목 제거 금지"는 모듈별 범위 안에서 동일 적용 |
 | `dim_user_org` | **(user_id, effective_from)** — user_name, **org_path Array(String)**(최상위→말단, 가변 깊이 — 예: `['DS부문','반도체연구소','공정연구팀','소자파트']`), org_depth UInt8, is_active UInt8, updated_at | assets/user-org |
 | `dim_model` | (model, effective_from) — provider, **serving_type**(internal\|external), input/cache_read/cache_creation/output 단가(USD per MTok), currency, note | assets/model-catalog 시드 SQL. serving_type은 §4.4 Layer C 대상 판별("원가 NULL"이 미수집인지 대상외인지 구분) |
 | `dim_budget` *(2단계, 선택)* | (scope_type: org\|service_group, scope, month) — budget_usd | 미결 §9-8 |
@@ -259,7 +260,7 @@ ORDER BY·샤딩 키. 응답 원문은 `reported_service_group/reported_service`
 ### 5.1 정상 흐름 (CronJob 매일 02:00 KST)
 
 1. `target_date` = batch_time(기본 now) − 1일 (KST). batch_time은 ISO8601 위치 인자.
-2. endpoints.yaml 로드 → `gpu_data.dim_service`의 **자기 source_type 범위 교체**
+2. endpoints.yaml 로드 → `gpu_data.dim_token_service`의 **자기 source_type 범위 교체**
    (검증 후 `DELETE WHERE source_type='usage-api-v1'` → INSERT, mutations_sync=2).
 3. `enabled` 서비스 순회 — **서비스별 try/except 격리**:
    1. `GET /v1/usage/summary?date=<target_date>`
@@ -436,7 +437,7 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
    "확정 데이터만 적재" 원칙은 소스가 무엇이든 불변.
 5. **서비스 식별 정본 = 해당 모듈의 설정 파일** (§5.0의 일반화). 소스 쪽 명칭은 reported_*에 보존.
 6. **관측·등록**: 실행당 BATCH_RESULT 1줄 + 서비스별 SERVICE_RESULT(`source_type=` 포함),
-   §5.6 로깅 계약(페이로드·user_id 원문 금지) 상속. `dim_service`에는 **자기 source_type 범위만
+   §5.6 로깅 계약(페이로드·user_id 원문 금지) 상속. `dim_token_service`에는 **자기 source_type 범위만
    원자 교체**로 등록(`DELETE WHERE source_type='<자기 유형>'` → INSERT — 전 테이블 교체 금지,
    타 모듈 등록분 보호) — coverage 게이트·기존 대시보드에 자동 편입.
 7. **기준정보 결합 원칙**: 전사 기준정보(B — dim_user_org/dim_model)는 **mart 시점 결합**(불변).
@@ -516,7 +517,7 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
   rerun은 **날짜별로 STEP 0→2 전체(게이트·검증 포함)를 독립 반복**한다.
 - `batch.py`(I/O 오케스트레이션) + `mart.py`(순수 로직). 변환은 전부 **서버사이드
   `INSERT INTO ... SELECT`** (§4.0의 GLOBAL LEFT JOIN 표준, ClickHouse 파라미터 바인딩).
-- **STEP 0 — 서비스 커버리지 게이트** (리뷰 #16 — HIGH): `dim_service`의 enabled 집합
+- **STEP 0 — 서비스 커버리지 게이트** (리뷰 #16 — HIGH): `dim_token_service`의 enabled 집합
   (**source_type과 무관하게 전체** — 게이트는 소스 유형을 모름) vs target_date의
   `fact.raw_token_usage_summary_1d` 행 존재를 비교 (NODATA도 summary는 적재되므로 FAILURE와 구분됨).
   §5.9 계약 9조의 expected-late 예외 목록에 등록된 서비스는 경고 대상에서 제외.
@@ -593,7 +594,7 @@ endpoints.company.yaml과 동일한 분리 원칙의 확장.
   CH_CLUSTER 주입, **kube API 서버 호스트 NO_PROXY 자동 추가** + 수집기 프록시 env를 Secret에 포함(§5.7).
 - DDL: `ddl/{stage,company}/` 분리, 최소 권한 `accounts.sql` (리뷰 #8 반영):
   - `token_collector`: fact 자기 테이블 INSERT(dist/local) + local ALTER DELETE +
-    gpu_data.dim_service 쓰기 — 전부 **테이블 레벨**. `mutations_sync=2` 방식이므로
+    gpu_data.dim_token_service 쓰기 — 전부 **테이블 레벨**. `mutations_sync=2` 방식이므로
     system.mutations 권한 불요.
   - `token_mart`: fact·gpu_data 자기 테이블 조회 + mart·view 자기 테이블 쓰기(INSERT/ALTER DELETE) +
     **GRANT SELECT ON system.mutations + GRANT CREATE TEMPORARY TABLE ON \*.\***
@@ -706,7 +707,7 @@ ClickHouse가 유일 사본, 25개월 보존·차지백 근거). 동료 레포�
 | 15 | **유휴·공유 GPU 정책** — 시분할 다중 모델 공유의 gpu_hours 안분, 통합 배포의 input/output 원가 가중치 | 범위 외 선언 | Layer C 설계 확정 시 |
 | 16 | **보존창 밖 수동 정정 절차** — fact 수동 INSERT 규약·차지백 소비자 공지 (§8.4-3) | RESTATEMENT 감지·감사 이력은 설계 반영됨 | 운영 문서 작성 시 확정 |
 | 17 | **백업 방식·주기·보관처·소유/비용** (§8.5 — 유일 사본 한정) | 백업 없이 시작 금지(사내 반입 전 확정) | 클러스터 소유자(동료)와 합의 |
-| 18 | **DB 소유권 잔여 협의** — ~~dim·view 위치~~(→ **gpu_data 확정**, 이슈 #1) / fact·mart 공유 vs 전용(token_fact/token_mart) / gpu_data 내 우리 테이블 GRANT 테이블 레벨 합의(동료 기존 계정의 gpu_data 권한 범위 확인 포함) / `dim_service` 등 범용 이름 접두사 여부 / **정례 뮤테이션 예산 합의**(§4.0) | 기본안 = fact/mart 전용 DB (§2) | **구현 2단계(DDL) 전 선행 결정** — 이슈 #1 스레드에서 계속 |
+| 18 | **DB 소유권 — 확정**: fact 공유(2026-07-13)·gpu_data `*_token_*` 접두사. 잔여: mart DB 공유/전용(Plan 3 DDL에서), 뮤테이션 예산 수치(일 150/피크 80 제안)의 소유자 최종 확인 | 반영 완료(PR #3, 수집기 코드) | mart는 Plan 3 DDL 초안 리뷰에서 |
 | 19 | **stage 레플리카 증설 여부** — 전-레플리카 검증 항목(§7.2 환경 전제)을 stage에서 할지 company로 이관할지 | 레플리카 1 유지 + company 이관 | stage 런북 작성 전 결정 |
 | 20 | **홈랩 VictoriaLogs 설치 여부** — BATCH_RESULT/SERVICE_RESULT 패널의 stage 검증 가능성 | 미설치 — company 단계 검증 | stage 대시보드 작업 전 결정 |
 
