@@ -721,6 +721,11 @@ def get_usage_summary(date: str = Query(...)):
             "generatedAt": generated_at(date), **summary}
 ```
 
+> **적용된 편차 (리뷰 픽스)**: FastAPI 기본 422 검증 응답이 계약의 `{"code","message"}` 규약을 깨므로,
+> 실제 구현은 (a) `date: str | None = Query(None)` + 수동 누락 검증(400 invalid_date),
+> (b) `limit: str = Query("1000")` + 수동 int 파싱(400 invalid_limit),
+> (c) `RequestValidationError` 핸들러(400 invalid_request 안전망)를 사용한다.
+
 - [ ] **Step 5: 통과 확인**
 
 Run: `cd tools/mock-provider && python -m pytest tests/test_api.py -v`

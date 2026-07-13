@@ -80,3 +80,16 @@ def test_dataset_immutable_across_pagination(client):
 
 def test_healthz(client):
     assert client.get("/healthz").json() == {"status": "ok"}
+
+
+def test_missing_date_is_400_with_contract_body(client):
+    for path in ("/v1/usage", "/v1/usage/summary"):
+        r = client.get(path)
+        assert r.status_code == 400
+        body = r.json()
+        assert body["code"] == "invalid_date" and "message" in body
+
+
+def test_non_numeric_limit_is_400(client):
+    r = client.get("/v1/usage", params={"date": yesterday(), "limit": "abc"})
+    assert r.status_code == 400 and r.json()["code"] == "invalid_limit"

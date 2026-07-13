@@ -1,7 +1,8 @@
 import time
 from datetime import date as date_cls, datetime, timedelta, timezone
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.config import load_config
@@ -24,6 +25,11 @@ def now_kst() -> datetime:
 def _err(status: int, code: str, message: str, retry_after: int | None = None) -> JSONResponse:
     headers = {"Retry-After": str(retry_after)} if retry_after is not None else None
     return JSONResponse({"code": code, "message": message}, status_code=status, headers=headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(request: Request, exc: RequestValidationError):
+    return _err(400, "invalid_request", "malformed or missing query parameters")
 
 
 def _shared_gate() -> JSONResponse | None:
@@ -68,11 +74,17 @@ def healthz() -> dict:
 
 
 @app.get("/v1/usage")
-def get_usage(date: str = Query(...), cursor: str | None = Query(None),
-              limit: int = Query(1000)):
+def get_usage(date: str | None = Query(None), cursor: str | None = Query(None),
+              limit: str = Query("1000")):
     if (gate := _shared_gate()) is not None:
         return gate
-    if not 1 <= limit <= 5000:
+    if date is None:
+        return _err(400, "invalid_date", "date query parameter is required")
+    try:
+        limit_val = int(limit)
+    except ValueError:
+        return _err(400, "invalid_limit", "limit must be an integer")
+    if not 1 <= limit_val <= 5000:
         return _err(400, "invalid_limit", "limit must be within 1..5000")
     _, date_err = _date_gate(date)
     if date_err is not None:
@@ -80,16 +92,16 @@ def get_usage(date: str = Query(...), cursor: str | None = Query(None),
     offset = 0
     if cursor is not None:
         try:
-            offset = decode_cursor(cursor, date, limit)
+            offset = decode_cursor(cursor, date, limit_val)
         except CursorError as exc:
             return _err(400, "invalid_cursor", str(exc))
-    page_no = offset // limit + 1
+    page_no = offset // limit_val + 1
     if SCN.not_ready_at_page and page_no >= SCN.not_ready_at_page:
         return _err(409, "data_not_ready",
                     "usage for the requested date is not finalized yet; retry later",
                     retry_after=SCN.retry_after_s)
     records = build_records(CFG, date)
-    page = records[offset:offset + limit]
+    page = records[offset:offset + limit_val]
     gen = generated_at(date)
     if SCN.generated_at_change_at_page and page_no >= SCN.generated_at_change_at_page:
         gen = gen.replace("T02:05:00", "T02:35:00")
@@ -101,15 +113,17 @@ def get_usage(date: str = Query(...), cursor: str | None = Query(None),
         "generatedAt": gen,
         "records": [to_api_dict(r) for r in page],
     }
-    if offset + limit < len(records):
-        body["nextCursor"] = encode_cursor(offset + limit, date, limit)
+    if offset + limit_val < len(records):
+        body["nextCursor"] = encode_cursor(offset + limit_val, date, limit_val)
     return body
 
 
 @app.get("/v1/usage/summary")
-def get_usage_summary(date: str = Query(...)):
+def get_usage_summary(date: str | None = Query(None)):
     if (gate := _shared_gate()) is not None:
         return gate
+    if date is None:
+        return _err(400, "invalid_date", "date query parameter is required")
     _, date_err = _date_gate(date)
     if date_err is not None:
         return date_err
