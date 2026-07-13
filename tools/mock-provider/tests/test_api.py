@@ -93,3 +93,41 @@ def test_missing_date_is_400_with_contract_body(client):
 def test_non_numeric_limit_is_400(client):
     r = client.get("/v1/usage", params={"date": yesterday(), "limit": "abc"})
     assert r.status_code == 400 and r.json()["code"] == "invalid_limit"
+
+
+def test_bad_date_and_limit_are_400(client):
+    assert client.get("/v1/usage", params={"date": "2026/06/15"}).status_code == 400
+    today = main.now_kst().date().isoformat()
+    for d in (today, (main.now_kst().date() + timedelta(days=1)).isoformat()):
+        r = client.get("/v1/usage", params={"date": d})
+        assert r.status_code == 400 and r.json()["code"] == "invalid_date"
+    for bad_limit in (0, 5001):
+        r = client.get("/v1/usage", params={"date": yesterday(), "limit": bad_limit})
+        assert r.status_code == 400 and r.json()["code"] == "invalid_limit"
+
+
+def test_retention_exceeded_is_404(client):
+    old = (main.now_kst().date() - timedelta(days=main.CFG.retention_days + 1)).isoformat()
+    for path in ("/v1/usage", "/v1/usage/summary"):
+        r = client.get(path, params={"date": old})
+        assert r.status_code == 404 and r.json()["code"] == "data_not_retained"
+
+
+def test_invalid_cursor_is_400(client):
+    r = client.get("/v1/usage", params={"date": yesterday(), "cursor": "garbage!!"})
+    assert r.status_code == 400 and r.json()["code"] == "invalid_cursor"
+
+
+def test_cursor_with_changed_limit_is_400(client):
+    d = yesterday()
+    first = client.get("/v1/usage", params={"date": d, "limit": 3}).json()
+    r = client.get("/v1/usage", params={"date": d, "limit": 4, "cursor": first["nextCursor"]})
+    assert r.status_code == 400 and r.json()["code"] == "invalid_cursor"
+
+
+def test_not_ready_409_with_retry_after(client):
+    main.SCN.not_ready_until_uptime_s = 10 ** 9  # 사실상 항상 미확정
+    for path in ("/v1/usage", "/v1/usage/summary"):
+        r = client.get(path, params={"date": yesterday()})
+        assert r.status_code == 409 and r.json()["code"] == "data_not_ready"
+        assert int(r.headers["Retry-After"]) >= 1
