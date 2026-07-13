@@ -1,0 +1,10 @@
+# 서비스 식별의 정본 (스펙 §5.0) — 폐기 서비스는 enabled: false로 유지, 항목 제거 금지
+services:
+  - serviceGroup: "Mock Group"
+    service: "Mock Service A"
+    baseUrl: "http://mock-provider-a.token-pipeline.svc:8000"
+    enabled: true
+  - serviceGroup: "Mock Group"
+    service: "Mock Service B"
+    baseUrl: "http://mock-provider-b.token-pipeline.svc:8000"
+    enabled: true
