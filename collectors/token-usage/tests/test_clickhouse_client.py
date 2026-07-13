@@ -1,4 +1,4 @@
-from app.clickhouse_client import CHWriter, DB_FACT
+from app.clickhouse_client import CHWriter, DB_FACT, now_kst
 from app.config import Config, ServiceEntry
 from app.normalize import NormalizedRow
 
@@ -104,6 +104,10 @@ def test_buffer_flush_batches():
     assert n == 10
     detail = [i for i in ch.inserts if i[0].endswith("raw_token_usage_1d_dist")]
     assert [i[1] for i in detail] == [4, 4, 2]                     # MAX_BUFFER_ROWS flush
+
+
+def test_now_kst_is_aware():
+    assert now_kst().tzinfo is not None
 
 
 def test_dim_replace_scopes_to_source_type():

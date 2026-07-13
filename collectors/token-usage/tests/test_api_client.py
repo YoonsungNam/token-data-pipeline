@@ -87,6 +87,27 @@ def test_retryable_exhausts_three_attempts_then_raises():
     assert ei.value.event is Event.RETRYABLE and calls["n"] == 3
 
 
+def test_5xx_without_retry_after_uses_backoff_schedule(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("app.api_client.time.sleep", sleeps.append)
+    s = FakeSession([("/v1/usage/summary",
+                      FakeResponse(503, {"code": "service_unavailable", "message": "x"}))] * 3)
+    with pytest.raises(CollectError):
+        fetch_service(ENTRY, DATE, CFG, s)
+    assert sleeps == [5, 25]          # 지수 백오프 스케줄 복원 (§5.2)
+
+
+def test_200_non_json_body_is_permanent_error():
+    class BadJsonResponse(FakeResponse):
+        def json(self):
+            raise ValueError("not json")
+
+    s = FakeSession([("/v1/usage/summary", BadJsonResponse(200, {}))])
+    with pytest.raises(CollectError) as ei:
+        fetch_service(ENTRY, DATE, CFG, s)
+    assert ei.value.event is Event.PERMANENT_ERROR
+
+
 def test_404_maps_to_retention():
     s = FakeSession([("/v1/usage/summary",
                       FakeResponse(404, {"code": "data_not_retained", "message": "x"}))])

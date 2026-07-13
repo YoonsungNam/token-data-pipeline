@@ -8,7 +8,7 @@
 | 파일 | 내용 |
 |---|---|
 | `company/raw_token_usage.sql` | `fact` DB + 수집 원본 3테이블 (raw 상세 / summary / 교체 감사) — local+dist 쌍 |
-| `company/dim_service.sql` | `gpu_data.dim_token_service` — 서비스 레지스트리 (이슈 #1 확정: gpu_data 공유) |
+| `company/dim_token_service.sql` | `gpu_data.dim_token_service` — 서비스 레지스트리 (이슈 #1 확정: gpu_data 공유) |
 | `company/accounts.sql` | 계정 3종(`token_collector`/`token_mart`/`token_dashboard_reader`) + **테이블 레벨** GRANT |
 
 ## 확정된 결정 (2026-07-13, 소유자 협의)
@@ -37,7 +37,7 @@ ReplicatedMergeTree의 `{shard}/{replica}` 매크로가 흡수. 환경별 차이
 
 1. `accounts.sql`의 `CREATE DATABASE`·`CREATE USER`·GRANT는 **admin 수동 실행** (company에서는
    클러스터 소유자 협의 후). `CHANGE_ME_*` 비밀번호는 실행 전 치환.
-2. 테이블 DDL(`raw_token_usage.sql`, `dim_service.sql`)은 install.sh 자동 적용 대상.
+2. 테이블 DDL(`raw_token_usage.sql`, `dim_token_service.sql`)은 install.sh 자동 적용 대상.
 3. 이후 스키마 변경은 `migrate_add_*.sql` 관행 (GRANT 추가 포함).
 
 ## 이 초안에 없는 것 (후속 Plan에서)

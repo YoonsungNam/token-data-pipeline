@@ -40,3 +40,12 @@ SELECT 'no_duplicate_after_rerun', count(), {EXP_ROWS}
 FROM fact.raw_token_usage_1d_dist
 WHERE date = '{DATE}' AND service = '{SERVICE}'
 HAVING count() != {EXP_ROWS}
+
+UNION ALL
+
+SELECT 'collected_at_sane', count(), 0
+FROM fact.raw_token_usage_1d_dist
+WHERE date = '{DATE}' AND service = '{SERVICE}'
+  AND (collected_at < now('Asia/Seoul') - INTERVAL 2 HOUR
+       OR collected_at > now('Asia/Seoul') + INTERVAL 10 MINUTE)
+HAVING count() != 0

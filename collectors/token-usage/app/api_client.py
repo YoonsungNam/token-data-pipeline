@@ -54,7 +54,8 @@ def _translate_error(resp) -> CollectError:
         return CollectError(Event.RETENTION, f"data_not_retained ({code})")
     if sc in (429, 500, 503) or sc >= 500:
         return CollectError(Event.RETRYABLE, f"http {sc} ({code})",
-                            retry_after_s=_capped_retry_after(resp))
+                            retry_after_s=_capped_retry_after(resp)
+                            if "Retry-After" in resp.headers else 0)
     if sc == 400 and code == "invalid_cursor":
         # §5.2: cursor 없이 처음부터 재시작 — INVARIANT_BROKEN 경로(재시작 ≤2회)로 위임
         return CollectError(Event.INVARIANT_BROKEN, "invalid_cursor — restart pagination")
@@ -73,7 +74,10 @@ def _get_with_retry(session, url: str, params: dict) -> dict:
                 time.sleep(BACKOFF_S[attempt])
             continue
         if resp.status_code == 200:
-            return resp.json()
+            try:
+                return resp.json()
+            except Exception:
+                raise CollectError(Event.PERMANENT_ERROR, "malformed json body (http 200)")
         err = _translate_error(resp)
         if err.event is not Event.RETRYABLE:
             raise err

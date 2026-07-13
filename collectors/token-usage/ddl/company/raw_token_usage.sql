@@ -2,8 +2,7 @@
 -- Company/Stage ClickHouse DDL — fact 수집 원본 3테이블
 -- Target cluster: gpu-monitoring (company 2s×2r / stage 1s×1r)
 -- Writer: token_collector (스펙 v1.6 §4.0~4.1, §8.4)
--- 협의 지점: fact 전용 DB는 §9-18 기본안 — 공유 fact DB로
---            확정되면 DB명만 치환 (ddl/README.md 참조)
+-- §9-18 확정(2026-07-13): 공유 fact DB 사용 (ddl/README.md 참조)
 -- =============================================================
 
 CREATE DATABASE IF NOT EXISTS fact

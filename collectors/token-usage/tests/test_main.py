@@ -1,7 +1,7 @@
 from app.api_client import UsagePayload
 from app.config import Config, ServiceEntry
 from app.events import CollectError, Event
-from app.main import run_collection
+from app.main import main, run_collection
 
 E1 = ServiceEntry(service_group="G", service="S1", base_url="http://a", enabled=True)
 E2 = ServiceEntry(service_group="G", service="S2", base_url="http://b", enabled=True)
@@ -59,6 +59,14 @@ def test_all_success_exit_zero(capsys):
     out = capsys.readouterr().out
     assert out.count("SERVICE_RESULT status=SUCCESS") == 2
     assert "BATCH_RESULT status=SUCCESS module=token-usage services_ok=2 services_failed=0" in out
+
+
+def test_service_filter_keeps_full_dim_registry():
+    w = FakeWriter()
+    code = run_collection(Config(), [E1], DATE, is_rerun=True, clock=Clock(),
+                          sleeper=lambda s: None, fetcher=lambda e, d, c, s: payload(entry=e),
+                          writer=w, pusher=lambda *a, **k: [], dim_entries=[E1, E2])
+    assert code == 0 and w.dim == ["S1", "S2"]    # 필터 실행에도 레지스트리는 전체
 
 
 def test_empty_records_is_nodata_but_summary_loaded(capsys):
@@ -138,17 +146,34 @@ def test_invariant_broken_restarts_twice_then_fails(capsys):
 
 
 def test_soft_deadline_marks_remaining_failed(capsys):
+    # soft_deadline_minutes(5분) < LOAD_BUDGET_S(12분) — 잡 시작부터 잔여 예산이 이미
+    # 적재 시퀀스 예산 미만이므로 어떤 서비스도 착수하지 않고 전부 deadline으로
+    # FAILURE 처리 후 정상 종료해야 한다 (§5.2).
+    def fetcher(e, d, c, s):
+        raise AssertionError("데드라인 소진 후에는 fetch가 호출되면 안 됨")
+
+    code, w = run([E1, E2], fetcher, clock=Clock(), cfg=Config(soft_deadline_minutes=5))
+    assert code == 1
+    assert w.loaded == []                       # 아무 것도 착수 안 함
+    out = capsys.readouterr().out
+    assert out.count("reason=deadline") == 2
+    assert "BATCH_RESULT" in out                # 정상 종료 + 마커 보장
+
+
+def test_load_budget_recheck_blocks_load_before_write(capsys):
+    # C1/I4 회귀: fetch 자체가 오래 걸려 남은 예산이 적재 시퀀스 예산(12분) 밑으로
+    # 떨어지면, 페이지네이션까지 성공했더라도 writer.replace_service_day 착수 전에 차단한다.
     clock = Clock()
 
     def fetcher(e, d, c, s):
-        clock.t += 51 * 60                      # 첫 서비스가 51분 소모
+        clock.t += 45 * 60                      # 남은 예산 5분 < LOAD_BUDGET_S(12분)
         return payload(entry=e)
 
-    code, w = run([E1, E2], fetcher, clock=clock, cfg=Config(soft_deadline_minutes=50))
+    code, w = run([E1], fetcher, clock=clock, cfg=Config(soft_deadline_minutes=50))
     assert code == 1
-    assert w.loaded == [("S1", 2)]              # S2는 착수 안 함
+    assert w.loaded == []                       # 적재 미착수 (§5.1-3-5)
     out = capsys.readouterr().out
-    assert "deadline" in out and "BATCH_RESULT" in out   # 정상 종료 + 마커 보장
+    assert "SERVICE_RESULT status=FAILURE" in out and "reason=PERMANENT_ERROR" in out
 
 
 def test_identity_drift_counted_as_warn(capsys):
@@ -166,3 +191,14 @@ def test_naive_batch_time_interpreted_as_kst(monkeypatch):
     assert dates == ["2026-07-10"] and is_rerun is False   # KST 해석 — 호스트 TZ 무관
     args.batch_time = "2026-07-11T23:30:00+09:00"
     assert _target_dates(args)[0] == ["2026-07-10"]
+
+
+def test_multi_date_rerun_emits_single_batch_line(capsys, monkeypatch):
+    monkeypatch.setattr("app.main.load_config", lambda: Config())
+    monkeypatch.setattr("app.main.load_endpoints", lambda p: [E1])
+    monkeypatch.setattr("app.main.CHWriter", lambda cfg: FakeWriter())
+    monkeypatch.setattr("app.main.api_client",
+                        type("M", (), {"fetch_service": staticmethod(lambda e, d, c, s: payload(entry=e))}))
+    code = main(["--from", "2026-06-14", "--to", "2026-06-15"])
+    out = capsys.readouterr().out
+    assert out.count("BATCH_RESULT") == 1 and code == 0

@@ -535,7 +535,8 @@ def _translate_error(resp) -> CollectError:
         return CollectError(Event.RETENTION, f"data_not_retained ({code})")
     if sc in (429, 500, 503) or sc >= 500:
         return CollectError(Event.RETRYABLE, f"http {sc} ({code})",
-                            retry_after_s=_capped_retry_after(resp))
+                            retry_after_s=_capped_retry_after(resp)
+                            if "Retry-After" in resp.headers else 0)   # I3: RA 부재 시 지수 백오프로
     if sc == 400 and code == "invalid_cursor":
         # §5.2: cursor 없이 처음부터 재시작 — INVARIANT_BROKEN 경로(재시작 ≤2회)로 위임
         return CollectError(Event.INVARIANT_BROKEN, "invalid_cursor — restart pagination")
@@ -554,7 +555,10 @@ def _get_with_retry(session, url: str, params: dict) -> dict:
                 time.sleep(BACKOFF_S[attempt])
             continue
         if resp.status_code == 200:
-            return resp.json()
+            try:
+                return resp.json()
+            except Exception:
+                raise CollectError(Event.PERMANENT_ERROR, "malformed json body (http 200)")  # I6
         err = _translate_error(resp)
         if err.event is not Event.RETRYABLE:
             raise err
@@ -1005,9 +1009,11 @@ DIM_COLS = ("service_group", "service", "base_url", "enabled", "source_type",
             "note", "updated_at")
 
 
-def now_kst_naive() -> datetime:
-    """CH DateTime('Asia/Seoul') 컬럼용 — KST 벽시계, tzinfo 제거."""
-    return datetime.now(KST).replace(tzinfo=None)
+def now_kst() -> datetime:
+    """CH DateTime('Asia/Seoul') 컬럼용 — aware KST. epoch 변환이 호스트 TZ 무관
+    (naive datetime을 clickhouse-connect가 int(x.timestamp())로 다루면 호스트 TZ로
+    해석되어 KST 벽시계와 어긋난다 — C2 회귀 방지, 항상 tzinfo를 유지한 채 넘긴다)."""
+    return datetime.now(KST)
 
 
 class CHWriter:
@@ -1073,12 +1079,12 @@ class CHWriter:
                       audit_prev["prev_cache_read_tokens"],
                       audit_prev["prev_cache_creation_tokens"],
                       audit_prev["prev_output_tokens"], audit_prev["prev_requests"],
-                      audit_prev["prev_row_count"], now_kst_naive()]],
+                      audit_prev["prev_row_count"], now_kst()]],
                     column_names=AUDIT_COLS)
             self._delete_day(detail_local, date, entry.service)
             self._delete_day(summary_local, date, entry.service)
 
-        collected_at = now_kst_naive()
+        collected_at = now_kst()
         total = 0
         buf: list[list] = []
 
@@ -1120,7 +1126,7 @@ class CHWriter:
             f"DELETE WHERE source_type = %(stype)s",
             parameters={"stype": source_type},
             settings={"mutations_sync": 2})
-        now = now_kst_naive()
+        now = now_kst()
         self.client.insert(
             f"{DB_DIM}.dim_token_service_dist",
             [[e.service_group, e.service, e.base_url, 1 if e.enabled else 0,
@@ -1279,9 +1285,9 @@ git commit -m "feat(collectors): VM gauge push for reported service summaries"
 **Interfaces:**
 - Consumes: Task 1~5 전부 (전부 주입 가능 — 테스트는 Fake)
 - Produces:
-  - `run_collection(cfg, entries, target_date, *, is_rerun, clock, sleeper, fetcher, writer, pusher) -> int` — exit code (0/1). 의존성 전부 파라미터 (기본값: 실제 구현)
+  - `run_collection(cfg, entries, target_date, *, is_rerun, clock, sleeper, fetcher, writer, pusher, register_dims, dim_entries, emit_batch, outcomes_sink) -> int` — exit code (0/1). 의존성 전부 파라미터 (기본값: 실제 구현). `dim_entries`(기본 None→entries로 폴백)는 `--service` 필터 **전** 전체 목록을 넘기기 위한 것 — 필터된 `entries`로 `replace_dim_services`를 호출하면 타 서비스 등록분이 삭제된다 (C1 회귀 방지). `emit_batch=False`면 최종 BATCH_RESULT 1줄 출력을 생략(단 SIGTERM 마커 신선도용 `_batch_status` 갱신은 계속)하고, `outcomes_sink`가 주어지면 각 서비스 완료 시 그 리스트에도 append — 다중 날짜 rerun이 날짜별 N줄 대신 전체 1줄을 내보내는 데 사용 (I5)
   - `ServiceOutcome` (dataclass): `service, status('SUCCESS|NODATA|SKIPPED|FAILURE'), rows, pages, warns, rejected, reason`
-  - `main(argv) -> int` — CLI: `[batch_time]`, `--from/--to`, `--service`; SIGTERM 핸들러
+  - `main(argv) -> int` — CLI: `[batch_time]`, `--from/--to`, `--service`; SIGTERM 핸들러. `--from/--to`로 날짜가 2개 이상이면 날짜별 `run_collection`은 `emit_batch=False`로 호출하고 마지막에 `_batch_line`으로 전체 집계 1줄만 출력한다
   - 마커 형식(§5.6): 서비스별 `SERVICE_RESULT status=%s module=token-usage service=%s source_type=usage-api-v1 rows=%d pages=%d warn=%d rejected=%d` / 최종 `BATCH_RESULT status=%s module=token-usage services_ok=%d services_failed=%d services_skipped=%d rows=%d elapsed=%ds`
 - 정책 구현 (§5.2 분류→정책 표 — 정책은 여기 1벌):
   - NOT_READY → `(entry, resume_at)` 큐 끝 재삽입, 서비스별 누적 대기 추적(`not_ready_budget_minutes` 초과 시 FAILURE), 재방문 = fetch 전체 재시작
@@ -1537,7 +1543,8 @@ def _batch_line(outcomes: list[ServiceOutcome], started: float, clock) -> str:
 
 
 def _collect_one(cfg: Config, entry: ServiceEntry, target_date: str,
-                 fetcher, writer, pusher, is_rerun: bool) -> ServiceOutcome:
+                 fetcher, writer, pusher, is_rerun: bool, *,
+                 deadline: float | None = None, clock=time.monotonic) -> ServiceOutcome:
     o = ServiceOutcome(service=entry.service)
     payload = fetcher(entry, target_date, cfg, _session(cfg))
     o.pages = payload.pages
@@ -1550,7 +1557,7 @@ def _collect_one(cfg: Config, entry: ServiceEntry, target_date: str,
     for w in warns:
         print(f"CHECK WARN service={entry.service} {w}", flush=True)
 
-    generated_at, gen_warn = _kst_naive(payload.generated_at)
+    generated_at, gen_warn = _kst_aware(payload.generated_at)
     if gen_warn:
         o.warns += 1
         print(f"CHECK WARN service={entry.service} {gen_warn}", flush=True)
@@ -1570,6 +1577,9 @@ def _collect_one(cfg: Config, entry: ServiceEntry, target_date: str,
         "generated_at": generated_at,
     }
     audit_prev = writer.fetch_prev_summary(entry.service, target_date)
+    if deadline is not None and deadline - clock() < LOAD_BUDGET_S:
+        raise CollectError(Event.PERMANENT_ERROR,
+                           "load_budget_exhausted — 적재 미착수 (§5.1-3-5)")   # I4: 적재 직전 재체크
     o.rows = writer.replace_service_day(entry, target_date, iter(norm.rows),
                                         summary_row, audit_prev)
     if not is_rerun:
@@ -1580,12 +1590,14 @@ def _collect_one(cfg: Config, entry: ServiceEntry, target_date: str,
     return o
 
 
-def _kst_naive(iso_str: str) -> tuple[datetime, str | None]:
+def _kst_aware(iso_str: str) -> tuple[datetime, str | None]:
+    """aware KST datetime 반환 — naive로 벗기면 clickhouse-connect의 int(x.timestamp())가
+    호스트 TZ로 해석해 epoch가 어긋난다 (C2 회귀 방지, §5.1)."""
     try:
-        return datetime.fromisoformat(iso_str).astimezone(KST).replace(tzinfo=None), None
+        return datetime.fromisoformat(iso_str).astimezone(KST), None
     except ValueError:
         kind = type(iso_str).__name__ if not isinstance(iso_str, str) else "unparseable_str"
-        return (datetime.now(KST).replace(tzinfo=None),
+        return (datetime.now(KST),
                 f"generated_at_parse_failed: {kind}")   # 원문 미포함 (§5.6 로깅 계약)
 
 
@@ -1609,18 +1621,24 @@ def run_collection(cfg: Config, entries: list[ServiceEntry], target_date: str, *
                    is_rerun: bool = False, clock=time.monotonic, sleeper=time.sleep,
                    fetcher=api_client.fetch_service, writer=None,
                    pusher=vm_push.push_service_summary,
-                   register_dims: bool = True) -> int:
+                   register_dims: bool = True, dim_entries: list[ServiceEntry] | None = None,
+                   emit_batch: bool = True,
+                   outcomes_sink: list[ServiceOutcome] | None = None) -> int:
     started = clock()
     deadline = started + cfg.soft_deadline_minutes * 60
     writer = writer or CHWriter(cfg)
     if register_dims:
-        writer.replace_dim_services([e for e in entries])   # 레지스트리 반영 (§5.1-2) — CLI 호출당 1회
+        # dim_entries 미지정 시 entries로 폴백 — 단, --service 필터로 entries가 부분집합이면
+        # 호출자가 반드시 필터 전 전체 목록을 dim_entries로 넘겨야 타 서비스 등록분이 보존된다 (C1)
+        writer.replace_dim_services(dim_entries if dim_entries is not None else entries)
 
     queue = [_QueueItem(entry=e) for e in entries if e.enabled]
     outcomes: list[ServiceOutcome] = []
 
     def _record(outcomes: list[ServiceOutcome], o: ServiceOutcome) -> None:
         outcomes.append(o)
+        if outcomes_sink is not None:
+            outcomes_sink.append(o)                          # I5: 다중 날짜 rerun 전체 집계용
         print(_service_line(o), flush=True)                 # 완료 즉시 출력 (SIGTERM 마커 신선도)
         _batch_status["line"] = _batch_line(outcomes, started, clock)
 
@@ -1641,7 +1659,8 @@ def run_collection(cfg: Config, entries: list[ServiceEntry], target_date: str, *
         queue.remove(item)
         try:
             _record(outcomes, _collect_one(cfg, item.entry, target_date,
-                                           fetcher, writer, pusher, is_rerun))
+                                           fetcher, writer, pusher, is_rerun,
+                                           deadline=deadline, clock=clock))
         except CollectError as err:
             if err.event is Event.NOT_READY:
                 item.waited_s += max(err.retry_after_s, 1)
@@ -1667,8 +1686,9 @@ def run_collection(cfg: Config, entries: list[ServiceEntry], target_date: str, *
                                              reason=f"unexpected:{type(exc).__name__}"))
 
     line = _batch_line(outcomes, started, clock)
-    _batch_status["line"] = line
-    print(line, flush=True)
+    _batch_status["line"] = line                    # SIGTERM 신선도 — emit_batch와 무관하게 갱신
+    if emit_batch:
+        print(line, flush=True)
     failed = sum(1 for o in outcomes if o.status == "FAILURE")
     return 1 if failed else 0
 
@@ -1702,19 +1722,38 @@ def main(argv=None) -> int:
 
     signal.signal(signal.SIGTERM, _sigterm_handler)
     cfg = load_config()
-    entries = load_endpoints(cfg.endpoints_file)
+    all_entries = load_endpoints(cfg.endpoints_file)
+    entries = all_entries
     if args.service:
-        entries = [e for e in entries if e.service == args.service]
+        entries = [e for e in all_entries if e.service == args.service]
         if not entries:
             print(f"unknown service: {args.service}", file=sys.stderr)
             return 2
     dates, is_rerun = _target_dates(args)
     if dates is None:
         return 2
+
+    if len(dates) <= 1:
+        worst = 0
+        for i, d in enumerate(dates):
+            worst = max(worst, run_collection(cfg, entries, d, is_rerun=is_rerun,
+                                              register_dims=(i == 0), dim_entries=all_entries,
+                                              fetcher=api_client.fetch_service))
+        return worst
+
+    # 다중 날짜 rerun (--from/--to): 서비스별 마커는 매 날짜마다 즉시 출력되지만
+    # BATCH_RESULT는 전체 실행 1줄로 집계 — 날짜별 N줄은 오해를 부른다 (I5)
     worst = 0
+    all_outcomes: list[ServiceOutcome] = []
+    started = time.monotonic()
     for i, d in enumerate(dates):
         worst = max(worst, run_collection(cfg, entries, d, is_rerun=is_rerun,
-                                          register_dims=(i == 0)))
+                                          register_dims=(i == 0), dim_entries=all_entries,
+                                          fetcher=api_client.fetch_service,
+                                          emit_batch=False, outcomes_sink=all_outcomes))
+    line = _batch_line(all_outcomes, started, time.monotonic)
+    _batch_status["line"] = line
+    print(line, flush=True)
     return worst
 
 

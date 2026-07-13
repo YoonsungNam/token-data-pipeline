@@ -29,9 +29,11 @@ DIM_COLS = ("service_group", "service", "base_url", "enabled", "source_type",
             "note", "updated_at")
 
 
-def now_kst_naive() -> datetime:
-    """CH DateTime('Asia/Seoul') 컬럼용 — KST 벽시계, tzinfo 제거."""
-    return datetime.now(KST).replace(tzinfo=None)
+def now_kst() -> datetime:
+    """CH DateTime('Asia/Seoul') 컬럼용 — aware KST. epoch 변환이 호스트 TZ 무관
+    (naive datetime을 clickhouse-connect가 int(x.timestamp())로 다루면 호스트 TZ로
+    해석되어 KST 벽시계와 어긋난다 — C2 회귀 방지, 항상 tzinfo를 유지한 채 넘긴다)."""
+    return datetime.now(KST)
 
 
 class CHWriter:
@@ -97,12 +99,12 @@ class CHWriter:
                       audit_prev["prev_cache_read_tokens"],
                       audit_prev["prev_cache_creation_tokens"],
                       audit_prev["prev_output_tokens"], audit_prev["prev_requests"],
-                      audit_prev["prev_row_count"], now_kst_naive()]],
+                      audit_prev["prev_row_count"], now_kst()]],
                     column_names=AUDIT_COLS)
             self._delete_day(detail_local, date, entry.service)
             self._delete_day(summary_local, date, entry.service)
 
-        collected_at = now_kst_naive()
+        collected_at = now_kst()
         total = 0
         buf: list[list] = []
 
@@ -144,7 +146,7 @@ class CHWriter:
             f"DELETE WHERE source_type = %(stype)s",
             parameters={"stype": source_type},
             settings={"mutations_sync": 2})
-        now = now_kst_naive()
+        now = now_kst()
         self.client.insert(
             f"{DB_DIM}.dim_token_service_dist",
             [[e.service_group, e.service, e.base_url, 1 if e.enabled else 0,
