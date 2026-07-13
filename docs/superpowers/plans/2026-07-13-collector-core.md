@@ -1842,7 +1842,7 @@ DATE_ARG="${1:-$(date -d "yesterday" +%F)}"
 SEED="e2e-seed-1"
 
 docker network create tokene2e 2>/dev/null || true
-trap 'docker rm -f ch-e2e mock-e2e >/dev/null 2>&1 || true' EXIT
+trap 'docker rm -f ch-e2e mock-e2e >/dev/null 2>&1 || true; docker network rm tokene2e >/dev/null 2>&1 || true' EXIT
 
 docker run -d --rm --name ch-e2e --network tokene2e -p 18123:8123 \
   clickhouse/clickhouse-server:24.8
@@ -1866,8 +1866,8 @@ sql += "\nCREATE DATABASE IF NOT EXISTS gpu_data;\n"
 sql += pathlib.Path("ddl/company/dim_service.sql").read_text()
 sql = re.sub(r"ON CLUSTER 'gpu-monitoring'", "", sql)
 sql = re.sub(r"ENGINE = ReplicatedMergeTree\([^)]*\)", "ENGINE = MergeTree", sql, flags=re.S)
-sql = re.sub(r"ENGINE = Distributed\('gpu-monitoring', '(\w+)', '(\w+)',[^)]*\)",
-             r"ENGINE = Distributed('default', '\1', '\2', rand())", sql)
+sql = re.sub(r"ENGINE = Distributed\('gpu-monitoring', '(\w+)', '(\w+)',[\s\S]*?\);",
+             r"ENGINE = Distributed('default', '\1', '\2', rand());", sql)
 for stmt in sql.split(";"):
     if stmt.strip():
         req = urllib.request.Request("http://127.0.0.1:18123/", data=(stmt + ";").encode())

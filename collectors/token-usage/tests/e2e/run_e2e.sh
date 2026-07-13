@@ -8,7 +8,7 @@ DATE_ARG="${1:-$(date -d "yesterday" +%F)}"
 SEED="e2e-seed-1"
 
 docker network create tokene2e 2>/dev/null || true
-trap 'docker rm -f ch-e2e mock-e2e >/dev/null 2>&1 || true' EXIT
+trap 'docker rm -f ch-e2e mock-e2e >/dev/null 2>&1 || true; docker network rm tokene2e >/dev/null 2>&1 || true' EXIT
 
 docker run -d --rm --name ch-e2e --network tokene2e -p 18123:8123 \
   clickhouse/clickhouse-server:24.8
@@ -39,8 +39,8 @@ sql += dim_path.read_text()
 
 sql = re.sub(r"ON CLUSTER 'gpu-monitoring'", "", sql)
 sql = re.sub(r"ENGINE = ReplicatedMergeTree\([^)]*\)", "ENGINE = MergeTree", sql, flags=re.S)
-sql = re.sub(r"ENGINE = Distributed\('gpu-monitoring', '(\w+)', '(\w+)',[^)]*\)",
-             r"ENGINE = Distributed('default', '\1', '\2', rand())", sql)
+sql = re.sub(r"ENGINE = Distributed\('gpu-monitoring', '(\w+)', '(\w+)',[\s\S]*?\);",
+             r"ENGINE = Distributed('default', '\1', '\2', rand());", sql)
 
 # PR #3 결정 반영 전 초안 호환: 파일 내용이 구명(token_fact DB / dim_service_local·dist
 # 테이블)을 쓰고 있어도 신명(fact / dim_token_service_local·dist)으로 치환해 생성
