@@ -1,0 +1,687 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_CLICKHOUSE",
+      "label": "ClickHouse (mart)",
+      "description": "gpu_data.view_token_usage_*_dist / mart.agg_token_service_1d_dist 조회용 — 공유 계정 mart (docs/monitoring/README.md 참조)",
+      "type": "datasource",
+      "pluginId": "grafana-clickhouse-datasource",
+      "pluginName": "ClickHouse"
+    }
+  ],
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "11.6.0"
+    },
+    {
+      "type": "datasource",
+      "id": "grafana-clickhouse-datasource",
+      "name": "ClickHouse",
+      "version": "4.19.0"
+    },
+    {
+      "type": "panel",
+      "id": "timeseries",
+      "name": "Time series",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "table",
+      "name": "Table",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "text",
+      "name": "Text",
+      "version": ""
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "1. 서비스별 일별 total_input_tokens 추이",
+      "description": "view_token_usage_service_1d_dist — 서비스별 일별 total_input_tokens(§4.2/§7.3)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    date AS time,\n    service,\n    sum(total_input_tokens) AS total_input_tokens\nFROM gpu_data.view_token_usage_service_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\nGROUP BY time, service\nORDER BY time",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "2. org 롤업 ($org_depth)",
+      "description": "view_token_usage_org_1d_dist — arraySlice(org_path,1,$org_depth) 롤업 (변수 $org_depth 기본 1, 1~4)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    arrayStringConcat(arraySlice(org_path, 1, $org_depth), '>') AS org,\n    sum(total_input_tokens) AS total_input_tokens,\n    sum(requests) AS requests,\n    sum(distinct_users) AS distinct_users,\n    sum(cost) AS cost\nFROM gpu_data.view_token_usage_org_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\nGROUP BY org\nORDER BY total_input_tokens DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "3. 모델별 토큰·cost",
+      "description": "view_token_usage_model_1d_dist — 모델·provider별 토큰/요청/cost 집계",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    model,\n    provider,\n    sum(total_input_tokens) AS total_input_tokens,\n    sum(output_tokens) AS output_tokens,\n    sum(requests) AS requests,\n    sum(cost) AS cost\nFROM gpu_data.view_token_usage_model_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\nGROUP BY model, provider\nORDER BY total_input_tokens DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "4. 서비스 대사 품질 (diff_* 비0 / summary 부재)",
+      "description": "mart.agg_token_service_1d_dist — is_derived=0(=summary 대사 대상)인 서비스 중 diff_*가 0이 아니거나 reported_* 조인이 NULL(summary 미도착)인 행만 표시. reconcile_status: derived_no_summary(is_derived=1, 정상)/summary_missing(대사 대상인데 summary 부재)/mismatch(대사값 불일치).",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    date,\n    service_group,\n    service,\n    is_derived,\n    reported_input_tokens,\n    diff_input_tokens,\n    diff_cache_read_tokens,\n    diff_cache_creation_tokens,\n    diff_output_tokens,\n    diff_requests,\n    multiIf(\n        is_derived = 1, 'derived_no_summary',\n        reported_input_tokens IS NULL, 'summary_missing',\n        'mismatch'\n    ) AS reconcile_status\nFROM mart.agg_token_service_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n  AND is_derived = 0\n  AND (\n        coalesce(diff_input_tokens, 0) != 0\n        OR coalesce(diff_cache_read_tokens, 0) != 0\n        OR coalesce(diff_cache_creation_tokens, 0) != 0\n        OR coalesce(diff_output_tokens, 0) != 0\n        OR coalesce(diff_requests, 0) != 0\n        OR reported_input_tokens IS NULL\n      )\nORDER BY date DESC, service",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "5. unknown 버킷 비율",
+      "description": "view_token_usage_org_1d_dist — org_path=['unknown'](미매핑) 비중, org 매핑 실패 관측(§6.1)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    date AS time,\n    sum(if(org_path = ['unknown'], total_input_tokens, 0)) AS unknown_tokens,\n    sum(total_input_tokens) AS total_tokens,\n    round(sum(if(org_path = ['unknown'], total_input_tokens, 0)) / nullIf(sum(total_input_tokens), 0), 4) AS unknown_ratio\nFROM gpu_data.view_token_usage_org_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\nGROUP BY time\nORDER BY time",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "6. anon 핸들명 사용 상위",
+      "description": "view_token_usage_1d_dist WHERE user_type='anonymous' GROUP BY user_name — 비실명 핸들명 표기 검증(§6.1 v1.12)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    user_name,\n    sum(total_input_tokens) AS total_input_tokens,\n    sum(requests) AS requests,\n    count(DISTINCT date) AS active_days\nFROM gpu_data.view_token_usage_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n  AND user_type = 'anonymous'\nGROUP BY user_name\nORDER BY total_input_tokens DESC\nLIMIT 20",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "7. 일별 수집 커버리지",
+      "description": "view_token_usage_service_1d_dist — 일자별 보고 서비스 수(reporting_services)와 requests 합계. collectors endpoints.yaml의 enabled 서비스 수와 비교해 커버리지 판단(README 참조).",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 18,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    date,\n    count(DISTINCT service) AS reporting_services,\n    sum(requests) AS requests\nFROM gpu_data.view_token_usage_service_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\nGROUP BY date\nORDER BY date DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "text",
+      "title": "참고: BATCH_RESULT 마커 패널",
+      "datasource": {
+        "type": "datasource",
+        "uid": "grafana"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 32,
+        "w": 6,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "mode": "markdown",
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "**참고 — BATCH_RESULT 마커 패널 (미포함)**\\n\\n이 대시보드의 '일별 수집 커버리지' 패널은 `gpu_data.view_token_usage_service_1d_dist`의 실적 행수만 관측합니다(§7.3). CronJob 실행 자체의 SUCCESS/NODATA/FAILURE 판정은 `BATCH_RESULT` 로그 마커(§5.6) 기반이며, 이를 조회하려면 VictoriaLogs 데이터소스가 필요합니다(§9-20) — 홈랩(stage) 단계에는 VictoriaLogs가 없어 이 대시보드에는 포함하지 않았습니다. company 단계에서 기존 `batch_result` 대시보드(module `token-usage`, `mart-token`)에 무수정 편입됩니다.\\n\\n'수집 커버리지' 패널의 `reporting_services`는 collectors `endpoints.yaml`의 enabled 서비스 수와 비교해 판단하세요(README 참조)."
+      },
+      "pluginVersion": "11.6.0",
+      "transparent": false
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 41,
+  "tags": [
+    "token-usage",
+    "stage",
+    "tester"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "text": "1",
+          "value": "1"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "조직 롤업 깊이 (org_depth)",
+        "multi": false,
+        "name": "org_depth",
+        "options": [
+          {
+            "selected": true,
+            "text": "1",
+            "value": "1"
+          },
+          {
+            "selected": false,
+            "text": "2",
+            "value": "2"
+          },
+          {
+            "selected": false,
+            "text": "3",
+            "value": "3"
+          },
+          {
+            "selected": false,
+            "text": "4",
+            "value": "4"
+          }
+        ],
+        "query": "1,2,3,4",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "Asia/Seoul",
+  "title": "Token Usage — Stage Tester",
+  "uid": "token-usage-stage",
+  "version": 1,
+  "weekStart": ""
+}
