@@ -126,9 +126,13 @@ sed -e "s/{DATE}/${DATE_ARG}/g" \
     -e "s/{EXP_COST_SUM}/${EXP[main_cost_sum]}/g" \
     -e "s/{EXP_MAIN_U5_ROWS}/${EXP[main_user5_rows]}/g" \
     -e "s/{EXP_MAY_U5_ROWS}/${EXP[may_user5_rows]}/g" \
-    tests/e2e/verify_expected_results.sql \
-  | curl -sf --data-binary @- "http://127.0.0.1:${CH_PORT_HOST}/?default_format=TSV" \
-  > /tmp/verify_out_mart.tsv
+    tests/e2e/verify_expected_results.sql > /tmp/verify_query_mart.sql
+# -f 대신 HTTP 코드 캡처 — 서버 오류 본문을 그대로 노출 (진단 가능성, Plan 2a DDL 진단과 동일 원칙)
+VERIFY_HTTP=$(curl -s -o /tmp/verify_out_mart.tsv -w '%{http_code}' \
+  --data-binary @/tmp/verify_query_mart.sql "http://127.0.0.1:${CH_PORT_HOST}/?default_format=TSV")
+if [ "${VERIFY_HTTP}" != "200" ]; then
+  echo "E2E VERIFY QUERY FAILED (HTTP ${VERIFY_HTTP}):"; cat /tmp/verify_out_mart.tsv; exit 1
+fi
 if [ -s /tmp/verify_out_mart.tsv ]; then
   echo "E2E VERIFY FAILED:"; cat /tmp/verify_out_mart.tsv; exit 1
 fi
