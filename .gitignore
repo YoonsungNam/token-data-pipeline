@@ -6,6 +6,7 @@ __pycache__/
 assets/user-org/data/
 *roster*.csv
 dim_user_org_insert*.sql
+dim_token_user_org_insert*.sql
 
 # E2E 실행 시 run_e2e.sh가 생성하는 임시 endpoints — 레포 반입 금지
 collectors/token-usage/tests/e2e/endpoints.e2e.yaml
