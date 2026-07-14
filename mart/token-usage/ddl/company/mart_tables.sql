@@ -33,7 +33,7 @@ ON CLUSTER 'gpu-monitoring'
     output_tokens         UInt64,
     total_input_tokens    UInt64                 COMMENT '= input + cache_read + cache_creation (§4.3)',
     requests              UInt64,
-    cost                  Nullable(Float64)      COMMENT 'Σ(단가×양)/1e6, date 기준 유효 단가 — dim_model 미등록은 NULL (§4.3)',
+    cost                  Nullable(Float64)      COMMENT 'Σ(단가×양)/1e6, date 기준 유효 단가 — dim_token_model 미등록은 NULL (§4.3)',
     created_by            LowCardinality(String) COMMENT '공유 쓰기 계약 — 본 파이프라인은 token-pipeline 고정',
     CONSTRAINT check_created_by CHECK created_by != ''
 )
@@ -168,7 +168,7 @@ ON CLUSTER 'gpu-monitoring'
     total_input_tokens    UInt64,
     requests              UInt64,
     distinct_users        UInt64                 COMMENT 'detail uniqExact, user_id != ''''',
-    headcount             UInt32                 COMMENT '로스터 정원(해당 경로 소속) — dim_user_org 부재 시 0',
+    headcount             UInt32                 COMMENT '로스터 정원(해당 경로 소속) — dim_token_user_org 부재 시 0',
     adoption_rate         Nullable(Float64)      COMMENT 'distinct_users / headcount — headcount 0이면 NULL',
     cost                  Nullable(Float64),
     created_by            LowCardinality(String),
@@ -214,7 +214,7 @@ ON CLUSTER 'gpu-monitoring'
 (
     date                  Date,
     model                 LowCardinality(String) COMMENT 'unknown 포함',
-    provider              LowCardinality(String) COMMENT 'dim_model 조인 — 미등록은 빈 문자열',
+    provider              LowCardinality(String) COMMENT 'dim_token_model 조인 — 미등록은 빈 문자열',
     input_tokens          UInt64,
     cache_read_tokens     UInt64,
     cache_creation_tokens UInt64,
@@ -222,7 +222,7 @@ ON CLUSTER 'gpu-monitoring'
     total_input_tokens    UInt64,
     requests              UInt64,
     distinct_services     UInt32                 COMMENT '해당 모델을 쓴 서비스 수',
-    cost                  Nullable(Float64)      COMMENT 'dim_model 미등록 모델은 NULL',
+    cost                  Nullable(Float64)      COMMENT 'dim_token_model 미등록 모델은 NULL',
     created_by            LowCardinality(String),
     CONSTRAINT check_created_by CHECK created_by != ''
 )

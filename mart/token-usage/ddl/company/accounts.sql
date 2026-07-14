@@ -10,7 +10,7 @@
 --  - INSERT는 _dist 경유만 (fact와의 co-location 라우팅 일관성 — §4.0);
 --    _local에는 멱등 DELETE용 ALTER DELETE만
 --  - GRANT 문은 정규형 `GRANT ON CLUSTER ... <priv> ON <table> TO <user>`
--- 주의: STEP 1이 조인하는 gpu_data.dim_user_org / dim_model의 SELECT GRANT는
+-- 주의: STEP 1이 조인하는 gpu_data.dim_token_user_org / dim_token_model의 SELECT GRANT는
 --   해당 테이블을 만드는 assets DDL(Plan 4)의 accounts에 귀속 —
 --   mart 가동 전 Plan 4 적용이 전제다 (ddl/README.md 적용 순서 참조).
 -- =============================================================

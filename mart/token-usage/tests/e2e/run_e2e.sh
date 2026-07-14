@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."     # mart/token-usage
 
-# 결정적 기대값(E2E 제목의 "결정적") — dim_user_org 시드(2026-06-01/06-15 이관·퇴사) 이후로
+# 결정적 기대값(E2E 제목의 "결정적") — dim_token_user_org 시드(2026-06-01/06-15 이관·퇴사) 이후로
 # 고정한 날짜. 실제 벽시계(date -d yesterday)에 의존하면 CI 실행 시점에 따라 이관 전/후
 # 경계가 흔들려 재현성이 깨지므로 collectors E2E와 달리 고정값을 기본으로 쓴다.
 DATE_ARG="${1:-2026-07-10}"
@@ -34,7 +34,7 @@ done
 
 # DDL: collectors(raw_token_usage/dim_token_service, 그대로) + mart(mart_tables/
 # view_token_usage — accounts.sql 제외, admin 수동 GRANT라 E2E 대상 아님) + 신규
-# ddl_test_dims.sql(dim_user_org/dim_model 단일노드 정본) — 전부 단일노드 변환.
+# ddl_test_dims.sql(dim_token_user_org/dim_token_model 단일노드 정본) — 전부 단일노드 변환.
 # collectors run_e2e.sh의 변환 파이썬 블록을 확장(DB 3개 프리펜드 + 5개 파일 결합).
 python3 - <<'PY'
 import re, pathlib, urllib.request

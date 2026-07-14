@@ -63,7 +63,7 @@
    기생성 — 없으면 그것부터). mart DB가 전용으로 확정되면 CREATE DATABASE도 admin.
 2. 테이블 DDL(`mart_tables.sql`, `view_token_usage.sql`)은 mart install.sh 자동 적용
    대상 (Plan 3 후속 태스크).
-3. **선행 의존**: STEP 1이 조인하는 `gpu_data.dim_user_org`/`dim_model`의 DDL과
+3. **선행 의존**: STEP 1이 조인하는 `gpu_data.dim_token_user_org`/`dim_token_model`의 DDL과
    token_mart SELECT GRANT는 assets(Plan 4) 소관 — **mart 가동 전 Plan 4 적용 전제**
    (E2E/stage 검증에서는 테스트 DDL로 대체).
 4. 이후 스키마 변경은 `migrate_add_*.sql` 관행 (GRANT 추가 포함).

@@ -43,5 +43,5 @@ ReplicatedMergeTree의 `{shard}/{replica}` 매크로가 흡수. 환경별 차이
 ## 이 초안에 없는 것 (후속 Plan에서)
 
 - mart·view 테이블 DDL과 해당 GRANT → Plan 3 (mart)
-- `gpu_data.dim_user_org`·`dim_model` → Plan 4 (assets)
+- `gpu_data.dim_token_user_org`·`dim_token_model` → Plan 4 (assets)
 - `token_dashboard_reader`의 실효 GRANT는 view 테이블 생성 시(Plan 3) 부여 — 계정만 선정의

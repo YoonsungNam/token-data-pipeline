@@ -38,7 +38,7 @@ INSERT INTO {DB_MART}.token_usage_1d_dist
 WITH
     eff_org AS (
         SELECT user_id, argMax(org_path, effective_from) AS org_path
-        FROM {DB_DIM}.dim_user_org_dist
+        FROM {DB_DIM}.dim_token_user_org_dist
         WHERE effective_from <= {{d:Date}}
         GROUP BY user_id
     ),
@@ -51,7 +51,7 @@ WITH
                argMax(cache_read_usd_per_mtok, effective_from)  AS p_cr,
                argMax(cache_creation_usd_per_mtok, effective_from) AS p_cc,
                argMax(output_usd_per_mtok, effective_from)      AS p_out
-        FROM {DB_DIM}.dim_model_dist
+        FROM {DB_DIM}.dim_token_model_dist
         WHERE effective_from <= {{d:Date}}
         GROUP BY model
     )
@@ -178,7 +178,7 @@ GLOBAL LEFT JOIN (
         SELECT user_id,
                argMax(org_path, effective_from)  AS org_path,
                argMax(is_active, effective_from) AS is_active
-        FROM {DB_DIM}.dim_user_org_dist
+        FROM {DB_DIM}.dim_token_user_org_dist
         WHERE effective_from <= {{d:Date}}
         GROUP BY user_id
     )
@@ -203,7 +203,7 @@ SELECT
 FROM {DB_MART}.token_usage_1d_dist AS m
 GLOBAL LEFT JOIN (
     SELECT model, argMax(provider, effective_from) AS provider
-    FROM {DB_DIM}.dim_model_dist
+    FROM {DB_DIM}.dim_token_model_dist
     WHERE effective_from <= {{d:Date}}
     GROUP BY model
 ) AS em ON em.model = m.model

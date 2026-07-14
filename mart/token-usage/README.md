@@ -22,7 +22,7 @@ collectors가 적재한 `fact.raw_token_usage_*`를 조직/모델 차원으로 �
 | CH_HOST/CH_PORT/CH_USER/CH_PASSWORD | localhost/8123/default/'' | ClickHouse 접속 (운영 계정 token_mart는 Secret 주입) |
 | CH_CLUSTER | '' | 빈 값 = 단일노드 (ON CLUSTER·clusterAllReplicas 생략, CI/stage) |
 | EXPECTED_LATE_SERVICES | '' | STEP 0 coverage 경고 제외 목록(콤마 구분, 공백/빈 항목 제거 — Secret 경유 envFrom 주입, §5.9-9) |
-| ORG_MAP_WARN_THRESHOLD | 0.2 | dim_user_org 매핑 실패율 CHECK WARN 임계 |
+| ORG_MAP_WARN_THRESHOLD | 0.2 | dim_token_user_org 매핑 실패율 CHECK WARN 임계 |
 | RETRY_COUNT / RETRY_INTERVAL_S | 10 / 5 | INSERT 후 count 검증 재시도 횟수/간격 |
 | MUTATION_POLL_S / MUTATION_TIMEOUT_S | 3 / 300 | wait_for_mutations 폴링 주기/타임아웃 |
 | INSERT_QUORUM | '' | 빈 값 = 미적용. company(2s×2r)는 install.sh가 `auto` 주입 — detail 적재 직후 agg가 `_dist`로 읽을 때 지연 레플리카 라우팅에 의한 무음 과소집계를 막는 게이트(§9-19). stage(1s×1r)/CI 단일노드는 미설정 |

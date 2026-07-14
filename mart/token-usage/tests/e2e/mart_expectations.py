@@ -32,14 +32,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tools" / "mock-pro
 from app.config import Config as MockConfig    # noqa: E402
 from app.datagen import build_records          # noqa: E402
 
-# dim_model 시드(ddl_test_dims.sql)와 동일 단가(USD per MTok) — 정본은 SQL 파일,
+# dim_token_model 시드(ddl_test_dims.sql)와 동일 단가(USD per MTok) — 정본은 SQL 파일,
 # 이 표는 cost 기대값 계산을 위한 재현.
 PRICES = {
     "claude-opus-4-8": (15.0, 1.5, 18.75, 75.0),
     "claude-sonnet-5": (3.0, 0.3, 3.75, 15.0),
 }
 
-# dim_user_org 시드(ddl_test_dims.sql)와 동일 매핑 — user-0000~0019만 등록
+# dim_token_user_org 시드(ddl_test_dims.sql)와 동일 매핑 — user-0000~0019만 등록
 # (X팀 0~6 / Y팀 7~13 / Z팀 14~19), user-0005는 2026-06-01부로 X팀→Z팀 이관.
 # user-0020 이후(및 anon-*, unclassified '')는 의도적 미등록 → unknown 버킷.
 ORG_X = ("A부문", "X팀")
@@ -49,7 +49,7 @@ ORG_UNKNOWN = ("unknown",)
 
 
 def resolve_org(user_id: str, date: str) -> tuple:
-    """dim_user_org 시드(ddl_test_dims.sql)와 1:1 대응하는 (user_id, date) → org_path.
+    """dim_token_user_org 시드(ddl_test_dims.sql)와 1:1 대응하는 (user_id, date) → org_path.
 
     mart STEP1의 조인은 user_id 문자열 키만 사용하므로(user_type 무관) 여기도
     동일하게 user_id 패턴만으로 판정한다.
