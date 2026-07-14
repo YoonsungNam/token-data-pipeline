@@ -24,6 +24,7 @@
 - RESTATEMENT 마커(§8.4-1, D-2~D-7 summary 재조회에서 발화 — **재조회 자체는 후속 백로그,
   아직 미구현**)를 보면 운영자가 해당 (date, service)의 rerun 여부를 판단한다 —
   이 문서의 날짜 범위 재수집 + --service 조합을 사용.
+- 6시간 캡(TIMEOUT_RANGE_S) 기준 안전 범위는 약 5일 — 긴 구간은 분할 실행.
 
 ## VM push와 rerun (§5.5)
 

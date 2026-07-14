@@ -101,6 +101,8 @@ def wait_job(context, namespace, job_name, timeout_s):
                                 "logs", "-f", f"pod/{pod}", "-n", namespace,
                                 "--pod-running-timeout=5m"], check=False)
         if conds.get("Complete") == "True":
+            print(f"[INFO] 전체 로그 재조회: kubectl --context={context} logs job/{job_name} "
+                  f"-n {namespace} --prefix --tail=-1")
             return True
         if conds.get("Failed") == "True":
             print(f"[ERROR] job {job_name} failed — 전체 로그: kubectl --context={context} "
@@ -153,6 +155,9 @@ def main(argv=None):
         timeout = range_deadline_s(n_days) + 600      # 서버 데드라인 + 폴링 마진
     else:
         job_name = f"{CRONJOB}-manual-{epoch}"
+        # 파드의 target_date와 일치시키기 위해 트리거 시점 기준으로 고정 (§8.3 자정 크로스 방지)
+        kst_now = dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
+        manual_target_date = (kst_now.date() - dt.timedelta(days=1)).isoformat()
         kubectl(args.context, ["create", "job", f"--from=cronjob/{CRONJOB}",
                                job_name, "-n", args.namespace])
         timeout = TIMEOUT_SINGLE_S
@@ -166,8 +171,7 @@ def main(argv=None):
     if args.from_d:
         mart_from, mart_to = args.from_d, args.to_d
     else:
-        kst_now = dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
-        mart_from = mart_to = (kst_now.date() - dt.timedelta(days=1)).isoformat()
+        mart_from = mart_to = manual_target_date
     mart_cmd = build_mart_command(args.context, args.namespace, mart_from, mart_to)
     print("")
     print("[NEXT] collectors rerun 후 동일 날짜 mart rerun은 의무입니다 (§3/§8.3):")

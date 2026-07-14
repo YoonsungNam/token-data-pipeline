@@ -166,10 +166,11 @@ apply_sql() {
   ${KUBECTL} exec -n "${CH_NAMESPACE}" "${ch_pod}" -- rm -f "${tmp_pod_path}"
   echo "  applied: ${base}"
 }
+echo "  (fact DB가 아직 없으면 admin이 accounts.sql을 먼저 실행해야 테이블 DDL이 성공합니다)"
+echo "  (gpu_data DB는 동료 소유 — 부재 시 소유자와 협의)"
 apply_sql "${HERE}/ddl/company/raw_token_usage.sql"
 apply_sql "${HERE}/ddl/company/dim_token_service.sql"
 echo "  (accounts.sql은 적용하지 않았습니다 — CREATE DATABASE/CREATE USER/GRANT는 admin 수동 실행, §7.2)"
-echo "  (fact DB가 아직 없으면 admin이 accounts.sql을 먼저 실행해야 테이블 DDL이 성공합니다)"
 echo "  (company: 클러스터 소유자와 협의 후 ddl/company/accounts.sql의 CHANGE_ME_* 치환 실행)"
 
 # ── [5/6] CronJob 배포 ────────────────────────────────────────────────────────
