@@ -1,6 +1,6 @@
 # token-data-pipeline 설계 문서
 
-- 작성일: 2026-07-10 · **현재 버전 v1.11 (2026-07-14)** — 개정 이력은 §0
+- 작성일: 2026-07-10 · **현재 버전 v1.12 (2026-07-14)** — 개정 이력은 §0
 - 상태: 설계 확정 (사용자 승인) — 구현 진행 중 (Plan 1 mock-provider·Plan 2a collector core 머지)
 - 참조: [gpu-data-pipeline 분석](../../gpu-data-pipeline-analysis.md), [token-usage-api-spec](https://github.com/YoonsungNam/token-usage-api-spec) (`token-usage-api.yaml` v1.1.0, 로컬 클론 `/home/mini/github/token-usage-api-spec`)
 
@@ -20,6 +20,7 @@
 | v1.9 | 2026-07-14 | **Plan 3 mart DDL 초안 리뷰 반영**: §4.3에 summary 부재 시맨틱 신설(reported_\*/diff_\* Nullable — STEP 0 경고-후-진행 케이스의 거짓 대사 방지), created_by CHECK는 `_dist`에도 선언(비동기 INSERT 큐 정체 방지 — 24.8 실증), mart INSERT는 `_dist` 경유만(co-location 보장), org agg의 org_depth 물리 컬럼 제외(파생 가능 — YAGNI) |
 | v1.10 | 2026-07-14 | **Plan 3 T8 체인 통합 검증 + 최종 스펙 동기화**: §4.3에 summary-only(NODATA) 서비스의 `agg_token_service_1d` 보강 행 규칙 추가(sums 0·reported 유지·diff=0−reported — detail-부재/summary-부재 쌍대 규칙, 커버리지 도메인과 agg 도메인 일치), §5.6에 mart BATCH_RESULT `missing_services` 쌍따옴표 규약(서비스명 공백 보호) + `coverage=N/M`·`rows_mart`·`rows_view`는 mart 전용 필드 명시, §7.1 멱등성 불릿에 INSERT `insert_deduplicate=0` 계약(서버측 보강은 accounts.sql) 명문화 |
 | v1.11 | 2026-07-14 | **dim_token_user_org/dim_token_model 명명 확정 반영 (PR #8, Plan 4 T1)**: gpu_data의 사용자-조직·모델 단가 dim 2종을 `dim_token_*` 규칙으로 확정하고(§4.2 도입부의 §9-18 잔여협의 문구를 "적용 확정(PR #8)"로 해소), 이 이름을 스펙 전역(§3 아키텍처 다이어그램, §4.2 표·본문, §4.3, §4.4, §5.9, §6.1/§7.2 .gitignore 패턴 문구, §7.1 조인·검증 문구, §8.5 사본 등급 표, §9 미결사항)에 동기화. mart STEP 1(`app/steps.py`)의 실제 조인 대상도 `dim_token_user_org_dist`/`dim_token_model_dist`로 동일 개명 — 로직·컬럼은 불변, 테이블명 표기만 갱신 |
+| v1.12 | 2026-07-14 | **① 계정 공유 결정 반영** (사용자·클러스터 소유자 합의, 이슈 #1): 전용 계정 3종(token_collector/token_mart/token_dashboard_reader)을 폐지하고 동료의 기존 운영계정 `mart`를 공유 — §7.2 계정·GRANT 경계 절 개정(accounts.sql 4파일에서 CREATE USER 제거·GRANT 대상을 `mart`로 전환, mart의 서버측 `ALTER USER ... SETTINGS insert_deduplicate=0`은 공유 계정 전역 영향이라 제거하고 클라이언트 설정으로만 유지). 잔여 리스크(대시보드=쓰기 권한 계정 사용, 실명 dim 접근)는 §9-1/§9-3 협의 항목에 추가. **② anon 핸들명**: (후속 커밋에서 반영 예정 — 이 행은 v1.12 개정 항목을 예고만 해 두고, 실제 anon 핸들명 확정 내용은 뒤따르는 커밋이 채운다) |
 
 ## 1. 배경과 목적
 
@@ -546,8 +547,11 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
   (system.mutations 폴링 3s/300s. **CH_CLUSTER 설정 시 `clusterAllReplicas(cluster, system.mutations)`로
   전 레플리카 폴링** — 동료 mart/s2job 방식, 리뷰 #8) → INSERT. **INSERT는 `insert_deduplicate=0`
   (v1.10)** — 재삽입(rerun의 DELETE→동일 데이터 INSERT)이 ReplicatedMergeTree 블록 중복제거에
-  걸려 조용히 폐기되는 것을 방지(클라이언트 설정은 `app/ch.py`의 `insert_select`, 서버측 보강은
-  `accounts.sql`의 `ALTER USER token_mart SETTINGS insert_deduplicate = 0`).
+  걸려 조용히 폐기되는 것을 방지(클라이언트 설정은 `app/ch.py`의 `insert_select`). **서버측
+  보강은 v1.12에서 제거** — 계정 공유 결정(§7.2)으로 `mart`가 동료와 공유하는 계정이 되어,
+  `ALTER USER mart SETTINGS insert_deduplicate = 0` 같은 서버측 전역 SETTINGS 변경은 공유
+  계정 전체에 영향을 미친다. 이 변경은 소유자 판단으로 남기고(이슈 #1), 이 파이프라인은
+  클라이언트 설정만으로 계약을 유지한다.
 - **INSERT 직후 count 검증 규칙** (리뷰 #10): Distributed 조회 재시도 10회/5초 간격(RETRY_* 조정 가능),
   `actual >= expected`면 통과(초과분은 중복 징후 CHECK WARN), 재시도 소진 후 미달이면 FAILURE.
   §6.1 dim 교체의 count 검증에도 동일 적용. (근거: 동료 verify_fact_rows — 레플리카 복제 lag)
@@ -582,21 +586,29 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
 패턴(`assets/user-org/data/`, `*roster*.csv`, `dim_user_org_insert*.sql`, `dim_token_user_org_insert*.sql`)을
 등록한다 — endpoints.company.yaml과 동일한 분리 원칙의 확장.
 
-**계정·GRANT 경계 (v1.4)**:
-- 계정명은 **`token_` 접두사**(token_collector / token_mart / token_dashboard_reader) —
-  동료가 `collector`·`mart`를 선점했고 `CREATE USER IF NOT EXISTS`는 충돌 시 에러 없이 계정이
-  공유되므로 이름 분리가 필수.
-- GRANT는 전부 **자기 테이블에 테이블 레벨**(_dist/_local 각각)로 한정, **DB 레벨 GRANT 금지** —
-  동료 실물 accounts.sql이 `mart.*` DB 레벨 광역 GRANT(DROP TABLE 포함)를 쓰므로 공유 DB에서
-  광역 GRANT는 상호 파괴 반경. 신규 테이블 추가 시 accounts.sql GRANT 추가는 `migrate_add_*.sql`
-  절차의 일부.
-- **읽기 전용 대시보드 계정 `token_dashboard_reader`**: GRANT SELECT를 `gpu_data.view_*`로 한정
-  (fact·mart·dim 직접 조회 차단). stage Grafana 테스터가 이 계정을 사용해 권한 모델을 사외에서
-  먼저 검증 — 없으면 쓰기 권한을 가진 mart 계정을 Grafana가 재사용하는 나쁜 기본값이 생긴다.
-  개인별 상세가 필요한 소비자(감사 등)는 별도 계정 또는 ClickHouse ROW POLICY 원칙(§9-3과 함께 확정).
-- **DDL 실행 주체 분리**: `CREATE DATABASE`/`CREATE USER`/accounts.sql은 admin 수동 실행
-  (company에서는 클러스터 소유자/DBA 협의 절차 포함). install.sh의 chi-* 자동 DDL 적용 대상은
-  테이블 DDL·migrate로 한정. stage에서도 동일 경계 적용(습관 차이로 인한 반입 재작업 방지).
+**계정·GRANT 경계 (v1.12, 2026-07-14 계정 공유 결정 — 사용자·클러스터 소유자 합의, 이슈 #1)**:
+- 전용 계정 3종(token_collector / token_mart / token_dashboard_reader)을 **폐지**하고,
+  동료의 **기존 운영계정 `mart`를 공유**한다. 계정 생성·비밀번호 관리는 동료 소유 — 이
+  레포의 accounts.sql은 더 이상 `CREATE USER`를 하지 않는다(과거 `CREATE USER IF NOT
+  EXISTS`로 만들어진 token_* 계정이 남아있다면 소유자와 협의 후 `DROP USER`).
+  구v1.4 근거였던 "이름 충돌 시 조용히 공유"(`CREATE USER IF NOT EXISTS`) 우려는 계정을
+  아예 공유하기로 하면서 해소됐다.
+- GRANT는 여전히 **우리 몫만 자기 테이블에 테이블 레벨**(_dist/_local 각각)로 명시 부여 —
+  **이 레포 accounts.sql은 DB 레벨 GRANT를 요청하지 않는다**. 동료 계정 `mart`가 이미
+  `mart.*` 같은 DB 레벨 광역 GRANT(DROP TABLE 포함)를 가지고 있을 수 있으나, 그것과
+  무관하게 우리가 필요로 하는 최소 권한을 테이블 단위로 이 레포에 문서화해 둔다(향후
+  GRANT가 좁혀지거나 계정이 다시 분리되어도 우리 요구사항이 남아있도록). 신규 테이블
+  추가 시 accounts.sql GRANT 추가는 `migrate_add_*.sql` 절차의 일부.
+- **읽기 전용 대시보드 계정 분리는 폐지**: 이전 안(전용 `token_dashboard_reader`로 권한
+  모델을 사외에서 선검증)은 계정 공유 결정으로 대체됐다 — 대시보드도 공유 계정 `mart`를
+  사용한다. **잔여 리스크**: `mart`는 쓰기 권한을 가진 계정이고 gpu_data의 실명
+  dim(`dim_token_user_org`)에도 접근 가능하므로 "계정 분리에 의한 접근 통제"는 더 이상
+  성립하지 않는다 — per-user 노출 grain·실명 dim 접근·ROW POLICY 필요 여부는 §9-1/§9-3
+  협의로 이관(임시 방침 없음 — 확정 전 반입 게이트일 수 있음).
+- **DDL 실행 주체 분리**: `CREATE DATABASE`/accounts.sql(GRANT)은 admin 수동 실행
+  (company에서는 클러스터 소유자/DBA 협의 절차 포함). `CREATE USER`는 더 이상 이 레포의
+  책임이 아니다(계정은 동료 소유). install.sh의 chi-* 자동 DDL 적용 대상은 테이블
+  DDL·migrate로 한정. stage에서도 동일 경계 적용(습관 차이로 인한 반입 재작업 방지).
 
 - 스크립트 규약: `./build.sh <stage|company>` / `./install.sh <stage|company>` +
   `--registry/--tag/--context/--namespace`. 태그 기본 git short SHA. stage=ghcr.io 기본,
@@ -611,15 +623,19 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
   (서버사이드 SQL 중심이라 경량). limits 없는 배포 금지.
 - install.sh: Secret 멱등 생성(`<module>-ch-secret`, y/N 확인), `chi-*` 파드 자동 탐색 후 DDL 적용,
   CH_CLUSTER 주입, **kube API 서버 호스트 NO_PROXY 자동 추가** + 수집기 프록시 env를 Secret에 포함(§5.7).
-- DDL: `ddl/{stage,company}/` 분리, 최소 권한 `accounts.sql` (리뷰 #8 반영):
-  - `token_collector`: fact 자기 테이블 INSERT(dist/local) + local ALTER DELETE +
+- DDL: `ddl/{stage,company}/` 분리, 최소 권한 `accounts.sql` (리뷰 #8 반영, v1.12에서
+  공유 계정 `mart` 기준으로 갱신 — 계정명은 전부 `mart` 하나이며, 아래는 "몫"별 GRANT 묶음):
+  - 수집기 몫(구 token_collector): fact 자기 테이블 INSERT(dist/local) + local ALTER DELETE +
     gpu_data.dim_token_service 쓰기 — 전부 **테이블 레벨**. `mutations_sync=2` 방식이므로
     system.mutations 권한 불요.
-  - `token_mart`: fact·gpu_data 자기 테이블 조회 + mart·view 자기 테이블 쓰기(INSERT/ALTER DELETE) +
-    **GRANT SELECT ON system.mutations + GRANT CREATE TEMPORARY TABLE ON \*.\***
-    (clusterAllReplicas 폴링·GLOBAL JOIN에 필요).
-  - `token_dashboard_reader`: SELECT on `gpu_data.view_*`만 (위 계정·GRANT 경계 참조).
-  - 이후 스키마 변경은 `migrate_add_*.sql` 관행 (GRANT 추가 포함).
+  - mart 배치 몫(구 token_mart): fact·gpu_data 자기 테이블 조회 + mart·view 자기 테이블
+    쓰기(INSERT/ALTER DELETE) + **GRANT SELECT ON system.mutations + GRANT CREATE
+    TEMPORARY TABLE ON \*.\*** (clusterAllReplicas 폴링·GLOBAL JOIN에 필요).
+  - 대시보드 몫(구 token_dashboard_reader): 별도 GRANT 불필요 — 위 mart 배치 몫의 SELECT가
+    이미 `gpu_data.view_*`를 포함한다(계정 공유 결정). 잔여 리스크는 위 계정·GRANT 경계
+    절 참조.
+  - 전부 공유 계정 `mart`에 부여 — 이후 스키마 변경은 `migrate_add_*.sql` 관행 (GRANT
+    추가 포함).
 - **endpoints.yaml 분리 원칙**: 레포에는 stage(mock-provider)용만 커밋. 사내 서비스 URL 목록은
   `endpoints.company.yaml`(.gitignore)에서 install.sh가 ConfigMap 생성.
 
@@ -709,9 +725,9 @@ ClickHouse가 유일 사본, 25개월 보존·차지백 근거). 동료 레포�
 
 | # | 항목 | 임시 방침 | 확정 방법 |
 |---|---|---|---|
-| 1 | 사내 대시보드 view table 컬럼 계약 — **org 롤업 기본 표시 깊이·서브트리 필터 UX(가변 깊이 전제), anonymous 버킷 표시·per-user 행 조직 부착 여부, 불완전 데이터 마커, 노출 grain(per-user vs agg만), 소규모 조직(headcount 1~2) 셀 억제 기준** | mart와 동일 스키마 | 대시보드 담당과 협의 |
+| 1 | 사내 대시보드 view table 컬럼 계약 — **org 롤업 기본 표시 깊이·서브트리 필터 UX(가변 깊이 전제), anonymous 버킷 표시·per-user 행 조직 부착 여부, 불완전 데이터 마커, 노출 grain(per-user vs agg만), 소규모 조직(headcount 1~2) 셀 억제 기준.** **잔여 리스크(v1.12 계정 공유 결정으로 추가)**: 대시보드가 쓰기 권한을 가진 공유 계정 `mart`로 접근하게 되어 계정 분리에 의한 접근 통제가 사라짐 — per-user 노출 grain 확정 시 이 리스크를 함께 다룰 것 | mart와 동일 스키마 | 대시보드 담당과 협의 |
 | 2 | dim_token_user_org 소스 시스템 (인사/조직 DB — **전 직원 로스터+이력+조직 전체 경로(가변 깊이) 제공 가능 여부**, **anon 매핑 제공의 정책 승인 여부**(별도 항목), §7.2 환경 데이터 경계 상속) | CSV 시드(경로 `>` 구분 컬럼) | 사내 확인 후 2단계 sync 설계 |
-| 3 | company ClickHouse 네임스페이스·계정 정책 (+per-user 조회의 ROW POLICY/계정 분리 정책) — **클러스터 'gpu-monitoring' 2샤드×2레플리카는 확인됨(이슈 #1)** | 잔여: 네임스페이스·계정 | 사내 반입 시 확인 |
+| 3 | company ClickHouse 네임스페이스·계정 정책 (+per-user 조회의 ROW POLICY/계정 분리 정책) — **클러스터 'gpu-monitoring' 2샤드×2레플리카는 확인됨(이슈 #1). 계정 정책은 v1.12에서 "공유 계정 `mart`로 확정"(전용 계정 3종 폐지) — 잔여는 네임스페이스 + 공유 계정 하에서의 실명 dim(dim_token_user_org) 접근 통제(ROW POLICY 등)** | 잔여: 네임스페이스·ROW POLICY | 사내 반입 시 확인 |
 | 4 | VM push 엔드포인트(vminsert)와 사내 VM 정책 | stage 홈랩 VM으로 검증 | 사내 확인 |
 | 5 | 모델 단가 통화(USD/KRW)·환율·실계약가 | USD 고정, cost는 참고 지표 | 비용 리포트 요구 확정 시 |
 | 6 | 수집 시각(02:00 일괄)·서비스별 rate limit·**limit 상향(최대 5000)**·**최소 보존 하한(30~35일)**·**정정 통지 의무**·**D-2~D-7 재조회 예산** 협의 | 02:00 순차 + Retry-After 존중, limit 1000 | 서비스 구현팀들과 협의 |

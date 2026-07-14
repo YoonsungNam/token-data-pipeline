@@ -34,7 +34,7 @@ def test_env_parsing(monkeypatch):
     _clear_env(monkeypatch)
     monkeypatch.setenv("CH_HOST", "ch.internal")
     monkeypatch.setenv("CH_PORT", "9000")
-    monkeypatch.setenv("CH_USER", "token_mart")
+    monkeypatch.setenv("CH_USER", "mart")
     monkeypatch.setenv("CH_PASSWORD", "secret")
     monkeypatch.setenv("CH_CLUSTER", "gpu-monitoring")
     monkeypatch.setenv("ORG_MAP_WARN_THRESHOLD", "0.35")
@@ -46,7 +46,7 @@ def test_env_parsing(monkeypatch):
     cfg = load_config()
     assert cfg.ch_host == "ch.internal"
     assert cfg.ch_port == 9000
-    assert cfg.ch_user == "token_mart"
+    assert cfg.ch_user == "mart"
     assert cfg.ch_password == "secret"
     assert cfg.ch_cluster == "gpu-monitoring"
     assert cfg.org_map_warn_threshold == 0.35

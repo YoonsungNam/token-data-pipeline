@@ -1,7 +1,7 @@
 # assets/user-org DDL 초안 (Plan 4)
 
 스펙 v1.10 §4.2/§6.1 기준. `gpu_data.dim_token_user_org` (`_local` ReplicatedMergeTree +
-`_dist` Distributed) + token_mart 읽기 GRANT.
+`_dist` Distributed) + 공유 계정 `mart` 읽기 GRANT.
 
 ## 협의 지점 (소유자 리뷰 요청)
 
@@ -9,7 +9,7 @@
    적용입니다(스펙 §4.2의 무접두사 표기는 v1.11에서 정리 완료).
    특히 `dim_model`류 범용 이름은 충돌 위험이 커서 접두사가 안전합니다. 이견 있으시면
    말씀 주세요.
-2. **gpu_data 신규 테이블 1종** + token_mart SELECT GRANT (dim_token_service 때와 동일 절차).
+2. **gpu_data 신규 테이블 1종** + 공유 계정 `mart` SELECT GRANT (dim_token_service 때와 동일 절차).
 3. **쓰기 주체**: 전용 계정 없이 **admin 수동**(이력 append는 사내 절차 투입·리뷰,
    §6.1 1단계 — 빈도 낮음 + 개인정보 테이블 최소 권한). 2단계 sync CronJob(§9-2) 도입 시
    전용 계정 신설.

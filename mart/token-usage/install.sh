@@ -91,10 +91,11 @@ if [[ "${ans}" == "y" || "${ans}" == "Y" ]]; then
 fi
 
 # ── [2/5] app secret (envFrom — 키 이름이 곧 컨테이너 env 이름, §5.7/§7.2) ────
-# collectors와 델타: CH_USER 기본 token_mart, proxy/CA 프롬프트 없음(mart는 아웃바운드
-# HTTP 없음 — YAGNI), EXPECTED_LATE_SERVICES 선택 입력(enter=스킵 — 키 자체를 Secret에
-# 넣지 않아 컨테이너 env 미설정 → app 기본값 '' 사용). INSERT_QUORUM은 company에서만
-# 'auto' 자동 포함 — Global Constraints 레플리카 지연 게이트(§9-19), 대화형 프롬프트 아님.
+# collectors와 델타: CH_USER 기본값은 계정 공유 결정(2026-07-14)으로 동일(mart) —
+# proxy/CA 프롬프트 없음(mart는 아웃바운드 HTTP 없음 — YAGNI), EXPECTED_LATE_SERVICES
+# 선택 입력(enter=스킵 — 키 자체를 Secret에 넣지 않아 컨테이너 env 미설정 → app 기본값
+# '' 사용). INSERT_QUORUM은 company에서만 'auto' 자동 포함 — Global Constraints
+# 레플리카 지연 게이트(§9-19), 대화형 프롬프트 아님.
 echo ""
 echo "[2/5] app secret '${SECRET_NAME}'"
 if ${KUBECTL} get secret "${SECRET_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1; then
@@ -103,8 +104,8 @@ else
   ans="y"
 fi
 if [[ "${ans}" == "y" || "${ans}" == "Y" ]]; then
-  read -r -p "  CH_USER [token_mart]: " ch_user
-  ch_user="${ch_user:-token_mart}"
+  read -r -p "  CH_USER [mart]: " ch_user
+  ch_user="${ch_user:-mart}"
   read -r -s -p "  CH_PASSWORD: " ch_pass; echo ""
   read -r -p "  EXPECTED_LATE_SERVICES (콤마 구분 서비스명, 없으면 enter): " expected_late_v
   args=(--from-literal="CH_USER=${ch_user}"
@@ -142,11 +143,14 @@ apply_sql() {
   ${KUBECTL} exec -n "${CH_NAMESPACE}" "${ch_pod}" -- rm -f "${tmp_pod_path}"
   echo "  applied: ${base}"
 }
-echo "  mart/gpu_data DB·GRANT·insert_deduplicate 설정은 admin: ddl/company/accounts.sql"
-echo "  (위 GRANT가 없으면 아래 테이블 DDL은 만들어져도 token_mart의 INSERT/DELETE가 실패합니다)"
+echo "  mart/gpu_data DB·GRANT 설정은 admin: ddl/company/accounts.sql (계정은 공유 mart —"
+echo "  계정 공유 합의 2026-07-14, CREATE USER는 이 레포 소관 아님. insert_deduplicate=0은"
+echo "  app/ch.py 클라이언트 설정으로만 적용)"
+echo "  (위 GRANT가 없으면 아래 테이블 DDL은 만들어져도 mart(공유 계정)의 INSERT/DELETE가 실패합니다)"
 apply_sql "${HERE}/ddl/company/mart_tables.sql"
 apply_sql "${HERE}/ddl/company/view_token_usage.sql"
-echo "  (accounts.sql은 적용하지 않았습니다 — CREATE USER/GRANT/ALTER USER는 admin 수동 실행, §7.2)"
+echo "  (accounts.sql은 적용하지 않았습니다 — GRANT는 admin 수동 실행, §7.2. 계정 생성·비밀번호는"
+echo "  동료 소유이므로 이 레포에서 관리하지 않습니다)"
 
 # ── [4/5] CronJob 배포 ────────────────────────────────────────────────────────
 echo ""

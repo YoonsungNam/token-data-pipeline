@@ -1,7 +1,7 @@
 -- =============================================================
 -- Company/Stage ClickHouse DDL — mart 1차 집계 4테이블 (스펙 §4.3)
 -- Target cluster: gpu-monitoring (company 2s×2r / stage 1s×1r)
--- Writer: token_mart (STEP 1 — §7.1)
+-- Writer: mart (공유 계정, 구 token_mart — STEP 1, §7.1)
 -- 주의: mart DB는 동료 소유 공유 DB(기본안 — ddl/README.md 협의 지점 1) —
 --       CREATE DATABASE 하지 않음. 테이블 DDL만 install.sh 자동 적용.
 -- 공유 쓰기 계약: created_by는 DEFAULT 없음 — 모든 작성자가 INSERT 시

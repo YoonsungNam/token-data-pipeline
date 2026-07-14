@@ -19,7 +19,7 @@ collectors가 적재한 `fact.raw_token_usage_*`를 조직/모델 차원으로 �
 
 | 변수 | 기본값 | 의미 |
 |---|---|---|
-| CH_HOST/CH_PORT/CH_USER/CH_PASSWORD | localhost/8123/default/'' | ClickHouse 접속 (운영 계정 token_mart는 Secret 주입) |
+| CH_HOST/CH_PORT/CH_USER/CH_PASSWORD | localhost/8123/default/'' | ClickHouse 접속 (운영 계정 mart는 Secret 주입 — 동료 소유 공유 계정, 계정 공유 결정 2026-07-14) |
 | CH_CLUSTER | '' | 빈 값 = 단일노드 (ON CLUSTER·clusterAllReplicas 생략, CI/stage) |
 | EXPECTED_LATE_SERVICES | '' | STEP 0 coverage 경고 제외 목록(콤마 구분, 공백/빈 항목 제거 — Secret 경유 envFrom 주입, §5.9-9) |
 | ORG_MAP_WARN_THRESHOLD | 0.2 | dim_token_user_org 매핑 실패율 CHECK WARN 임계 |

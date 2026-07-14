@@ -105,8 +105,8 @@ else
   ans="y"
 fi
 if [[ "${ans}" == "y" || "${ans}" == "Y" ]]; then
-  read -r -p "  CH_USER [token_collector]: " ch_user
-  ch_user="${ch_user:-token_collector}"
+  read -r -p "  CH_USER [mart]: " ch_user
+  ch_user="${ch_user:-mart}"
   read -r -s -p "  CH_PASSWORD: " ch_pass; echo ""
   read -r -p "  COLLECTOR_HTTPS_PROXY ('none'=직접 연결, enter=시스템 상속, 값=프록시 URL): " http_proxy_v
   read -r -p "  사내 CA 번들 파일 경로 (없으면 enter): " ca_bundle_v

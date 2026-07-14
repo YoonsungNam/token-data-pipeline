@@ -80,7 +80,7 @@ python3 mart/token-usage/tools/rerun.py --context company \
 
 - `ddl/README.md` — 협의 지점(네이밍), 시드 규약 상세.
 - `ddl/company/dim_token_model.sql` — 테이블 생성 DDL.
-- `ddl/company/accounts.sql` — token_mart 읽기 권한 (admin 수동).
+- `ddl/company/accounts.sql` — 공유 계정 `mart` 읽기 권한 (admin 수동, 계정 공유 결정 2026-07-14).
 
 ## 참고
 

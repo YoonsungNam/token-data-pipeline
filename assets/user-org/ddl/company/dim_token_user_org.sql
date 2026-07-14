@@ -3,7 +3,7 @@
 -- Target cluster: gpu-monitoring
 -- Writer: admin 수동 (1단계 — csv_to_dim_user_org_insert.py가 생성한
 --         INSERT SQL을 사내 절차로 투입·리뷰 후 실행, §6.1) /
---         Reader: token_mart (STEP 1 이력 조인)
+--         Reader: mart (공유 계정, 계정 공유 결정 2026-07-14 — STEP 1 이력 조인)
 -- 주의: gpu_data는 기존(동료 소유) DB — CREATE DATABASE 하지 않음.
 -- 네이밍: dim_token_* 접두사 규칙 적용 (dim_token_service.sql 헤더의
 --   확정 규칙 — "토큰 파이프라인이 gpu_data에 만드는 모든 테이블").

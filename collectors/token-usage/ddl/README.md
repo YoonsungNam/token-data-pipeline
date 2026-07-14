@@ -9,7 +9,7 @@
 |---|---|
 | `company/raw_token_usage.sql` | `fact` DB + 수집 원본 3테이블 (raw 상세 / summary / 교체 감사) — local+dist 쌍 |
 | `company/dim_token_service.sql` | `gpu_data.dim_token_service` — 서비스 레지스트리 (이슈 #1 확정: gpu_data 공유) |
-| `company/accounts.sql` | 계정 3종(`token_collector`/`token_mart`/`token_dashboard_reader`) + **테이블 레벨** GRANT |
+| `company/accounts.sql` | 공유 계정 `mart`(동료 소유, 계정 공유 합의 2026-07-14 — 이슈 #1) 앞 **테이블 레벨** GRANT (CREATE USER 없음) |
 
 ## 확정된 결정 (2026-07-13, 소유자 협의)
 
@@ -44,4 +44,5 @@ ReplicatedMergeTree의 `{shard}/{replica}` 매크로가 흡수. 환경별 차이
 
 - mart·view 테이블 DDL과 해당 GRANT → Plan 3 (mart)
 - `gpu_data.dim_token_user_org`·`dim_token_model` → Plan 4 (assets)
-- `token_dashboard_reader`의 실효 GRANT는 view 테이블 생성 시(Plan 3) 부여 — 계정만 선정의
+- 대시보드용 별도 GRANT는 불필요 — 공유 계정 `mart`가 이미 view 테이블 read 권한을
+  가짐(계정 공유 결정, 2026-07-14). 잔여 리스크는 스펙 §7.2/§9-1/§9-3 참조

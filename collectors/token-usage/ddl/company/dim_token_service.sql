@@ -1,7 +1,7 @@
 -- =============================================================
 -- Company/Stage ClickHouse DDL — gpu_data.dim_token_service
 -- Target cluster: gpu-monitoring
--- Writer: token_collector — 각 수집 모듈이 자기 source_type 범위만
+-- Writer: mart (공유 계정, 구 token_collector — 계정 공유 결정 2026-07-14) — 각 수집 모듈이 자기 source_type 범위만
 --         원자 교체 (DELETE WHERE source_type='<유형>' → INSERT,
 --         mutations_sync=2 — 스펙 §4.2·§5.9 계약 6조)
 -- 주의: gpu_data는 기존(동료 소유) DB — CREATE DATABASE 하지 않음.
