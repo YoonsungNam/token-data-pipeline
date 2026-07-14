@@ -7,7 +7,14 @@
 
 DB명은 §9-18 협의 변경 지점 — 아래 상수 3개만 수정 (테이블명 하드코딩 금지,
 f"{DB_MART}.token_usage_1d_dist" 형식으로 참조).
+
+company 2단계 검증 전략 — 격리 DB 검증용, docs/operations/company-verify.md.
+DB_* 상수는 CH_DB_FACT/CH_DB_DIM/CH_DB_MART로 env화되어 있다. 아래 SQL 상수
+(steps.py/batch.py)는 이 모듈을 import하는 시점에 f-string으로 DB명이 이미
+보간되어 문자열로 고정된다 — env는 프로세스 시작 시 1회 읽히므로(CronJob env
+주입 전제) 런타임 중 재평가되지 않는다. 이는 의도된 동작이다.
 """
+import os
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -15,9 +22,9 @@ import clickhouse_connect
 
 from app.config import Config
 
-DB_FACT = "fact"        # §9-18 협의 변경 지점 (PR #6)
-DB_DIM = "gpu_data"     # §9-18 협의 변경 지점 (PR #6)
-DB_MART = "mart"        # §9-18 협의 변경 지점 (PR #6) — mart DB 공유/전용 잔여 협의 중
+DB_FACT = os.getenv("CH_DB_FACT", "fact")        # §9-18 협의 변경 지점 (PR #6)
+DB_DIM = os.getenv("CH_DB_DIM", "gpu_data")     # §9-18 협의 변경 지점 (PR #6)
+DB_MART = os.getenv("CH_DB_MART", "mart")        # §9-18 협의 변경 지점 (PR #6) — mart DB 공유/전용 잔여 협의 중
 
 KST = timezone(timedelta(hours=9))
 

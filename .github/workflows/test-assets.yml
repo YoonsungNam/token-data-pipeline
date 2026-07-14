@@ -1,0 +1,72 @@
+name: test-assets
+
+on:
+  push:
+    branches: [main]
+    paths: ["assets/**", ".github/workflows/test-assets.yml",
+            "mart/token-usage/tests/e2e/ddl_test_dims.sql",
+            "tools/gen_verify_ddl.py",
+            "collectors/token-usage/ddl/company/**", "collectors/token-usage/ddl/company-verify/**",
+            "mart/token-usage/ddl/company/**", "mart/token-usage/ddl/company-verify/**",
+            "assets/user-org/ddl/company-verify/**", "assets/model-catalog/ddl/company-verify/**",
+            "collectors/token-usage/k8s/overlays/company-verify/**",
+            "mart/token-usage/k8s/overlays/company-verify/**"]
+  pull_request:
+    paths: ["assets/**", ".github/workflows/test-assets.yml",
+            "mart/token-usage/tests/e2e/ddl_test_dims.sql",
+            "tools/gen_verify_ddl.py",
+            "collectors/token-usage/ddl/company/**", "collectors/token-usage/ddl/company-verify/**",
+            "mart/token-usage/ddl/company/**", "mart/token-usage/ddl/company-verify/**",
+            "assets/user-org/ddl/company-verify/**", "assets/model-catalog/ddl/company-verify/**",
+            "collectors/token-usage/k8s/overlays/company-verify/**",
+            "mart/token-usage/k8s/overlays/company-verify/**"]
+
+jobs:
+  verify-ddl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: gen_verify_ddl.py --check (드리프트 가드)
+        run: python3 tools/gen_verify_ddl.py --check
+      - name: 원 DB명 구조 토큰 잔존 0 (격리 실패 시 최악 케이스 — ZK 경로 등)
+        run: |
+          ! grep -rnE "\b(fact|gpu_data|mart)\.|/clickhouse/tables/\{shard\}/(fact|gpu_data|mart)/|Distributed\('gpu-monitoring', ?'(fact|gpu_data|mart)',|CREATE DATABASE IF NOT EXISTS (fact|gpu_data|mart)\b|\bTO mart\b" \
+            collectors/token-usage/ddl/company-verify \
+            mart/token-usage/ddl/company-verify \
+            assets/user-org/ddl/company-verify \
+            assets/model-catalog/ddl/company-verify
+      - name: Render company-verify overlays
+        run: |
+          kubectl kustomize collectors/token-usage/k8s/overlays/company-verify > /tmp/collectors-company-verify.yaml
+          kubectl kustomize mart/token-usage/k8s/overlays/company-verify > /tmp/mart-company-verify.yaml
+          grep -q 'name: token-usage-collector-verify' /tmp/collectors-company-verify.yaml
+          grep -q 'name: token-usage-ch-secret-verify' /tmp/collectors-company-verify.yaml
+          grep -q 'name: token-usage-endpoints-verify' /tmp/collectors-company-verify.yaml
+          grep -q 'name: token-mart-daily-verify' /tmp/mart-company-verify.yaml
+          grep -q 'name: token-mart-ch-secret-verify' /tmp/mart-company-verify.yaml
+
+  unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: assets/user-org
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "pytest>=8"
+      - run: python -m pytest tests/ -v --ignore=tests/e2e
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run E2E
+        run: ./assets/user-org/tests/e2e/run_e2e.sh

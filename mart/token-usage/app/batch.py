@@ -75,7 +75,7 @@ FROM {DB_MART}.token_usage_1d_dist
 WHERE date = {{d:Date}}
 """
 
-# (d) dim_model 미등록 모델 집합 — cost IS NULL, 'unknown' 자체는 제외(전 단가 NULL 시드 정상)
+# (d) dim_token_model 미등록 모델 집합 — cost IS NULL, 'unknown' 자체는 제외(전 단가 NULL 시드 정상)
 SQL_VALIDATE_UNREGISTERED_MODELS = f"""
 SELECT DISTINCT model
 FROM {DB_MART}.token_usage_1d_dist
@@ -145,7 +145,7 @@ def _validate_org_mapping(gate, cfg: Config, date: str) -> Warn:
 
 
 def _validate_unregistered_models(gate, date: str) -> Warn:
-    """(d) dim_model 미등록 모델 집합 — cost IS NULL('unknown' 제외)."""
+    """(d) dim_token_model 미등록 모델 집합 — cost IS NULL('unknown' 제외)."""
     models = sorted({r[0] for r in gate.query(SQL_VALIDATE_UNREGISTERED_MODELS, {"d": date})})
     if not models:
         return Warn(0, "")

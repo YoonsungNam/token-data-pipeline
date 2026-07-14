@@ -111,3 +111,13 @@ def test_context_required():
     with pytest.raises(SystemExit) as e:
         rerun.main([])
     assert e.value.code == 2
+
+
+def test_cronjob_default_and_override():
+    # company-verify 등 -verify 접미 CronJob 재수행용 오버라이드 (docs/operations/company-verify.md)
+    args = rerun.build_arg_parser().parse_args(["--context", "homelab"])
+    assert args.cronjob == rerun.CRONJOB == "token-mart-daily"
+
+    args = rerun.build_arg_parser().parse_args(
+        ["--context", "homelab", "--cronjob", "token-mart-daily-verify"])
+    assert args.cronjob == "token-mart-daily-verify"

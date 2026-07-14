@@ -1,7 +1,7 @@
 -- =============================================================
 -- Company/Stage ClickHouse DDL — mart 1차 집계 4테이블 (스펙 §4.3)
 -- Target cluster: gpu-monitoring (company 2s×2r / stage 1s×1r)
--- Writer: token_mart (STEP 1 — §7.1)
+-- Writer: mart (공유 계정, 구 token_mart — STEP 1, §7.1)
 -- 주의: mart DB는 동료 소유 공유 DB(기본안 — ddl/README.md 협의 지점 1) —
 --       CREATE DATABASE 하지 않음. 테이블 DDL만 install.sh 자동 적용.
 -- 공유 쓰기 계약: created_by는 DEFAULT 없음 — 모든 작성자가 INSERT 시
@@ -23,6 +23,7 @@ ON CLUSTER 'gpu-monitoring'
     service               LowCardinality(String) COMMENT '정본 = endpoints.yaml (§5.0)',
     user_id               String                 COMMENT 'unclassified는 빈 문자열 (§5.4)',
     user_type             LowCardinality(String) COMMENT 'identified | anonymous | unclassified',
+    user_name             String                 COMMENT '표기용 — anonymous만 dim 핸들명, identified/unclassified는 빈 문자열(§9-1 보류)',
     model                 LowCardinality(String) COMMENT 'unknown 허용',
     org_path              Array(String)          COMMENT '최상위→말단 가변 깊이 — 미매핑은 [''unknown''] (§6.1)',
     org_top               LowCardinality(String) COMMENT '편의 파생 = org_path[1]',
@@ -33,7 +34,7 @@ ON CLUSTER 'gpu-monitoring'
     output_tokens         UInt64,
     total_input_tokens    UInt64                 COMMENT '= input + cache_read + cache_creation (§4.3)',
     requests              UInt64,
-    cost                  Nullable(Float64)      COMMENT 'Σ(단가×양)/1e6, date 기준 유효 단가 — dim_model 미등록은 NULL (§4.3)',
+    cost                  Nullable(Float64)      COMMENT 'Σ(단가×양)/1e6, date 기준 유효 단가 — dim_token_model 미등록은 NULL (§4.3)',
     created_by            LowCardinality(String) COMMENT '공유 쓰기 계약 — 본 파이프라인은 token-pipeline 고정',
     CONSTRAINT check_created_by CHECK created_by != ''
 )
@@ -54,6 +55,7 @@ ON CLUSTER 'gpu-monitoring'
     service               LowCardinality(String),
     user_id               String,
     user_type             LowCardinality(String),
+    user_name             String,
     model                 LowCardinality(String),
     org_path              Array(String),
     org_top               LowCardinality(String),
@@ -168,7 +170,7 @@ ON CLUSTER 'gpu-monitoring'
     total_input_tokens    UInt64,
     requests              UInt64,
     distinct_users        UInt64                 COMMENT 'detail uniqExact, user_id != ''''',
-    headcount             UInt32                 COMMENT '로스터 정원(해당 경로 소속) — dim_user_org 부재 시 0',
+    headcount             UInt32                 COMMENT '로스터 정원(해당 경로 소속) — dim_token_user_org 부재 시 0',
     adoption_rate         Nullable(Float64)      COMMENT 'distinct_users / headcount — headcount 0이면 NULL',
     cost                  Nullable(Float64),
     created_by            LowCardinality(String),
@@ -214,7 +216,7 @@ ON CLUSTER 'gpu-monitoring'
 (
     date                  Date,
     model                 LowCardinality(String) COMMENT 'unknown 포함',
-    provider              LowCardinality(String) COMMENT 'dim_model 조인 — 미등록은 빈 문자열',
+    provider              LowCardinality(String) COMMENT 'dim_token_model 조인 — 미등록은 빈 문자열',
     input_tokens          UInt64,
     cache_read_tokens     UInt64,
     cache_creation_tokens UInt64,
@@ -222,7 +224,7 @@ ON CLUSTER 'gpu-monitoring'
     total_input_tokens    UInt64,
     requests              UInt64,
     distinct_services     UInt32                 COMMENT '해당 모델을 쓴 서비스 수',
-    cost                  Nullable(Float64)      COMMENT 'dim_model 미등록 모델은 NULL',
+    cost                  Nullable(Float64)      COMMENT 'dim_token_model 미등록 모델은 NULL',
     created_by            LowCardinality(String),
     CONSTRAINT check_created_by CHECK created_by != ''
 )

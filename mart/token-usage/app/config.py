@@ -22,10 +22,10 @@ class Config:
     ch_host: str = "localhost"
     ch_port: int = 8123
     ch_user: str = "default"
-    ch_password: str = ""              # 운영 계정 token_mart는 Secret 주입
+    ch_password: str = ""              # 운영 계정 mart(공유)는 Secret 주입
     ch_cluster: str = ""               # 빈 값 = 단일노드 (ON CLUSTER·clusterAllReplicas 생략, §4.0)
     expected_late_services: list[str] = field(default_factory=list)  # STEP 0 경고 제외 (§5.9-9)
-    org_map_warn_threshold: float = 0.2   # dim_user_org 매핑 실패율 CHECK WARN 임계
+    org_map_warn_threshold: float = 0.2   # dim_token_user_org 매핑 실패율 CHECK WARN 임계
     retry_count: int = 10               # count 검증 재시도 횟수 (§7.1 리뷰 #10)
     retry_interval_s: int = 5
     mutation_poll_s: int = 3            # wait_for_mutations 폴링 주기

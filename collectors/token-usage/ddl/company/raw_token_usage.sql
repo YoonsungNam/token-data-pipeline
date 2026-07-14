@@ -1,7 +1,7 @@
 -- =============================================================
 -- Company/Stage ClickHouse DDL — fact 수집 원본 3테이블
 -- Target cluster: gpu-monitoring (company 2s×2r / stage 1s×1r)
--- Writer: token_collector (스펙 v1.6 §4.0~4.1, §8.4)
+-- Writer: mart (공유 계정, 구 token_collector — 스펙 v1.6 §4.0~4.1, §8.4, 계정 공유 v1.12)
 -- §9-18 확정(2026-07-13): 공유 fact DB 사용 (ddl/README.md 참조)
 -- 주의: fact DB 생성은 admin 수동(accounts.sql) — §7.2 DDL 실행 주체 분리.
 --       install.sh는 이 파일의 테이블 DDL만 자동 적용한다.

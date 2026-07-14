@@ -7,7 +7,7 @@
 |---|---|---|
 | `company/mart_tables.sql` | mart.token_usage_1d + agg 3종 (service/org/model) | install.sh 자동 |
 | `company/view_token_usage.sql` | gpu_data.view_token_usage_* 4종 (대시보드 최종 테이블) | install.sh 자동 |
-| `company/accounts.sql` | token_mart 쓰기 GRANT + token_dashboard_reader 읽기 GRANT | **admin 수동** |
+| `company/accounts.sql` | 공유 계정 `mart` 쓰기 GRANT (대시보드도 동일 계정 사용 — 계정 공유 결정 2026-07-14) | **admin 수동** |
 
 ## 협의 지점 (소유자 리뷰 요청 — §9-18 잔여)
 
@@ -53,9 +53,11 @@
   파생 summary)이면 diff_\*는 자기 자신 비교이므로 NULL. ② **summary 행 자체가 없는
   서비스**(STEP 0 경고 대상이나 적재는 진행)는 reported_\*·diff_\* 전부 NULL —
   비-Nullable이면 LEFT JOIN 미스가 "보고값 0"으로 위장되고 거짓 대사 불일치가 기록된다
-- **reader 계정은 view `_dist`만 GRANT**: fact·mart·dim 직접 조회 차단 + `_local` 우회
-  차단 (§7.2). per-user 상세의 노출 grain·조직 부착은 §9-1/§9-3 미결 — 이 GRANT가
-  per-user 접근 통제를 대신하지 않음
+- **(v1.12에서 대체) 구 reader 계정 분리 원칙**: 이전에는 read-only 계정에 view `_dist`만
+  GRANT해 fact·mart·dim 직접 조회를 차단했으나, 계정 공유 결정(2026-07-14)으로 대시보드도
+  쓰기 권한을 가진 공유 계정 `mart`를 사용하게 됐다 — "계정 분리에 의한 통제"는 더 이상
+  성립하지 않는다. per-user 상세의 노출 grain·조직 부착·실명 dim 접근 통제(ROW POLICY 등)는
+  §9-1/§9-3 협의로 이관 (accounts.sql 참조)
 
 ## 적용 순서 (스펙 §7.2 — DDL 실행 주체 분리)
 
@@ -63,7 +65,7 @@
    기생성 — 없으면 그것부터). mart DB가 전용으로 확정되면 CREATE DATABASE도 admin.
 2. 테이블 DDL(`mart_tables.sql`, `view_token_usage.sql`)은 mart install.sh 자동 적용
    대상 (Plan 3 후속 태스크).
-3. **선행 의존**: STEP 1이 조인하는 `gpu_data.dim_user_org`/`dim_model`의 DDL과
-   token_mart SELECT GRANT는 assets(Plan 4) 소관 — **mart 가동 전 Plan 4 적용 전제**
+3. **선행 의존**: STEP 1이 조인하는 `gpu_data.dim_token_user_org`/`dim_token_model`의 DDL과
+   mart(공유 계정) SELECT GRANT는 assets(Plan 4) 소관 — **mart 가동 전 Plan 4 적용 전제**
    (E2E/stage 검증에서는 테스트 DDL로 대체).
 4. 이후 스키마 변경은 `migrate_add_*.sql` 관행 (GRANT 추가 포함).

@@ -1,7 +1,13 @@
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
-from app.ch import CHGate, now_kst
+from app.ch import CHGate, DB_DIM, DB_FACT, DB_MART, now_kst
 from app.config import Config
+
+MODULE_ROOT = Path(__file__).resolve().parent.parent
 
 DATE = "2026-07-10"
 
@@ -200,3 +206,34 @@ def test_query_returns_rows():
 
 def test_now_kst_is_aware():
     assert now_kst().tzinfo is not None
+
+
+def test_db_names_default():
+    """company 2단계 검증(CH_DB_FACT/CH_DB_DIM/CH_DB_MART) — 미설정 시 기존 배포·E2E
+    무변경 기본값."""
+    assert DB_FACT == "fact"
+    assert DB_DIM == "gpu_data"
+    assert DB_MART == "mart"
+
+
+def test_db_names_env_override():
+    """CH_DB_FACT/CH_DB_DIM/CH_DB_MART는 모듈 로드 시점에 1회 결정된다(CronJob env 주입
+    전제) — 이미 import된 프로세스 내에서 os.environ만 바꿔서는 재평가되지 않으므로,
+    자식 프로세스를 새로 띄워 import 시점에 env가 반영되는지 검증한다. steps.py의 SQL
+    상수는 app.ch import 시점에 f-string으로 DB명이 이미 보간되므로, 치환된 DB명이
+    SQL 문자열에 실제로 박히는지까지 함께 확인한다."""
+    env = {"PATH": subprocess.os.environ.get("PATH", ""),
+           "CH_DB_FACT": "token_verify_fact", "CH_DB_DIM": "token_verify_gpu_data",
+           "CH_DB_MART": "token_verify_mart"}
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "from app.ch import DB_FACT, DB_DIM, DB_MART; "
+         "print(DB_FACT); print(DB_DIM); print(DB_MART)\n"
+         "from app import steps; print(steps.SQL_DETAIL[:200])"],
+        cwd=str(MODULE_ROOT), env=env, capture_output=True, text=True, check=True)
+    lines = result.stdout.splitlines()
+    assert lines[0] == "token_verify_fact"
+    assert lines[1] == "token_verify_gpu_data"
+    assert lines[2] == "token_verify_mart"
+    sql_snippet = "\n".join(lines[3:])
+    assert "token_verify_mart.token_usage_1d_dist" in sql_snippet

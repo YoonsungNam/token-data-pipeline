@@ -31,14 +31,16 @@ class StepError(Exception):
 
 SQL_DETAIL = f"""
 INSERT INTO {DB_MART}.token_usage_1d_dist
-    (date, service_group, service, user_id, user_type, model,
+    (date, service_group, service, user_id, user_type, user_name, model,
      org_path, org_top, org_leaf,
      input_tokens, cache_read_tokens, cache_creation_tokens, output_tokens,
      total_input_tokens, requests, cost, created_by)
 WITH
     eff_org AS (
-        SELECT user_id, argMax(org_path, effective_from) AS org_path
-        FROM {DB_DIM}.dim_user_org_dist
+        SELECT user_id,
+               argMax(org_path, effective_from)  AS org_path,
+               argMax(user_name, effective_from) AS user_name
+        FROM {DB_DIM}.dim_token_user_org_dist
         WHERE effective_from <= {{d:Date}}
         GROUP BY user_id
     ),
@@ -51,7 +53,7 @@ WITH
                argMax(cache_read_usd_per_mtok, effective_from)  AS p_cr,
                argMax(cache_creation_usd_per_mtok, effective_from) AS p_cc,
                argMax(output_usd_per_mtok, effective_from)      AS p_out
-        FROM {DB_DIM}.dim_model_dist
+        FROM {DB_DIM}.dim_token_model_dist
         WHERE effective_from <= {{d:Date}}
         GROUP BY model
     )
@@ -61,6 +63,7 @@ SELECT
     r.service,
     r.user_id,
     r.user_type,
+    if(r.user_type = 'anonymous', o.user_name, '')                    AS user_name,
     r.model,
     if(length(o.org_path) = 0, ['unknown'], o.org_path)              AS org_path_v,
     org_path_v[1]                                                     AS org_top,
@@ -178,7 +181,7 @@ GLOBAL LEFT JOIN (
         SELECT user_id,
                argMax(org_path, effective_from)  AS org_path,
                argMax(is_active, effective_from) AS is_active
-        FROM {DB_DIM}.dim_user_org_dist
+        FROM {DB_DIM}.dim_token_user_org_dist
         WHERE effective_from <= {{d:Date}}
         GROUP BY user_id
     )
@@ -203,7 +206,7 @@ SELECT
 FROM {DB_MART}.token_usage_1d_dist AS m
 GLOBAL LEFT JOIN (
     SELECT model, argMax(provider, effective_from) AS provider
-    FROM {DB_DIM}.dim_model_dist
+    FROM {DB_DIM}.dim_token_model_dist
     WHERE effective_from <= {{d:Date}}
     GROUP BY model
 ) AS em ON em.model = m.model
@@ -217,11 +220,11 @@ GROUP BY m.date, m.model
 
 SQL_VIEW_DETAIL = f"""
 INSERT INTO {DB_DIM}.view_token_usage_1d_dist
-    (date, service_group, service, user_id, user_type, model,
+    (date, service_group, service, user_id, user_type, user_name, model,
      org_path, org_top, org_leaf,
      input_tokens, cache_read_tokens, cache_creation_tokens, output_tokens,
      total_input_tokens, requests, cost, created_by)
-SELECT date, service_group, service, user_id, user_type, model,
+SELECT date, service_group, service, user_id, user_type, user_name, model,
        org_path, org_top, org_leaf,
        input_tokens, cache_read_tokens, cache_creation_tokens, output_tokens,
        total_input_tokens, requests, cost, created_by

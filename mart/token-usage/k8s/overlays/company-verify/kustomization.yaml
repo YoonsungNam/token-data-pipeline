@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# namespace 고정 없음 — install.sh -n 일원화 (company overlay와 동일 사유)
+# 1단계 격리 검증 전용 (docs/operations/company-verify.md) — company와 동일 이미지·리소스,
+# CronJob/Secret 이름만 -verify 접미로 분리해 production 리소스와 공존시킨다.
+# (mart는 endpoints ConfigMap 불요 — collectors overlay와의 델타)
+nameSuffix: -verify
+resources:
+  - ../../base
+patches:
+  - target:
+      kind: CronJob
+      name: token-mart-daily
+    patch: |-
+      - op: replace
+        path: /spec/jobTemplate/spec/template/spec/containers/0/envFrom/0/secretRef/name
+        value: token-mart-ch-secret-verify
+# 이미지 주소는 install.sh가 --registry/--tag로 kubectl set image 주입 (company overlay와 동일)

@@ -1,7 +1,7 @@
 # assets/model-catalog DDL 초안 (Plan 4)
 
 스펙 v1.10 §4.2/§6.2 기준. `gpu_data.dim_token_model` (`_local`+`_dist`) + 시드 SQL +
-token_mart 읽기 GRANT.
+공유 계정 `mart` 읽기 GRANT.
 
 ## 협의 지점
 

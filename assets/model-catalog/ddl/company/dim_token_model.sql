@@ -2,7 +2,7 @@
 -- Company/Stage ClickHouse DDL — gpu_data.dim_token_model
 -- Target cluster: gpu-monitoring
 -- Writer: admin 수동 (시드 SQL — seed_dim_token_model.sql, §6.2) /
---         Reader: token_mart (STEP 1 단가 조인)
+--         Reader: mart (공유 계정, 계정 공유 결정 2026-07-14 — STEP 1 단가 조인)
 -- 주의: gpu_data는 기존(동료 소유) DB — CREATE DATABASE 하지 않음.
 -- 네이밍: dim_token_* 접두사 규칙 적용 (dim_token_service.sql 헤더 참조).
 -- 이력 규약 (§4.2·§6.2): (model, effective_from) — 단가 변경은 새

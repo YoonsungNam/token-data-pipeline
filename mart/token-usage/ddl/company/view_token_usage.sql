@@ -1,7 +1,7 @@
 -- =============================================================
 -- Company/Stage ClickHouse DDL — gpu_data.view_token_usage_* 4테이블
 -- Target cluster: gpu-monitoring
--- Writer: mart STEP 2 (token_mart) / Reader: token_dashboard_reader
+-- Writer: mart STEP 2 (공유 계정 mart) / Reader: mart (공유 계정, 계정 공유 결정 2026-07-14)
 -- 주의: gpu_data는 기존(동료 소유) DB — CREATE DATABASE 하지 않음.
 --       *_token_* 접두사 규칙 준수 (dim_token_service.sql 헤더 참조).
 -- 스키마: §9-1(대시보드 컬럼 계약) 확정 전까지 mart와 동일 스키마 (§4.2).
@@ -24,6 +24,7 @@ ON CLUSTER 'gpu-monitoring'
     service               LowCardinality(String),
     user_id               String,
     user_type             LowCardinality(String),
+    user_name             String                 COMMENT '표기용 — anonymous만 dim 핸들명, identified/unclassified는 빈 문자열(§9-1 보류)',
     model                 LowCardinality(String),
     org_path              Array(String),
     org_top               LowCardinality(String),
@@ -55,6 +56,7 @@ ON CLUSTER 'gpu-monitoring'
     service               LowCardinality(String),
     user_id               String,
     user_type             LowCardinality(String),
+    user_name             String,
     model                 LowCardinality(String),
     org_path              Array(String),
     org_top               LowCardinality(String),
