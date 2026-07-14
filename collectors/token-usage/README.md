@@ -23,6 +23,7 @@ token-usage-api(v1.1.0)를 구현한 사내 서비스들을 매일 pull하여 Cl
 | MAX_PAGES / MAX_BUFFER_ROWS | 200 / 20000 | 페이지 상한(초과=FAILURE) / flush 단위 |
 | SOFT_DEADLINE_MINUTES / NOT_READY_BUDGET_MINUTES | 50 / 30 | §5.2 예산 |
 | COLLECTOR_HTTPS_PROXY / COLLECTOR_API_VERIFY / COLLECTOR_API_CA_BUNDLE | 상속/true/'' | 아웃바운드 HTTP 방침 |
+| CH_DB_FACT / CH_DB_DIM | fact / gpu_data | company 2단계 검증(격리 DB) 전용 — `docs/operations/company-verify.md`. **격리 검증 외 변경 금지** |
 
 ## 배포 (§7.2)
 

@@ -108,6 +108,12 @@ if [[ "${ans}" == "y" || "${ans}" == "Y" ]]; then
   ch_user="${ch_user:-mart}"
   read -r -s -p "  CH_PASSWORD: " ch_pass; echo ""
   read -r -p "  EXPECTED_LATE_SERVICES (콤마 구분 서비스명, 없으면 enter): " expected_late_v
+  # CH_DB_FACT/CH_DB_DIM/CH_DB_MART — 격리 검증(company-verify) 전용 — 평시 enter (§company
+  # 2단계 검증 전략, docs/operations/company-verify.md). enter=미포함=앱 기본값
+  # (fact/gpu_data/mart) — 1단계 격리 검증 설치도 이 install.sh로 가능해진다.
+  read -r -p "  CH_DB_FACT (격리 검증(company-verify) 전용 — 평시 enter): " ch_db_fact_v
+  read -r -p "  CH_DB_DIM (격리 검증(company-verify) 전용 — 평시 enter): " ch_db_dim_v
+  read -r -p "  CH_DB_MART (격리 검증(company-verify) 전용 — 평시 enter): " ch_db_mart_v
   args=(--from-literal="CH_USER=${ch_user}"
         --from-literal="CH_PASSWORD=${ch_pass}"
         --from-literal="CH_PORT=8123"
@@ -115,6 +121,9 @@ if [[ "${ans}" == "y" || "${ans}" == "Y" ]]; then
   if [[ -n "${expected_late_v}" ]]; then
     args+=(--from-literal="EXPECTED_LATE_SERVICES=${expected_late_v}")
   fi
+  [[ -n "${ch_db_fact_v}" ]] && args+=(--from-literal="CH_DB_FACT=${ch_db_fact_v}")
+  [[ -n "${ch_db_dim_v}" ]] && args+=(--from-literal="CH_DB_DIM=${ch_db_dim_v}")
+  [[ -n "${ch_db_mart_v}" ]] && args+=(--from-literal="CH_DB_MART=${ch_db_mart_v}")
   if [[ "${ENV}" == "company" ]]; then
     # company 2s×2r 전제 — 레플리카 지연 게이트(§9-19). stage(1s×1r)는 미포함.
     args+=(--from-literal="INSERT_QUORUM=auto")

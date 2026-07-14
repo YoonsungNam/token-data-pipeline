@@ -26,6 +26,7 @@ collectors가 적재한 `fact.raw_token_usage_*`를 조직/모델 차원으로 �
 | RETRY_COUNT / RETRY_INTERVAL_S | 10 / 5 | INSERT 후 count 검증 재시도 횟수/간격 |
 | MUTATION_POLL_S / MUTATION_TIMEOUT_S | 3 / 300 | wait_for_mutations 폴링 주기/타임아웃 |
 | INSERT_QUORUM | '' | 빈 값 = 미적용. company(2s×2r)는 install.sh가 `auto` 주입 — detail 적재 직후 agg가 `_dist`로 읽을 때 지연 레플리카 라우팅에 의한 무음 과소집계를 막는 게이트(§9-19). stage(1s×1r)/CI 단일노드는 미설정 |
+| CH_DB_FACT / CH_DB_DIM / CH_DB_MART | fact / gpu_data / mart | company 2단계 검증(격리 DB) 전용 — `docs/operations/company-verify.md`. **격리 검증 외 변경 금지** |
 
 ## 마커 (§5.6/§7.1)
 

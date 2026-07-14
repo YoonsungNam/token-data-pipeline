@@ -1,6 +1,12 @@
-from app.clickhouse_client import CHWriter, DB_FACT, now_kst
+import subprocess
+import sys
+from pathlib import Path
+
+from app.clickhouse_client import CHWriter, DB_DIM, DB_FACT, now_kst
 from app.config import Config, ServiceEntry
 from app.normalize import NormalizedRow
+
+MODULE_ROOT = Path(__file__).resolve().parent.parent
 
 ENTRY = ServiceEntry(service_group="G", service="S", base_url="http://x", enabled=True)
 DATE = "2026-06-15"
@@ -157,3 +163,23 @@ def test_insert_date_values_are_date_objects():
     assert len(ch.insert_rows) == 3                    # audit + detail + summary
     for _table, data in ch.insert_rows:
         assert type(data[0][0]) is date_t              # 드라이버 Date 직렬화 요건 (str 불가)
+
+
+def test_db_names_default():
+    """company 2단계 검증(CH_DB_FACT/CH_DB_DIM) — 미설정 시 기존 배포·E2E 무변경 기본값."""
+    assert DB_FACT == "fact"
+    assert DB_DIM == "gpu_data"
+
+
+def test_db_names_env_override():
+    """CH_DB_FACT/CH_DB_DIM은 모듈 로드 시점에 1회 결정된다(CronJob env 주입 전제) —
+    이미 import된 프로세스 내에서 os.environ만 바꿔서는 재평가되지 않으므로,
+    자식 프로세스를 새로 띄워 import 시점에 env가 실제로 반영되는지 검증한다."""
+    env = {"PATH": subprocess.os.environ.get("PATH", ""),
+           "CH_DB_FACT": "token_verify_fact", "CH_DB_DIM": "token_verify_gpu_data"}
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "from app.clickhouse_client import DB_FACT, DB_DIM; print(DB_FACT); print(DB_DIM)"],
+        cwd=str(MODULE_ROOT), env=env, capture_output=True, text=True, check=True)
+    lines = result.stdout.strip().splitlines()
+    assert lines == ["token_verify_fact", "token_verify_gpu_data"]

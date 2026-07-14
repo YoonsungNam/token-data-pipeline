@@ -110,10 +110,16 @@ if [[ "${ans}" == "y" || "${ans}" == "Y" ]]; then
   read -r -s -p "  CH_PASSWORD: " ch_pass; echo ""
   read -r -p "  COLLECTOR_HTTPS_PROXY ('none'=직접 연결, enter=시스템 상속, 값=프록시 URL): " http_proxy_v
   read -r -p "  사내 CA 번들 파일 경로 (없으면 enter): " ca_bundle_v
+  # CH_DB_FACT/CH_DB_DIM — 격리 검증(company-verify) 전용 — 평시 enter (§company 2단계
+  # 검증 전략, docs/operations/company-verify.md). enter=미포함=앱 기본값(fact/gpu_data).
+  read -r -p "  CH_DB_FACT (격리 검증(company-verify) 전용 — 평시 enter): " ch_db_fact_v
+  read -r -p "  CH_DB_DIM (격리 검증(company-verify) 전용 — 평시 enter): " ch_db_dim_v
   args=(--from-literal="CH_USER=${ch_user}"
         --from-literal="CH_PASSWORD=${ch_pass}"
         --from-literal="CH_PORT=8123"
         --from-literal="CH_CLUSTER=gpu-monitoring")
+  [[ -n "${ch_db_fact_v}" ]] && args+=(--from-literal="CH_DB_FACT=${ch_db_fact_v}")
+  [[ -n "${ch_db_dim_v}" ]] && args+=(--from-literal="CH_DB_DIM=${ch_db_dim_v}")
   # §5.7 3분기: 키 미설정=시스템 상속 / 빈 값=직접 연결 / 값=전용 프록시.
   # read로는 미입력과 빈 값이 구분되지 않으므로 'none' 센티널로 빈 값을 받는다.
   case "${http_proxy_v}" in

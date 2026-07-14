@@ -3,14 +3,18 @@
 시퀀스: 존재 SELECT → (있으면) 감사 append + DELETE(mutations_sync=2, _local[+ON CLUSTER])
 → 배치 INSERT(insert_distributed_sync=1). DB명은 §9-18 협의 변경 지점 — 아래 상수 2개만 수정.
 """
+import os
 from datetime import date as date_t, datetime, timedelta, timezone
 
 import clickhouse_connect
 
 from app.config import Config, ServiceEntry
 
-DB_FACT = "fact"   # §9-18 확정(2026-07-13): 기존 fact DB 공유 — GRANT는 테이블 레벨 한정(§7.2)
-DB_DIM = "gpu_data"      # 이슈 #1 확정 — dim_token_* 접두사 규칙(협의 확정)
+# company 2단계 검증 전략 — 격리 DB 검증용, docs/operations/company-verify.md
+# 모듈 로드 시 1회 결정(CronJob env 주입 전제). 기본값 = §9-18 확정값(2026-07-13) —
+# 미설정 시 기존 배포/E2E/2단계(공유 DB) 무변경.
+DB_FACT = os.getenv("CH_DB_FACT", "fact")   # §9-18 확정(2026-07-13): 기존 fact DB 공유 — GRANT는 테이블 레벨 한정(§7.2)
+DB_DIM = os.getenv("CH_DB_DIM", "gpu_data")      # 이슈 #1 확정 — dim_token_* 접두사 규칙(협의 확정)
 
 KST = timezone(timedelta(hours=9))
 
