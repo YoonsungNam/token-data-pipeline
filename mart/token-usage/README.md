@@ -66,6 +66,8 @@ collectors가 적재한 `fact.raw_token_usage_*`를 조직/모델 차원으로 �
 - VM push 없음 — VM_PUSH_URL 주입 대상이 아니다(mart는 VictoriaMetrics를 건드리지 않는다).
 - install.sh 밖에서 `kubectl apply -k`를 직접 재실행하면 이미지가 latest로 리셋된다 —
   재적용은 항상 install.sh 경유.
+- 홈랩(stage) 실배포 전체 절차(사전 준비·설치 순서·성공 기준·철수)는
+  `docs/operations/stage-runbook.md` 참조.
 
 ## 재수행
 

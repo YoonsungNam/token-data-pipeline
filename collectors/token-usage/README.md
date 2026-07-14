@@ -44,6 +44,7 @@ token-usage-api(v1.1.0)를 구현한 사내 서비스들을 매일 pull하여 Cl
 - endpoints: 레포에는 stage(mock)용만. 사내 목록은 endpoints.company.yaml(gitignored)을
   install.sh가 ConfigMap `token-usage-endpoints`로 주입.
 - install.sh 밖에서 `kubectl apply -k`를 직접 재실행하면 이미지가 latest로 리셋된다 — 재적용은 항상 install.sh 경유.
+- 홈랩(stage) 실배포 전체 절차(사전 준비·설치 순서·성공 기준·철수)는 `docs/operations/stage-runbook.md` 참조.
 
 ## 재수행
 
