@@ -2,7 +2,6 @@
 
 I/O 금지 (클라이언트, 네트워크, 시계 부작용 없음). §5.6 로깅 계약: user_id 원문 미포함.
 """
-import argparse
 import sys
 from dataclasses import dataclass
 from datetime import date as date_cls, datetime, timedelta, timezone
