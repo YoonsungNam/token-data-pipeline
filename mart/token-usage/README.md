@@ -21,7 +21,7 @@ collectors가 적재한 `fact.raw_token_usage_*`를 조직/모델 차원으로 �
 |---|---|---|
 | CH_HOST/CH_PORT/CH_USER/CH_PASSWORD | localhost/8123/default/'' | ClickHouse 접속 (운영 계정 token_mart는 Secret 주입) |
 | CH_CLUSTER | '' | 빈 값 = 단일노드 (ON CLUSTER·clusterAllReplicas 생략, CI/stage) |
-| EXPECTED_LATE_SERVICES | '' | STEP 0 coverage 경고 제외 목록(콤마 구분, 공백/빈 항목 제거 — §5.9-9) |
+| EXPECTED_LATE_SERVICES | '' | STEP 0 coverage 경고 제외 목록(콤마 구분, 공백/빈 항목 제거 — Secret 경유 envFrom 주입, §5.9-9) |
 | ORG_MAP_WARN_THRESHOLD | 0.2 | dim_user_org 매핑 실패율 CHECK WARN 임계 |
 | RETRY_COUNT / RETRY_INTERVAL_S | 10 / 5 | INSERT 후 count 검증 재시도 횟수/간격 |
 | MUTATION_POLL_S / MUTATION_TIMEOUT_S | 3 / 300 | wait_for_mutations 폴링 주기/타임아웃 |

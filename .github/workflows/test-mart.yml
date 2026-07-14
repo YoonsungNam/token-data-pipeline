@@ -43,6 +43,8 @@ jobs:
           grep -q 'name: registry-pull-secret' /tmp/m-stage.yaml
           grep -q 'name: token-mart-ch-secret' /tmp/m-stage.yaml
           grep -q 'ghcr.io/yoonsungnam/token-mart' /tmp/m-stage.yaml
+          ! grep -q 'EXPECTED_LATE_SERVICES' /tmp/m-stage.yaml
+          ! grep -q 'EXPECTED_LATE_SERVICES' /tmp/m-company.yaml
           kubeval /tmp/m-stage.yaml
           kubeval /tmp/m-company.yaml
 

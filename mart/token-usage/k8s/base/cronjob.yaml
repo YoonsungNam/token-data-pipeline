@@ -32,9 +32,7 @@ spec:
               envFrom:
                 - secretRef:
                     name: token-mart-ch-secret
-              env:
-                - name: EXPECTED_LATE_SERVICES
-                  value: ""
+              # EXPECTED_LATE_SERVICES 등 앱 env는 전부 envFrom(Secret) 경유 — 정적 env는 Secret 값을 덮어쓰므로 금지 (T7 리뷰)
               resources:
                 requests:
                   cpu: 100m
