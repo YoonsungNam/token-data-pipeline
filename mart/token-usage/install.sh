@@ -3,14 +3,18 @@
 #
 # 사용법:
 #   ./mart/token-usage/install.sh [--registry <registry>] [--tag <tag>] \
-#     [--context <kube-context>] [--namespace <ns>] <stage|company>
+#     [--context <kube-context>] [--namespace <ns>] <stage|company|company-verify>
 #
-#   stage:   context 기본 homelab
-#   company: --context/--registry 필수
+#   stage:           context 기본 homelab
+#   company:         --context/--registry 필수
+#   company-verify:  company 2단계 검증 전략의 1단계(격리) — --context/--registry 필수(company와
+#                     동일 요건). Secret/CronJob 이름 -verify 접미, DDL 적용 대상은
+#                     ddl/company-verify/(생성기 tools/gen_verify_ddl.py 출력 — 격리 DB 3종).
+#                     절차: docs/operations/company-verify.md
 #
 # 수행 순서 (mart는 endpoints ConfigMap 불요 — dim_token_service가 게이트 기준, §7.2):
 #   [1/5] registry-pull-secret 멱등 생성 (대화형)
-#   [2/5] token-mart-ch-secret 멱등 생성 (대화형 — envFrom으로 컨테이너 env가 됨)
+#   [2/5] token-mart-ch-secret[-verify] 멱등 생성 (대화형 — envFrom으로 컨테이너 env가 됨)
 #   [3/5] 테이블 DDL 적용 (chi-* 파드 자동 탐색 — accounts.sql은 admin 수동, §7.2)
 #   [4/5] CronJob 배포 (kustomize overlay)
 #   [5/5] 이미지 주소/CH_HOST 주입 + 수동 테스트 커맨드 안내
@@ -25,7 +29,7 @@ CH_NAMESPACE="clickhouse"
 
 REGISTRY=""; TAG=""; KUBE_CONTEXT=""; NAMESPACE="monitoring"; ENV=""
 
-usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -33,7 +37,7 @@ while [[ $# -gt 0 ]]; do
     --tag)       TAG="$2"; shift 2 ;;
     --context)   KUBE_CONTEXT="$2"; shift 2 ;;
     --namespace) NAMESPACE="$2"; shift 2 ;;
-    stage|company) ENV="$1"; shift ;;
+    stage|company|company-verify) ENV="$1"; shift ;;
     *) echo "[ERROR] unknown arg: $1"; usage ;;
   esac
 done
@@ -47,6 +51,13 @@ case "${ENV}" in
   company)
     [[ -n "${KUBE_CONTEXT}" ]] || { echo "[ERROR] company 환경에서는 --context 옵션이 필수입니다."; usage; }
     [[ -n "${REGISTRY}" ]]     || { echo "[ERROR] company 환경에서는 --registry 옵션이 필수입니다."; usage; }
+    ;;
+  company-verify)
+    # 1단계 격리 검증 — company와 동일 요건(--context/--registry 필수).
+    [[ -n "${KUBE_CONTEXT}" ]] || { echo "[ERROR] company-verify 환경에서는 --context 옵션이 필수입니다."; usage; }
+    [[ -n "${REGISTRY}" ]]     || { echo "[ERROR] company-verify 환경에서는 --registry 옵션이 필수입니다."; usage; }
+    SECRET_NAME="${SECRET_NAME}-verify"
+    CRONJOB_NAME="${CRONJOB_NAME}-verify"
     ;;
 esac
 
@@ -104,16 +115,25 @@ else
   ans="y"
 fi
 if [[ "${ans}" == "y" || "${ans}" == "Y" ]]; then
-  read -r -p "  CH_USER [mart]: " ch_user
-  ch_user="${ch_user:-mart}"
+  ch_user_default="mart"
+  [[ "${ENV}" == "company-verify" ]] && ch_user_default="token_verify"
+  read -r -p "  CH_USER [${ch_user_default}]: " ch_user
+  ch_user="${ch_user:-${ch_user_default}}"
   read -r -s -p "  CH_PASSWORD: " ch_pass; echo ""
   read -r -p "  EXPECTED_LATE_SERVICES (콤마 구분 서비스명, 없으면 enter): " expected_late_v
-  # CH_DB_FACT/CH_DB_DIM/CH_DB_MART — 격리 검증(company-verify) 전용 — 평시 enter (§company
-  # 2단계 검증 전략, docs/operations/company-verify.md). enter=미포함=앱 기본값
-  # (fact/gpu_data/mart) — 1단계 격리 검증 설치도 이 install.sh로 가능해진다.
-  read -r -p "  CH_DB_FACT (격리 검증(company-verify) 전용 — 평시 enter): " ch_db_fact_v
-  read -r -p "  CH_DB_DIM (격리 검증(company-verify) 전용 — 평시 enter): " ch_db_dim_v
-  read -r -p "  CH_DB_MART (격리 검증(company-verify) 전용 — 평시 enter): " ch_db_mart_v
+  # CH_DB_FACT/CH_DB_DIM/CH_DB_MART — 격리 검증(company-verify) 전용 (§company 2단계 검증
+  # 전략, docs/operations/company-verify.md). company-verify는 tools/gen_verify_ddl.py
+  # 기본안 값을 자동 포함(프롬프트 없음) — stage/company는 평시 enter(=앱 기본값
+  # fact/gpu_data/mart).
+  if [[ "${ENV}" == "company-verify" ]]; then
+    ch_db_fact_v="token_verify_fact"
+    ch_db_dim_v="token_verify_dim"
+    ch_db_mart_v="token_verify_mart"
+  else
+    read -r -p "  CH_DB_FACT (격리 검증(company-verify) 전용 — 평시 enter): " ch_db_fact_v
+    read -r -p "  CH_DB_DIM (격리 검증(company-verify) 전용 — 평시 enter): " ch_db_dim_v
+    read -r -p "  CH_DB_MART (격리 검증(company-verify) 전용 — 평시 enter): " ch_db_mart_v
+  fi
   args=(--from-literal="CH_USER=${ch_user}"
         --from-literal="CH_PASSWORD=${ch_pass}"
         --from-literal="CH_PORT=8123"
@@ -124,8 +144,9 @@ if [[ "${ans}" == "y" || "${ans}" == "Y" ]]; then
   [[ -n "${ch_db_fact_v}" ]] && args+=(--from-literal="CH_DB_FACT=${ch_db_fact_v}")
   [[ -n "${ch_db_dim_v}" ]] && args+=(--from-literal="CH_DB_DIM=${ch_db_dim_v}")
   [[ -n "${ch_db_mart_v}" ]] && args+=(--from-literal="CH_DB_MART=${ch_db_mart_v}")
-  if [[ "${ENV}" == "company" ]]; then
-    # company 2s×2r 전제 — 레플리카 지연 게이트(§9-19). stage(1s×1r)는 미포함.
+  if [[ "${ENV}" == "company" || "${ENV}" == "company-verify" ]]; then
+    # company 2s×2r 전제 — 레플리카 지연 게이트(§9-19). company-verify도 동일 물리
+    # 클러스터(격리는 DB명 뿐) — stage(1s×1r)는 미포함.
     args+=(--from-literal="INSERT_QUORUM=auto")
   fi
   ${KUBECTL} create secret generic "${SECRET_NAME}" "${args[@]}" -n "${NAMESPACE}" \
@@ -152,14 +173,27 @@ apply_sql() {
   ${KUBECTL} exec -n "${CH_NAMESPACE}" "${ch_pod}" -- rm -f "${tmp_pod_path}"
   echo "  applied: ${base}"
 }
-echo "  mart/gpu_data DB·GRANT 설정은 admin: ddl/company/accounts.sql (계정은 공유 mart —"
-echo "  계정 공유 합의 2026-07-14, CREATE USER는 이 레포 소관 아님. insert_deduplicate=0은"
-echo "  app/ch.py 클라이언트 설정으로만 적용)"
-echo "  (위 GRANT가 없으면 아래 테이블 DDL은 만들어져도 mart(공유 계정)의 INSERT/DELETE가 실패합니다)"
-apply_sql "${HERE}/ddl/company/mart_tables.sql"
-apply_sql "${HERE}/ddl/company/view_token_usage.sql"
-echo "  (accounts.sql은 적용하지 않았습니다 — GRANT는 admin 수동 실행, §7.2. 계정 생성·비밀번호는"
-echo "  동료 소유이므로 이 레포에서 관리하지 않습니다)"
+DDL_DIR="ddl/company"
+[[ "${ENV}" == "company-verify" ]] && DDL_DIR="ddl/company-verify"
+if [[ "${ENV}" == "company-verify" ]]; then
+  echo "  (격리 검증(1단계) — ${DDL_DIR}/의 테이블 DDL만 적용. DB 3종·전용 계정 token_verify는"
+  echo "   admin이 ${DDL_DIR}/accounts.sql로 먼저 생성해야 아래 테이블 DDL이 성공합니다: python3"
+  echo "   tools/gen_verify_ddl.py로 재생성 가능, docs/operations/company-verify.md 참조)"
+else
+  echo "  mart/gpu_data DB·GRANT 설정은 admin: ${DDL_DIR}/accounts.sql (계정은 공유 mart —"
+  echo "  계정 공유 합의 2026-07-14, CREATE USER는 이 레포 소관 아님. insert_deduplicate=0은"
+  echo "  app/ch.py 클라이언트 설정으로만 적용)"
+  echo "  (위 GRANT가 없으면 아래 테이블 DDL은 만들어져도 mart(공유 계정)의 INSERT/DELETE가 실패합니다)"
+fi
+apply_sql "${HERE}/${DDL_DIR}/mart_tables.sql"
+apply_sql "${HERE}/${DDL_DIR}/view_token_usage.sql"
+if [[ "${ENV}" == "company-verify" ]]; then
+  echo "  (accounts.sql은 적용하지 않았습니다 — DB 3종/전용 계정 생성·GRANT는 admin 수동 실행,"
+  echo "  §7.2. ${DDL_DIR}/accounts.sql의 CHANGE_ME_VERIFY 비밀번호 치환 후 실행)"
+else
+  echo "  (accounts.sql은 적용하지 않았습니다 — GRANT는 admin 수동 실행, §7.2. 계정 생성·비밀번호는"
+  echo "  동료 소유이므로 이 레포에서 관리하지 않습니다)"
+fi
 
 # ── [4/5] CronJob 배포 ────────────────────────────────────────────────────────
 echo ""
@@ -178,7 +212,9 @@ ch_host="${ch_pod%-*}.${CH_NAMESPACE}.svc"
 ${KUBECTL} set env "cronjob/${CRONJOB_NAME}" "CH_HOST=${ch_host}" -n "${NAMESPACE}"
 echo "  CH_HOST=${ch_host}"
 
+rerun_hint="python3 ${HERE}/tools/rerun.py --context ${KUBE_CONTEXT} --namespace ${NAMESPACE}"
+[[ "${ENV}" == "company-verify" ]] && rerun_hint="${rerun_hint} --cronjob ${CRONJOB_NAME}"
 echo ""
 echo "[OK] 설치 완료. 수동 테스트:"
 echo "  ${KUBECTL} create job --from=cronjob/${CRONJOB_NAME} ${CRONJOB_NAME}-manual-\$(date +%s) -n ${NAMESPACE}"
-echo "  (또는: python3 ${HERE}/tools/rerun.py --context ${KUBE_CONTEXT} --namespace ${NAMESPACE})"
+echo "  (또는: ${rerun_hint})"

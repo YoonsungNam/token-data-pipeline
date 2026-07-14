@@ -3,18 +3,22 @@
 #
 # 사용법:
 #   ./collectors/token-usage/install.sh [--registry <registry>] [--tag <tag>] \
-#     [--context <kube-context>] [--namespace <ns>] [--endpoints <file>] <stage|company>
+#     [--context <kube-context>] [--namespace <ns>] [--endpoints <file>] <stage|company|company-verify>
 #
-#   stage:   context 기본 homelab, endpoints 기본 endpoints.yaml (mock)
-#   company: --context/--registry 필수, endpoints 기본 endpoints.company.yaml (gitignored)
+#   stage:           context 기본 homelab, endpoints 기본 endpoints.yaml (mock)
+#   company:         --context/--registry 필수, endpoints 기본 endpoints.company.yaml (gitignored)
+#   company-verify:  company 2단계 검증 전략의 1단계(격리) — --context/--registry 필수(company와
+#                     동일 요건). Secret/ConfigMap/CronJob 이름 -verify 접미, DDL 적용 대상은
+#                     ddl/company-verify/(생성기 tools/gen_verify_ddl.py 출력 — 격리 DB 3종),
+#                     VM_PUSH_URL 주입 생략(1단계 VM 오염 방지). 절차: docs/operations/company-verify.md
 #
 # 수행 순서:
 #   [1/6] registry-pull-secret 멱등 생성 (대화형)
-#   [2/6] token-usage-ch-secret 멱등 생성 (대화형 — envFrom으로 컨테이너 env가 됨)
-#   [3/6] token-usage-endpoints ConfigMap 생성/갱신
+#   [2/6] token-usage-ch-secret[-verify] 멱등 생성 (대화형 — envFrom으로 컨테이너 env가 됨)
+#   [3/6] token-usage-endpoints[-verify] ConfigMap 생성/갱신
 #   [4/6] 테이블 DDL 적용 (chi-* 파드 자동 탐색 — accounts.sql은 admin 수동, §7.2)
 #   [5/6] CronJob 배포 (kustomize overlay)
-#   [6/6] 이미지 주소/CH_HOST/VM_PUSH_URL 주입 + 수동 테스트 커맨드 안내
+#   [6/6] 이미지 주소/CH_HOST/VM_PUSH_URL(company-verify는 생략) 주입 + 수동 테스트 커맨드 안내
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -27,7 +31,7 @@ CH_NAMESPACE="clickhouse"
 
 REGISTRY=""; TAG=""; KUBE_CONTEXT=""; NAMESPACE="monitoring"; ENDPOINTS_SRC=""; ENV=""
 
-usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -36,7 +40,7 @@ while [[ $# -gt 0 ]]; do
     --context)   KUBE_CONTEXT="$2"; shift 2 ;;
     --namespace) NAMESPACE="$2"; shift 2 ;;
     --endpoints) ENDPOINTS_SRC="$2"; shift 2 ;;
-    stage|company) ENV="$1"; shift ;;
+    stage|company|company-verify) ENV="$1"; shift ;;
     *) echo "[ERROR] unknown arg: $1"; usage ;;
   esac
 done
@@ -52,6 +56,16 @@ case "${ENV}" in
     [[ -n "${KUBE_CONTEXT}" ]] || { echo "[ERROR] company 환경에서는 --context 옵션이 필수입니다."; usage; }
     [[ -n "${REGISTRY}" ]]     || { echo "[ERROR] company 환경에서는 --registry 옵션이 필수입니다."; usage; }
     ENDPOINTS_SRC="${ENDPOINTS_SRC:-${HERE}/endpoints.company.yaml}"
+    ;;
+  company-verify)
+    # 1단계 격리 검증 — company와 동일 요건(--context/--registry 필수). 수집 대상은 동일한
+    # 실 서비스 API(endpoints.company.yaml) — 병행 금지·교체 전환 원칙(company-verify.md).
+    [[ -n "${KUBE_CONTEXT}" ]] || { echo "[ERROR] company-verify 환경에서는 --context 옵션이 필수입니다."; usage; }
+    [[ -n "${REGISTRY}" ]]     || { echo "[ERROR] company-verify 환경에서는 --registry 옵션이 필수입니다."; usage; }
+    ENDPOINTS_SRC="${ENDPOINTS_SRC:-${HERE}/endpoints.company.yaml}"
+    SECRET_NAME="${SECRET_NAME}-verify"
+    CONFIGMAP_NAME="${CONFIGMAP_NAME}-verify"
+    CRONJOB_NAME="${CRONJOB_NAME}-verify"
     ;;
 esac
 
@@ -105,15 +119,23 @@ else
   ans="y"
 fi
 if [[ "${ans}" == "y" || "${ans}" == "Y" ]]; then
-  read -r -p "  CH_USER [mart]: " ch_user
-  ch_user="${ch_user:-mart}"
+  ch_user_default="mart"
+  [[ "${ENV}" == "company-verify" ]] && ch_user_default="token_verify"
+  read -r -p "  CH_USER [${ch_user_default}]: " ch_user
+  ch_user="${ch_user:-${ch_user_default}}"
   read -r -s -p "  CH_PASSWORD: " ch_pass; echo ""
   read -r -p "  COLLECTOR_HTTPS_PROXY ('none'=직접 연결, enter=시스템 상속, 값=프록시 URL): " http_proxy_v
   read -r -p "  사내 CA 번들 파일 경로 (없으면 enter): " ca_bundle_v
-  # CH_DB_FACT/CH_DB_DIM — 격리 검증(company-verify) 전용 — 평시 enter (§company 2단계
-  # 검증 전략, docs/operations/company-verify.md). enter=미포함=앱 기본값(fact/gpu_data).
-  read -r -p "  CH_DB_FACT (격리 검증(company-verify) 전용 — 평시 enter): " ch_db_fact_v
-  read -r -p "  CH_DB_DIM (격리 검증(company-verify) 전용 — 평시 enter): " ch_db_dim_v
+  # CH_DB_FACT/CH_DB_DIM — 격리 검증(company-verify) 전용 (§company 2단계 검증 전략,
+  # docs/operations/company-verify.md). company-verify는 tools/gen_verify_ddl.py 기본안
+  # 값을 자동 포함(프롬프트 없음) — stage/company는 평시 enter(=앱 기본값 fact/gpu_data).
+  if [[ "${ENV}" == "company-verify" ]]; then
+    ch_db_fact_v="token_verify_fact"
+    ch_db_dim_v="token_verify_dim"
+  else
+    read -r -p "  CH_DB_FACT (격리 검증(company-verify) 전용 — 평시 enter): " ch_db_fact_v
+    read -r -p "  CH_DB_DIM (격리 검증(company-verify) 전용 — 평시 enter): " ch_db_dim_v
+  fi
   args=(--from-literal="CH_USER=${ch_user}"
         --from-literal="CH_PASSWORD=${ch_pass}"
         --from-literal="CH_PORT=8123"
@@ -172,12 +194,20 @@ apply_sql() {
   ${KUBECTL} exec -n "${CH_NAMESPACE}" "${ch_pod}" -- rm -f "${tmp_pod_path}"
   echo "  applied: ${base}"
 }
-echo "  (fact DB가 아직 없으면 admin이 accounts.sql을 먼저 실행해야 테이블 DDL이 성공합니다)"
-echo "  (gpu_data DB는 동료 소유 — 부재 시 소유자와 협의)"
-apply_sql "${HERE}/ddl/company/raw_token_usage.sql"
-apply_sql "${HERE}/ddl/company/dim_token_service.sql"
+DDL_DIR="ddl/company"
+[[ "${ENV}" == "company-verify" ]] && DDL_DIR="ddl/company-verify"
+if [[ "${ENV}" == "company-verify" ]]; then
+  echo "  (격리 검증(1단계) — ${DDL_DIR}/의 테이블 DDL만 적용. DB 3종·전용 계정은 admin이"
+  echo "   ${DDL_DIR}/accounts.sql로 먼저 생성해야 아래 테이블 DDL이 성공합니다: python3"
+  echo "   tools/gen_verify_ddl.py로 재생성 가능, docs/operations/company-verify.md 참조)"
+else
+  echo "  (fact DB가 아직 없으면 admin이 accounts.sql을 먼저 실행해야 테이블 DDL이 성공합니다)"
+  echo "  (gpu_data DB는 동료 소유 — 부재 시 소유자와 협의)"
+fi
+apply_sql "${HERE}/${DDL_DIR}/raw_token_usage.sql"
+apply_sql "${HERE}/${DDL_DIR}/dim_token_service.sql"
 echo "  (accounts.sql은 적용하지 않았습니다 — CREATE DATABASE/CREATE USER/GRANT는 admin 수동 실행, §7.2)"
-echo "  (company: 클러스터 소유자와 협의 후 ddl/company/accounts.sql의 CHANGE_ME_* 치환 실행)"
+echo "  (${ENV}: 클러스터 소유자와 협의 후 ${DDL_DIR}/accounts.sql의 CHANGE_ME_* 치환 실행)"
 
 # ── [5/6] CronJob 배포 ────────────────────────────────────────────────────────
 echo ""
@@ -195,6 +225,16 @@ ${KUBECTL} set image "cronjob/${CRONJOB_NAME}" \
 ch_host="${ch_pod%-*}.${CH_NAMESPACE}.svc"
 ${KUBECTL} set env "cronjob/${CRONJOB_NAME}" "CH_HOST=${ch_host}" -n "${NAMESPACE}"
 echo "  CH_HOST=${ch_host}"
+
+if [[ "${ENV}" == "company-verify" ]]; then
+  echo "  [SKIP] VM_PUSH_URL 주입 생략 — 1단계 격리 검증은 VictoriaMetrics를 오염시키지 않는다"
+  echo "         (docs/operations/company-verify.md — VM push 1단계 비활성)"
+  echo ""
+  echo "[OK] 설치 완료. 수동 테스트:"
+  echo "  ${KUBECTL} create job --from=cronjob/${CRONJOB_NAME} ${CRONJOB_NAME}-manual-\$(date +%s) -n ${NAMESPACE}"
+  echo "  (또는: python3 ${HERE}/tools/rerun.py --context ${KUBE_CONTEXT} --namespace ${NAMESPACE} --cronjob ${CRONJOB_NAME})"
+  exit 0
+fi
 
 # VictoriaMetrics 자동 탐색 (§5.5) — vminsert(클러스터판) 우선, 없으면 vmsingle 폴백.
 # 주의: VM_PUSH_URL은 '경로 없는 베이스' — vm_push.py가 /api/v1/import/prometheus를 부착한다.

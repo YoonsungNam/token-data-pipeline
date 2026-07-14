@@ -100,3 +100,13 @@ def test_service_without_range_is_usage_error():
     with pytest.raises(SystemExit) as e:
         rerun.main(["--context", "homelab", "--service", "S"])
     assert e.value.code == 2
+
+
+def test_cronjob_default_and_override():
+    # company-verify 등 -verify 접미 CronJob 재수행용 오버라이드 (docs/operations/company-verify.md)
+    args = rerun.build_arg_parser().parse_args(["--context", "homelab"])
+    assert args.cronjob == rerun.CRONJOB == "token-usage-collector"
+
+    args = rerun.build_arg_parser().parse_args(
+        ["--context", "homelab", "--cronjob", "token-usage-collector-verify"])
+    assert args.cronjob == "token-usage-collector-verify"

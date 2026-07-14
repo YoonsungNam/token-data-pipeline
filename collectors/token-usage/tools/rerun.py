@@ -16,6 +16,8 @@ mart rerun 의무), --chain-mart 지정 시 직접 트리거한다.
 옵션:
   --context     kubectl context (필수)
   --namespace   기본 monitoring
+  --cronjob     대상 CronJob 이름 (기본 token-usage-collector — company-verify 등
+                -verify 접미 CronJob을 재수행할 때 지정, docs/operations/company-verify.md)
   --from/--to   YYYY-MM-DD, KST, 둘 다 inclusive. 반드시 쌍으로.
   --service     단일 서비스만 재수집 (--from/--to 필요)
   --push-vm     rerun에서도 VM push (§5.5 옵트인 — 기본 생략)
@@ -113,16 +115,23 @@ def wait_job(context, namespace, job_name, timeout_s):
     return False
 
 
-def main(argv=None):
+def build_arg_parser():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--context", required=True)
     p.add_argument("--namespace", default="monitoring")
+    p.add_argument("--cronjob", default=CRONJOB,
+                    help=f"대상 CronJob 이름 (기본 {CRONJOB})")
     p.add_argument("--from", dest="from_d", default=None)
     p.add_argument("--to", dest="to_d", default=None)
     p.add_argument("--service", default=None)
     p.add_argument("--push-vm", action="store_true")
     p.add_argument("--chain-mart", action="store_true")
+    return p
+
+
+def main(argv=None):
+    p = build_arg_parser()
     args = p.parse_args(argv)
 
     if bool(args.from_d) != bool(args.to_d):
@@ -143,8 +152,8 @@ def main(argv=None):
 
     epoch = int(time.time())
     if args.from_d:
-        job_name = f"{CRONJOB}-rerun-{epoch}"
-        res = kubectl(args.context, ["get", "cronjob", CRONJOB, "-n", args.namespace,
+        job_name = f"{args.cronjob}-rerun-{epoch}"
+        res = kubectl(args.context, ["get", "cronjob", args.cronjob, "-n", args.namespace,
                                      "-o", "json"], capture=True)
         job = build_job_spec(json.loads(res.stdout), job_name,
                              build_collect_command(args.from_d, args.to_d,
@@ -154,11 +163,11 @@ def main(argv=None):
                 input_data=json.dumps(job))
         timeout = range_deadline_s(n_days) + 600      # 서버 데드라인 + 폴링 마진
     else:
-        job_name = f"{CRONJOB}-manual-{epoch}"
+        job_name = f"{args.cronjob}-manual-{epoch}"
         # 파드의 target_date와 일치시키기 위해 트리거 시점 기준으로 고정 (§8.3 자정 크로스 방지)
         kst_now = dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
         manual_target_date = (kst_now.date() - dt.timedelta(days=1)).isoformat()
-        kubectl(args.context, ["create", "job", f"--from=cronjob/{CRONJOB}",
+        kubectl(args.context, ["create", "job", f"--from=cronjob/{args.cronjob}",
                                job_name, "-n", args.namespace])
         timeout = TIMEOUT_SINGLE_S
 

@@ -1,6 +1,6 @@
 # token-data-pipeline 설계 문서
 
-- 작성일: 2026-07-10 · **현재 버전 v1.12 (2026-07-14)** — 개정 이력은 §0
+- 작성일: 2026-07-10 · **현재 버전 v1.13 (2026-07-14)** — 개정 이력은 §0
 - 상태: 설계 확정 (사용자 승인) — 구현 진행 중 (Plan 1 mock-provider·Plan 2a collector core 머지)
 - 참조: [gpu-data-pipeline 분석](../../gpu-data-pipeline-analysis.md), [token-usage-api-spec](https://github.com/YoonsungNam/token-usage-api-spec) (`token-usage-api.yaml` v1.1.0, 로컬 클론 `/home/mini/github/token-usage-api-spec`)
 
@@ -28,6 +28,7 @@
 다음 위치) — 값은 **anonymous 행만** dim의 date 기준 유효 핸들명, **identified/unclassified는
 빈 문자열**(identified 실명 표기는 재식별·실명 노출 확대 우려로 별도 결정 — §9-1 보류 항목에
 추가, §4.2/§4.3 개정) |
+| v1.13 | 2026-07-14 | **company 검증 2단계 전략 실체화** (§7.2에 "company 검증 2단계 전략" 소절 신설): 1단계(격리) — `tools/gen_verify_ddl.py`가 `ddl/company/*.sql`에서 DB 한정자·ZK 복제 경로·Distributed 인자·GRANT 대상만 치환해 격리 DB 3종(기본안 `token_verify_fact`/`token_verify_dim`/`token_verify_mart`)·전용 계정(`token_verify`) 대상 `ddl/company-verify/*.sql`을 생성(커밋, `--check` CI 드리프트 가드) + k8s overlay `company-verify`(Secret/ConfigMap `-verify` 접미) + `install.sh <module> company-verify`(VM push 1단계 비활성) + `rerun.py --cronjob` 오버라이드. 절차 문서 `docs/operations/company-verify.md` 신설(리스크 표·설치 절차·성공 기준 체크리스트·카나리아 전환·철수). §9-19에 "격리 검증으로 해소 경로 확보" 갱신 |
 
 ## 1. 배경과 목적
 
@@ -659,6 +660,29 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
 - **endpoints.yaml 분리 원칙**: 레포에는 stage(mock-provider)용만 커밋. 사내 서비스 URL 목록은
   `endpoints.company.yaml`(.gitignore)에서 install.sh가 ConfigMap 생성.
 
+**company 검증 2단계 전략 (v1.13, 신설)**: company 반입은 **1단계(격리) → 2단계(정규)**
+2단계로 진행한다 — stage(1s×1r·mock)로는 검증할 수 없는 company 토폴로지(2s×2r)·실 서비스
+API 거동을, production DB(`fact`/`gpu_data`/`mart`)를 오염시키지 않고 먼저 검증하기 위함
+(§9-19 해소 경로). 절차 전체는 `docs/operations/company-verify.md` 참조 — 이 절은 스펙
+레벨의 골격만 요약한다.
+- **1단계(격리)**: 동일 물리 클러스터·동일 실 서비스 API를 대상으로, 격리 DB 3종(기본안
+  `token_verify_fact`/`token_verify_dim`/`token_verify_mart`)과 전용 계정(`token_verify`)만
+  사용. DDL은 `tools/gen_verify_ddl.py`가 `ddl/company/*.sql`에서 구조 토큰(DB 한정자·ZK
+  복제 경로·Distributed 인자·GRANT 대상)만 치환해 `ddl/company-verify/*.sql`로 생성(커밋
+  대상, `--check`로 CI 드리프트 가드). k8s overlay `company-verify`(`nameSuffix: -verify` +
+  Secret/ConfigMap 이름 패치)와 `install.sh <module> company-verify`로 배포하며, VM push는
+  1단계 비활성.
+- **공유 잔여 리스크**: 뮤테이션 예산이 파이프라인 기여분 기준 2배(~136건/일, 확정 예산
+  일 150/피크 80에 근접)로 늘고, VictoriaLogs 마커는 `-verify` 파드명으로만 구분되며,
+  **실 서비스 API에 대해 1단계와 2단계 CronJob을 병행 가동하지 않는다**(이중 폴링 금지 —
+  교체 전환).
+- **카나리아 전환**: 1단계 체크리스트(멱등 2-run 행수 보존·coverage 게이트·3계층 합계 일치·
+  조직 귀속·cost·마커 — E2E 검증 항목의 실데이터판) 통과 후, 1단계 CronJob을 suspend하고
+  공유 계정 `mart`로 production DB 대상 1일치 rerun → 동일 검증 SQL 재확인 → 정규 CronJob
+  기동 순으로 전환한다.
+- **철수**: 검증 실패 또는 전환 완료 후 `DROP DATABASE` 격리 DB 3종 + `DROP USER
+  token_verify` + 1단계 CronJob 삭제 (`docs/operations/company-verify.md` 커맨드 포함).
+
 ### 7.3 모니터링
 
 - **BATCH_RESULT(1줄/실행) → 기존 Grafana batch_result 대시보드 무수정 편입** (module 2종:
@@ -763,7 +787,7 @@ ClickHouse가 유일 사본, 25개월 보존·차지백 근거). 동료 레포�
 | 16 | **보존창 밖 수동 정정 절차** — fact 수동 INSERT 규약·차지백 소비자 공지 (§8.4-3) | RESTATEMENT 감지·감사 이력은 설계 반영됨 | 운영 문서 작성 시 확정 |
 | 17 | **백업 방식·주기·보관처·소유/비용** (§8.5 — 유일 사본 한정) | 백업 없이 시작 금지(사내 반입 전 확정) | 클러스터 소유자(동료)와 합의 |
 | 18 | **DB 소유권 — 확정**: fact 공유(2026-07-13)·gpu_data `*_token_*` 접두사. 잔여: mart DB 공유/전용(Plan 3 DDL에서), 뮤테이션 예산 수치(일 150/피크 80 제안)의 소유자 최종 확인 | 반영 완료(PR #3, 수집기 코드) | mart는 Plan 3 DDL 초안 리뷰에서 |
-| 19 | **stage 레플리카 증설 여부** — 전-레플리카 검증 항목(§7.2 환경 전제)을 stage에서 할지 company로 이관할지 | 레플리카 1 유지 + company 이관 | stage 런북 작성 전 결정 |
+| 19 | **stage 레플리카 증설 여부** — 전-레플리카 검증 항목(§7.2 환경 전제)을 stage에서 할지 company로 이관할지. **v1.13: company 격리 검증(company-verify)으로 해소 경로 확보** — 실제 company 2s×2r 클러스터 위에서 production DB를 건드리지 않고 mutations_sync=2 다중 레플리카 대기·clusterAllReplicas 폴링·복제 lag count 재시도를 실데이터로 검증할 수 있다(`docs/operations/company-verify.md`) | 레플리카 1 유지 + company 이관(격리 검증으로 이관 경로 구체화, v1.13) | stage 런북 작성 전 결정 — 격리 검증 통과를 회신 조건으로 사용 가능 |
 | 20 | **홈랩 VictoriaLogs 설치 여부** — BATCH_RESULT/SERVICE_RESULT 패널의 stage 검증 가능성 | 미설치 — company 단계 검증 | stage 대시보드 작업 전 결정 |
 
 ## 10. 구현 순서 (권장)
