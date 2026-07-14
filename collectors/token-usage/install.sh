@@ -240,12 +240,13 @@ fi
 # 주의: VM_PUSH_URL은 '경로 없는 베이스' — vm_push.py가 /api/v1/import/prometheus를 부착한다.
 #   vmsingle → http://<svc>.<ns>.svc:<port>
 #   vminsert → http://<svc>.<ns>.svc:<port>/insert/0/prometheus  (테넌트 프리픽스만)
+# 실측 서비스명: victoriametrics-victoria-metrics-cluster-vminsert (말미 -vminsert 패턴)
 vm_pairs="$(${KUBECTL} get svc -A \
   -o jsonpath='{range .items[*]}{.metadata.name} {.metadata.namespace} {.spec.ports[0].port}{"\n"}{end}' 2>/dev/null || true)"
-vm_line="$(printf '%s\n' "${vm_pairs}" | grep '^vminsert' | head -1 || true)"
+vm_line="$(printf '%s\n' "${vm_pairs}" | grep 'vminsert' | head -1 || true)"
 vm_suffix="/insert/0/prometheus"
 if [[ -z "${vm_line}" ]]; then
-  vm_line="$(printf '%s\n' "${vm_pairs}" | grep -E '^vmsingle' | head -1 || true)"
+  vm_line="$(printf '%s\n' "${vm_pairs}" | grep 'vmsingle' | head -1 || true)"
   vm_suffix=""
 fi
 if [[ -n "${vm_line}" ]]; then
