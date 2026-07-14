@@ -48,6 +48,42 @@
 - 6시간 캡(TIMEOUT_RANGE_S) 기준 안전 범위는 약 12일(1800s×n_days 산식 — collectors의
   4320s×n_days보다 산식 기저가 작아 캡까지 여유가 더 크다) — 긴 구간은 분할 실행.
 
+## dim 정정 시 mart rerun
+
+**dim_token_user_org 또는 dim_token_model 이력을 정정하면 해당 기간의 mart rerun이 의무다**
+(§4.3 발생일 기준 고정).
+
+### 상황
+
+1. **dim_token_user_org 이력 정정**: 조직 변경 이력 오류(팀 이동 날짜 재지정, 조직명 오류 등)를
+   §8.4 절차로 정정.
+2. **dim_token_model 단가 소급 정정**: 기존 단가 행에 오류가 있어 수정 (§6.2 원칙 상 새
+   effective_from 행이 아닌 기존 행 수정).
+
+### 왜 mart rerun인가?
+
+- mart는 **사실(fact) → dim 조인 → 집계** 파이프라인 (§4.3 단계별 독립).
+- dim만 수정해도 mart의 읽은 조인 결과(이미 테이블에 저장됨)는 옛날 값을 유지.
+- 따라서 영향 기간을 다시 계산(STEP 0→2 재실행)해야 한다.
+
+### 실행 절차
+
+정정 후 영향을 받은 기간(effective_from 범위)에 대해:
+
+```bash
+# 예: dim_token_user_org를 2026-07-15 기준일로 정정한 경우
+python3 mart/token-usage/tools/rerun.py --context company \
+    --from 2026-07-15 --to 2026-07-31
+
+# 예: dim_token_model의 2026-08-01 단가를 수정한 경우
+python3 mart/token-usage/tools/rerun.py --context company \
+    --from 2026-08-01 --to 2026-08-31
+```
+
+- `--from/--to` 범위는 **inclusive** (§4.3 발생일이 포함된 구간 전체).
+- 긴 기간은 분할 실행 가능 (안전 범위 약 12일 참조).
+- 성공 조건: BATCH_RESULT 마커가 `status=SUCCESS` (§5.6/§7.1).
+
 ## VM push와 rerun (§5.5)
 
 rerun 경로는 VM push를 기본 생략한다 — VictoriaMetrics는 동일 timestamp 재push 시
