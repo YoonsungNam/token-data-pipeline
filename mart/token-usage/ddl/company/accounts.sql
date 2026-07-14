@@ -47,3 +47,9 @@ GRANT ON CLUSTER 'gpu-monitoring' SELECT ON gpu_data.view_token_usage_1d_dist   
 GRANT ON CLUSTER 'gpu-monitoring' SELECT ON gpu_data.view_token_usage_service_1d_dist TO token_dashboard_reader;
 GRANT ON CLUSTER 'gpu-monitoring' SELECT ON gpu_data.view_token_usage_org_1d_dist     TO token_dashboard_reader;
 GRANT ON CLUSTER 'gpu-monitoring' SELECT ON gpu_data.view_token_usage_model_1d_dist   TO token_dashboard_reader;
+
+-- 4) token_mart 서버측 설정 — 멱등 rerun 보호 ------------------
+--    DELETE→동일 데이터 재INSERT가 ReplicatedMergeTree 블록 중복제거에
+--    걸려 조용히 폐기되는 것을 서버측에서도 차단 (클라이언트 설정
+--    insert_deduplicate=0의 Distributed 전파 불완전 사례 대비)
+ALTER USER token_mart SETTINGS insert_deduplicate = 0;
