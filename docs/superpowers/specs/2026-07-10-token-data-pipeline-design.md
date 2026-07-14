@@ -1,6 +1,6 @@
 # token-data-pipeline 설계 문서
 
-- 작성일: 2026-07-10 · **현재 버전 v1.8 (2026-07-13)** — 개정 이력은 §0
+- 작성일: 2026-07-10 · **현재 버전 v1.9 (2026-07-14)** — 개정 이력은 §0
 - 상태: 설계 확정 (사용자 승인) — 구현 진행 중 (Plan 1 mock-provider·Plan 2a collector core 머지)
 - 참조: [gpu-data-pipeline 분석](../../gpu-data-pipeline-analysis.md), [token-usage-api-spec](https://github.com/YoonsungNam/token-usage-api-spec) (`token-usage-api.yaml` v1.1.0, 로컬 클론 `/home/mini/github/token-usage-api-spec`)
 
@@ -17,6 +17,7 @@
 | v1.7 | 2026-07-13 | **§9-18 협의 확정** (사용자·소유자): ① fact DB **공유**(token_fact 폐기 — GRANT 테이블 레벨 유지), ② gpu_data 내 토큰 테이블은 **`*_token_*` 접두사 규칙**(dim_token_service 등 — 충돌 예방·소유 식별), ③ 정례 뮤테이션 예산 **제안: 일 150건/피크 창 80건**(동료 실측 일 ~155건 근거 — 소유자 최종 확인 대기). DDL(PR #3)·수집기 코드 반영 완료 |
 | v1.6 | 2026-07-13 | **동료(클러스터 소유자) 리뷰 반영** (GitHub 이슈 #1 + 구두 확정): ① dim·view의 DB = **`gpu_data`**(동료 소유 공유 — token_data 폐지, §9-18 부분 확정), ② company 클러스터 **2샤드×2레플리카** 명시(§9-3 부분 해소), ③ §7.3 모니터링 방안 소유자 승인, ④ OOM 실경험 반영 — 페이지 배치 flush(MAX_BUFFER_ROWS)·Pod resources 명세(§5.1·§7.2), ⑤ §10에 DDL 초안 선리뷰 절차 추가 |
 | v1.8 | 2026-07-13 | 정례 뮤테이션 예산 **확정 적용: 일 총량 150건 / 피크 창(02:00~03:00) 80건** (사용자 결정 — 소유자 사후 컨펌 진행 중, 이슈 #1). §4.0(c) 갱신 |
+| v1.9 | 2026-07-14 | **Plan 3 mart DDL 초안 리뷰 반영**: §4.3에 summary 부재 시맨틱 신설(reported_\*/diff_\* Nullable — STEP 0 경고-후-진행 케이스의 거짓 대사 방지), created_by CHECK는 `_dist`에도 선언(비동기 INSERT 큐 정체 방지 — 24.8 실증), mart INSERT는 `_dist` 경유만(co-location 보장), org agg의 org_depth 물리 컬럼 제외(파생 가능 — YAGNI) |
 
 ## 1. 배경과 목적
 
@@ -214,6 +215,11 @@ summary 행은 반드시 적재** — §5.2).
   미등록 모델은 cost NULL (분해 도입 시에도 "미등록=전 비용 컬럼 NULL"로 단순화).
 - agg의 소스는 `mart.token_usage_1d`로 통일해 조직 조인 결과가 어긋나는 것을 방지한다
   (예외: `agg_token_service_1d`의 reported_* 컬럼만 `fact.raw_token_usage_summary_1d`를 조인).
+- **summary 부재 시맨틱 (v1.9 — Plan 3 DDL 리뷰)**: `agg_token_service_1d`의 reported_\*
+  컬럼은 **Nullable** — STEP 0가 경고 후 진행하는 "summary 행 없는 서비스"(detail만 존재)는
+  reported_\*·diff_\* 전부 NULL로 적재한다. 비-Nullable이면 LEFT JOIN 미스가 "보고값 0"으로
+  위장되고 diff가 거짓 대사 불일치를 기록한다. (§4.1의 is_derived=1 diff NULL 규칙과 별개
+  케이스 — is_derived는 summary 행이 있되 파생인 경우, 이 규칙은 행 자체가 없는 경우.)
 
 ### 4.4 비용 2계층 확장 모델 — Layer P(가격) / Layer C(원가) (확장 슬롯)
 

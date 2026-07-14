@@ -1,0 +1,251 @@
+-- =============================================================
+-- Company/Stage ClickHouse DDL — gpu_data.view_token_usage_* 4테이블
+-- Target cluster: gpu-monitoring
+-- Writer: mart STEP 2 (token_mart) / Reader: token_dashboard_reader
+-- 주의: gpu_data는 기존(동료 소유) DB — CREATE DATABASE 하지 않음.
+--       *_token_* 접두사 규칙 준수 (dim_token_service.sql 헤더 참조).
+-- 스키마: §9-1(대시보드 컬럼 계약) 확정 전까지 mart와 동일 스키마 (§4.2).
+--   물리 테이블(Distributed 쌍)이며 CREATE VIEW가 아니다 — 대시보드가
+--   읽는 최종 테이블로, mart 재계산과 무관하게 안정 제공 (§3).
+-- created_by: DEFAULT 없음 — INSERT 시 명시 삽입('token-pipeline'),
+--   CHECK로 생략 조기 검출 (§4.2 리뷰 #22)
+-- =============================================================
+
+-- -------------------------------------------------------------
+-- 1) view_token_usage_1d — per-user 상세 (mart.token_usage_1d 동일)
+--    per-user 행의 조직 부착 여부는 §9-1 협의 — 확정 전 동일 스키마
+-- -------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS gpu_data.view_token_usage_1d_local
+ON CLUSTER 'gpu-monitoring'
+(
+    date                  Date,
+    service_group         LowCardinality(String),
+    service               LowCardinality(String),
+    user_id               String,
+    user_type             LowCardinality(String),
+    model                 LowCardinality(String),
+    org_path              Array(String),
+    org_top               LowCardinality(String),
+    org_leaf              LowCardinality(String),
+    input_tokens          UInt64,
+    cache_read_tokens     UInt64,
+    cache_creation_tokens UInt64,
+    output_tokens         UInt64,
+    total_input_tokens    UInt64,
+    requests              UInt64,
+    cost                  Nullable(Float64),
+    created_by            LowCardinality(String),
+    CONSTRAINT check_created_by CHECK created_by != ''
+)
+ENGINE = ReplicatedMergeTree(
+    '/clickhouse/tables/{shard}/gpu_data/view_token_usage_1d_local',
+    '{replica}'
+)
+PARTITION BY toYYYYMMDD(date)
+ORDER BY (date, service, user_type, user_id, model)
+TTL date + INTERVAL 25 MONTH
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS gpu_data.view_token_usage_1d_dist
+ON CLUSTER 'gpu-monitoring'
+(
+    date                  Date,
+    service_group         LowCardinality(String),
+    service               LowCardinality(String),
+    user_id               String,
+    user_type             LowCardinality(String),
+    model                 LowCardinality(String),
+    org_path              Array(String),
+    org_top               LowCardinality(String),
+    org_leaf              LowCardinality(String),
+    input_tokens          UInt64,
+    cache_read_tokens     UInt64,
+    cache_creation_tokens UInt64,
+    output_tokens         UInt64,
+    total_input_tokens    UInt64,
+    requests              UInt64,
+    cost                  Nullable(Float64),
+    created_by            LowCardinality(String),
+    CONSTRAINT check_created_by CHECK created_by != ''
+)
+ENGINE = Distributed('gpu-monitoring', 'gpu_data', 'view_token_usage_1d_local',
+                     cityHash64(service, user_id));
+
+-- -------------------------------------------------------------
+-- 2) view_token_usage_service_1d (mart.agg_token_service_1d 동일)
+-- -------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS gpu_data.view_token_usage_service_1d_local
+ON CLUSTER 'gpu-monitoring'
+(
+    date                               Date,
+    service_group                      LowCardinality(String),
+    service                            LowCardinality(String),
+    input_tokens                       UInt64,
+    cache_read_tokens                  UInt64,
+    cache_creation_tokens              UInt64,
+    output_tokens                      UInt64,
+    total_input_tokens                 UInt64,
+    requests                           UInt64,
+    distinct_users                     UInt64,
+    cost                               Nullable(Float64),
+    is_derived                         UInt8,
+    reported_input_tokens              Nullable(UInt64),
+    reported_cache_read_tokens         Nullable(UInt64),
+    reported_cache_creation_tokens     Nullable(UInt64),
+    reported_output_tokens             Nullable(UInt64),
+    reported_requests                  Nullable(UInt64),
+    reported_distinct_users            Nullable(UInt32),
+    reported_distinct_identified_users Nullable(UInt32),
+    diff_input_tokens                  Nullable(Int64),
+    diff_cache_read_tokens             Nullable(Int64),
+    diff_cache_creation_tokens         Nullable(Int64),
+    diff_output_tokens                 Nullable(Int64),
+    diff_requests                      Nullable(Int64),
+    created_by                         LowCardinality(String),
+    CONSTRAINT check_created_by CHECK created_by != ''
+)
+ENGINE = ReplicatedMergeTree(
+    '/clickhouse/tables/{shard}/gpu_data/view_token_usage_service_1d_local',
+    '{replica}'
+)
+PARTITION BY toYYYYMM(date)
+ORDER BY (date, service)
+TTL date + INTERVAL 25 MONTH
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS gpu_data.view_token_usage_service_1d_dist
+ON CLUSTER 'gpu-monitoring'
+(
+    date                               Date,
+    service_group                      LowCardinality(String),
+    service                            LowCardinality(String),
+    input_tokens                       UInt64,
+    cache_read_tokens                  UInt64,
+    cache_creation_tokens              UInt64,
+    output_tokens                      UInt64,
+    total_input_tokens                 UInt64,
+    requests                           UInt64,
+    distinct_users                     UInt64,
+    cost                               Nullable(Float64),
+    is_derived                         UInt8,
+    reported_input_tokens              Nullable(UInt64),
+    reported_cache_read_tokens         Nullable(UInt64),
+    reported_cache_creation_tokens     Nullable(UInt64),
+    reported_output_tokens             Nullable(UInt64),
+    reported_requests                  Nullable(UInt64),
+    reported_distinct_users            Nullable(UInt32),
+    reported_distinct_identified_users Nullable(UInt32),
+    diff_input_tokens                  Nullable(Int64),
+    diff_cache_read_tokens             Nullable(Int64),
+    diff_cache_creation_tokens         Nullable(Int64),
+    diff_output_tokens                 Nullable(Int64),
+    diff_requests                      Nullable(Int64),
+    created_by                         LowCardinality(String),
+    CONSTRAINT check_created_by CHECK created_by != ''
+)
+ENGINE = Distributed('gpu-monitoring', 'gpu_data', 'view_token_usage_service_1d_local',
+                     cityHash64(service));
+
+-- -------------------------------------------------------------
+-- 3) view_token_usage_org_1d (mart.agg_token_org_1d 동일)
+-- -------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS gpu_data.view_token_usage_org_1d_local
+ON CLUSTER 'gpu-monitoring'
+(
+    date                  Date,
+    org_path              Array(String),
+    input_tokens          UInt64,
+    cache_read_tokens     UInt64,
+    cache_creation_tokens UInt64,
+    output_tokens         UInt64,
+    total_input_tokens    UInt64,
+    requests              UInt64,
+    distinct_users        UInt64,
+    headcount             UInt32,
+    adoption_rate         Nullable(Float64),
+    cost                  Nullable(Float64),
+    created_by            LowCardinality(String),
+    CONSTRAINT check_created_by CHECK created_by != ''
+)
+ENGINE = ReplicatedMergeTree(
+    '/clickhouse/tables/{shard}/gpu_data/view_token_usage_org_1d_local',
+    '{replica}'
+)
+PARTITION BY toYYYYMM(date)
+ORDER BY (date, org_path)
+TTL date + INTERVAL 25 MONTH
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS gpu_data.view_token_usage_org_1d_dist
+ON CLUSTER 'gpu-monitoring'
+(
+    date                  Date,
+    org_path              Array(String),
+    input_tokens          UInt64,
+    cache_read_tokens     UInt64,
+    cache_creation_tokens UInt64,
+    output_tokens         UInt64,
+    total_input_tokens    UInt64,
+    requests              UInt64,
+    distinct_users        UInt64,
+    headcount             UInt32,
+    adoption_rate         Nullable(Float64),
+    cost                  Nullable(Float64),
+    created_by            LowCardinality(String),
+    CONSTRAINT check_created_by CHECK created_by != ''
+)
+ENGINE = Distributed('gpu-monitoring', 'gpu_data', 'view_token_usage_org_1d_local',
+                     cityHash64(arrayStringConcat(org_path, '>')));
+
+-- -------------------------------------------------------------
+-- 4) view_token_usage_model_1d (mart.agg_token_model_1d 동일)
+-- -------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS gpu_data.view_token_usage_model_1d_local
+ON CLUSTER 'gpu-monitoring'
+(
+    date                  Date,
+    model                 LowCardinality(String),
+    provider              LowCardinality(String),
+    input_tokens          UInt64,
+    cache_read_tokens     UInt64,
+    cache_creation_tokens UInt64,
+    output_tokens         UInt64,
+    total_input_tokens    UInt64,
+    requests              UInt64,
+    distinct_services     UInt32,
+    cost                  Nullable(Float64),
+    created_by            LowCardinality(String),
+    CONSTRAINT check_created_by CHECK created_by != ''
+)
+ENGINE = ReplicatedMergeTree(
+    '/clickhouse/tables/{shard}/gpu_data/view_token_usage_model_1d_local',
+    '{replica}'
+)
+PARTITION BY toYYYYMM(date)
+ORDER BY (date, model, provider)
+TTL date + INTERVAL 25 MONTH
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS gpu_data.view_token_usage_model_1d_dist
+ON CLUSTER 'gpu-monitoring'
+(
+    date                  Date,
+    model                 LowCardinality(String),
+    provider              LowCardinality(String),
+    input_tokens          UInt64,
+    cache_read_tokens     UInt64,
+    cache_creation_tokens UInt64,
+    output_tokens         UInt64,
+    total_input_tokens    UInt64,
+    requests              UInt64,
+    distinct_services     UInt32,
+    cost                  Nullable(Float64),
+    created_by            LowCardinality(String),
+    CONSTRAINT check_created_by CHECK created_by != ''
+)
+ENGINE = Distributed('gpu-monitoring', 'gpu_data', 'view_token_usage_model_1d_local',
+                     cityHash64(model));
