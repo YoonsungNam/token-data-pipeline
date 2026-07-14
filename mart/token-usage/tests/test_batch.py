@@ -46,7 +46,7 @@ class FakeGate:
 
     def __init__(self, enabled=None, summary=None, step1_fails=False, step2_fails=False,
                  totals=None, diff_mismatch_services=None, org_counts=None,
-                 unregistered_models=None):
+                 unregistered_models=None, query_raises=None):
         self.enabled = enabled if enabled is not None else []
         self.summary = summary if summary is not None else set()
         self.step1_fails = step1_fails
@@ -57,6 +57,7 @@ class FakeGate:
         self.unregistered_models = unregistered_models or []
         self.written = {}
         self.query_calls = []
+        self.query_raises = query_raises  # (exc_class, msg) tuple or None
 
     # ---- STEP1/2 실행 표면 (steps.py가 호출) ----
     def exists(self, table_dist, date):
@@ -82,6 +83,9 @@ class FakeGate:
     # ---- STEP 0 + 인라인 검증 4종이 쓰는 query() ----
     def query(self, sql, params=None):
         self.query_calls.append((sql, params))
+        if self.query_raises is not None:
+            exc_class, msg = self.query_raises
+            raise exc_class(msg)
         if "dim_token_service_dist" in sql:
             return [(s,) for s in self.enabled]
         if "raw_token_usage_summary_1d_dist" in sql:
@@ -221,6 +225,55 @@ def test_inline_validations_all_clean_warn_zero(capsys):
     assert code == 0
     assert "CHECK WARN" not in out
     assert "warn=0" in out
+
+
+# ============================================================================
+# 광역 가드 예외 처리 — T4 리뷰 Fix 1 (Medium)
+# ============================================================================
+
+def test_unexpected_exception_still_emits_failure_marker(capsys):
+    """TimeoutError 등 비-StepError 예외도 BATCH_RESULT status=FAILURE 마커 + return 1."""
+    gate = FakeGate(enabled=["S1"], summary={"S1"}, query_raises=(TimeoutError, "connection timeout"))
+    code = batch.run_batch(cfg(), DATE, gate=gate)
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "BATCH_RESULT status=FAILURE" in captured.out
+    assert "ERROR in run_batch" in captured.err
+
+
+def test_multi_date_continues_after_exception(capsys, monkeypatch):
+    """1일차 예외 → 2일차 정상 실행, BATCH_RESULT 2줄 (FAILURE + SUCCESS), exit 1."""
+    date1_gate = FakeGate(enabled=["S1"], summary={"S1"}, query_raises=(RuntimeError, "db error"))
+    date2_gate = FakeGate(enabled=["S1"], summary={"S1"})
+    gates_by_date = {DATE: date1_gate, DATE2: date2_gate}
+
+    original_run_batch = batch.run_batch
+
+    def run_batch_with_date_gate(cfg, date, gate=None):
+        """Override run_batch to use date-specific gate."""
+        specific_gate = gates_by_date.get(date)
+        if specific_gate is not None:
+            gate = specific_gate
+        return original_run_batch(cfg, date, gate=gate)
+
+    monkeypatch.setattr(batch, "run_batch", run_batch_with_date_gate)
+    # Mock CHGate to avoid real connection
+    monkeypatch.setattr(batch, "CHGate", lambda cfg: None)
+    code = batch.main(["--from", DATE, "--to", DATE2])
+    out = capsys.readouterr().out
+    assert out.count("BATCH_RESULT") == 2
+    assert out.count("status=FAILURE") == 1
+    assert out.count("status=SUCCESS") == 1
+    assert code == 1  # 첫 날짜 실패로 worst=1
+
+
+def test_step2_step_error_marks_failure(capsys):
+    """FakeGate.step2_fails 경로 커버 (리뷰 지적 — 정의만 되고 미사용)."""
+    gate = FakeGate(enabled=["S1"], summary={"S1"}, step2_fails=True)
+    code = batch.run_batch(cfg(), DATE, gate=gate)
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "BATCH_RESULT status=FAILURE" in out
 
 
 # ============================================================================

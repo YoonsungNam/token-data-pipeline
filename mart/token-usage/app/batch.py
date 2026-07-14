@@ -162,50 +162,74 @@ def _emit_step_warns(warns: list[str]) -> Warn:
 
 
 def run_batch(cfg: Config, date: str, gate=None) -> int:
-    """날짜 1개의 STEP 0→2 전체 + 인라인 검증 4종 + 마커 1줄. 0=SUCCESS, 1=FAILURE."""
+    """날짜 1개의 STEP 0→2 전체 + 인라인 검증 4종 + 마커 1줄. 0=SUCCESS, 1=FAILURE.
+
+    광역 가드: STEP 0(쿼리·검증)·STEP 1·STEP 2·인라인 검증에서 발생하는 모든 예외
+    → BATCH_RESULT status=FAILURE 마커 + return 1 (§5.6 마커 계약, §7.1 날짜별 독립).
+    """
     gate = gate or CHGate(cfg)
     started = time.monotonic()
     warn = Warn(0, "")
-
-    coverage, w0 = _check_step0_coverage(gate, cfg, date)
-    warn = warn + w0
-    _status["line"] = batch_line("FAILURE", coverage, 0, 0, warn.count, time.monotonic() - started)
+    coverage = None
+    rows_mart = 0
+    rows_view = 0
 
     try:
-        step1 = run_step1(gate, date)
-    except StepError:
+        coverage, w0 = _check_step0_coverage(gate, cfg, date)
+        warn = warn + w0
+        _status["line"] = batch_line("FAILURE", coverage, 0, 0, warn.count, time.monotonic() - started)
+
+        try:
+            step1 = run_step1(gate, date)
+        except StepError:
+            elapsed = time.monotonic() - started
+            line = batch_line("FAILURE", coverage, 0, 0, warn.count, elapsed)
+            _status["line"] = line
+            print(line, flush=True)
+            return 1
+        warn = warn + _emit_step_warns(step1["warns"])
+        rows_mart = step1["rows_detail"]
+        _status["line"] = batch_line("FAILURE", coverage, rows_mart, 0, warn.count, time.monotonic() - started)
+
+        try:
+            step2 = run_step2(gate, date)
+        except StepError:
+            elapsed = time.monotonic() - started
+            line = batch_line("FAILURE", coverage, rows_mart, 0, warn.count, elapsed)
+            _status["line"] = line
+            print(line, flush=True)
+            return 1
+        warn = warn + _emit_step_warns(step2["warns"])
+        rows_view = step2["rows_view_detail"]      # T3 인터페이스와 동일 정의 (rows_view_detail)
+        _status["line"] = batch_line("FAILURE", coverage, rows_mart, rows_view, warn.count,
+                                     time.monotonic() - started)
+
+        warn = warn + _validate_totals(gate, date)
+        warn = warn + _validate_diff_mismatch(gate, date)
+        warn = warn + _validate_org_mapping(gate, cfg, date)
+        warn = warn + _validate_unregistered_models(gate, date)
+
         elapsed = time.monotonic() - started
-        line = batch_line("FAILURE", coverage, 0, 0, warn.count, elapsed)
+        line = batch_line("SUCCESS", coverage, rows_mart, rows_view, warn.count, elapsed)
+        _status["line"] = line
+        print(line, flush=True)
+        return 0
+
+    except Exception as exc:
+        # 예상 밖 예외(TimeoutError, RuntimeError 등) — 마커 보장 + 날짜 독립 진행
+        # 예외 메시지는 stderr로(마커 형식 오염 금지, user_id 원문 금지)
+        exc_name = type(exc).__name__
+        import sys
+        print(f"ERROR in run_batch(date={date}): {exc_name}: {str(exc)[:200]}", file=sys.stderr, flush=True)
+
+        elapsed = time.monotonic() - started
+        if coverage is None:
+            # STEP 0 실패 시 coverage 미초기화
+            coverage = Coverage(0, 0, [], [])
+        line = batch_line("FAILURE", coverage, rows_mart, rows_view, warn.count, elapsed)
         _status["line"] = line
         print(line, flush=True)
         return 1
-    warn = warn + _emit_step_warns(step1["warns"])
-    rows_mart = step1["rows_detail"]
-    _status["line"] = batch_line("FAILURE", coverage, rows_mart, 0, warn.count, time.monotonic() - started)
-
-    try:
-        step2 = run_step2(gate, date)
-    except StepError:
-        elapsed = time.monotonic() - started
-        line = batch_line("FAILURE", coverage, rows_mart, 0, warn.count, elapsed)
-        _status["line"] = line
-        print(line, flush=True)
-        return 1
-    warn = warn + _emit_step_warns(step2["warns"])
-    rows_view = step2["rows_view_detail"]      # T3 인터페이스와 동일 정의 (rows_view_detail)
-    _status["line"] = batch_line("FAILURE", coverage, rows_mart, rows_view, warn.count,
-                                 time.monotonic() - started)
-
-    warn = warn + _validate_totals(gate, date)
-    warn = warn + _validate_diff_mismatch(gate, date)
-    warn = warn + _validate_org_mapping(gate, cfg, date)
-    warn = warn + _validate_unregistered_models(gate, date)
-
-    elapsed = time.monotonic() - started
-    line = batch_line("SUCCESS", coverage, rows_mart, rows_view, warn.count, elapsed)
-    _status["line"] = line
-    print(line, flush=True)
-    return 0
 
 
 def main(argv=None) -> int:
