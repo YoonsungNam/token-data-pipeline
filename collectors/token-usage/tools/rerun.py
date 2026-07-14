@@ -33,7 +33,7 @@ import time
 CRONJOB = "token-usage-collector"
 MART_RERUN = "mart/token-usage/tools/rerun.py"   # Plan 3에서 확정되는 경로 (부재 시 안내 실패)
 POLL_S = 10
-TIMEOUT_SINGLE_S = 80 * 60        # activeDeadlineSeconds 4320s + 재시도 1회 + 마진
+TIMEOUT_SINGLE_S = 4320 + 600     # 서버 activeDeadlineSeconds + 폴링 마진 600 (range 모드와 동일 산식)
 TIMEOUT_RANGE_S = 6 * 3600        # 동료 관례 (기간 재수집)
 
 
