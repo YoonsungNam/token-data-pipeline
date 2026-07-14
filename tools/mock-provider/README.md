@@ -35,3 +35,19 @@ summary_extra_pct · name_drift · generated_at_change_at_page · not_ready_at_p
     ./run_conformance.sh            # 스펙 레포의 conformance_check 통과
 
 이미지 빌드·컨테이너 스모크는 CI의 image job에서 검증 (로컬 개발 머신에는 docker 없음).
+
+## stage 배포
+
+**전제:**
+- `registry-pull-secret` ConfigMap/Secret이 `monitoring` 네임스페이스에 존재해야 함 (stage-runbook 참조)
+- 이미지는 `release-images` CI 워크플로에서 공급됨 (`ghcr.io/yoonsungnam/token-mock-provider:latest`)
+
+**배포:**
+
+    kubectl apply -n monitoring -f tools/mock-provider/k8s.yaml
+
+4개 리소스가 생성됨:
+- `token-mock-provider-a` Service/Deployment (Mock Service A)
+- `token-mock-provider-b` Service/Deployment (Mock Service B)
+
+각 서비스는 포트 8000에서 동작하며, `collectors/token-usage/endpoints.yaml`의 baseUrl을 통해 수집기에서 접근됨.
