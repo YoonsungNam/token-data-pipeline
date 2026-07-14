@@ -7,7 +7,7 @@ FakeGate는 T3(test_steps.py)의 더블과 같은 패턴(짧은 키 매핑)을 S
 """
 import pytest
 
-from app import batch
+from app import batch, steps
 from app.config import Config
 
 
@@ -33,6 +33,23 @@ def _short(table_or_sql: str) -> str:
         if key in table_or_sql:
             return short
     raise AssertionError(f"unmapped table/sql in FakeGate: {table_or_sql[:80]!r}")
+
+
+# steps.py의 EXPECTED_SQL_* 상수(소스 카운트 쿼리, written_rows 이중 계상 회귀 수정) →
+# FakeGate 짧은 키. 부분문자열 매칭(_short)은 여기서 쓸 수 없다 — 예를 들어
+# EXPECTED_SQL_AGG_SERVICE는 대상 테이블(agg_token_service_1d)이 아니라 소스 테이블
+# (token_usage_1d/raw_token_usage_summary_1d_dist)을 참조하므로 아래 STEP 0/인라인
+# 검증용 substring 라우팅과 충돌한다. 상수 객체 자체로 정확히 식별한다.
+_EXPECTED_SQL_SHORT = {
+    steps.EXPECTED_SQL_DETAIL: "detail",
+    steps.EXPECTED_SQL_AGG_SERVICE: "agg_service",
+    steps.EXPECTED_SQL_AGG_ORG: "agg_org",
+    steps.EXPECTED_SQL_AGG_MODEL: "agg_model",
+    steps.EXPECTED_SQL_VIEW_DETAIL: "view_detail",
+    steps.EXPECTED_SQL_VIEW_SERVICE: "view_service",
+    steps.EXPECTED_SQL_VIEW_ORG: "view_org",
+    steps.EXPECTED_SQL_VIEW_MODEL: "view_model",
+}
 
 
 class FakeGate:
@@ -80,12 +97,18 @@ class FakeGate:
             return False, 0
         return True, expected
 
-    # ---- STEP 0 + 인라인 검증 4종이 쓰는 query() ----
+    # ---- STEP 0 + 인라인 검증 4종 + STEP1/2 expected 소스 카운트가 쓰는 query() ----
     def query(self, sql, params=None):
         self.query_calls.append((sql, params))
         if self.query_raises is not None:
             exc_class, msg = self.query_raises
             raise exc_class(msg)
+        # steps.py의 EXPECTED_SQL_* — 이중 계상 회귀 수정: expected는 written_rows와
+        # 동일 기본값을 돌려줘 이 파일의 기존 verify_count 계약(= expected 그대로
+        # 통과/step1_fails·step2_fails만 실패)을 보존한다.
+        if sql in _EXPECTED_SQL_SHORT:
+            short = _EXPECTED_SQL_SHORT[sql]
+            return [(self.written.get(short, 1),)]
         if "dim_token_service_dist" in sql:
             return [(s,) for s in self.enabled]
         if "raw_token_usage_summary_1d_dist" in sql:
