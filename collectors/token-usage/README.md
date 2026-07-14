@@ -9,6 +9,7 @@ token-usage-api(v1.1.0)를 구현한 사내 서비스들을 매일 pull하여 Cl
     CH_HOST=... python -m app.main                      # target_date = 어제 (KST)
     python -m app.main 2026-06-16T02:00:00+09:00        # batch_time 명시
     python -m app.main --from 2026-06-10 --to 2026-06-12 --service "Mock Service A"
+    python -m app.main --from 2026-06-10 --to 2026-06-12 --push-vm   # rerun 경로도 VM push (§5.5 옵트인)
     # 재수집 = 기본 동작(delete-then-insert), --purge 없음. rerun 후 mart rerun 의무(§8.3)
 
 ## 환경변수 (§5.7)
