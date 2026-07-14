@@ -299,7 +299,7 @@
       "id": 4,
       "type": "table",
       "title": "4. 서비스 대사 품질 (diff_* 비0 / summary 부재)",
-      "description": "mart.agg_token_service_1d_dist — is_derived=0(=summary 대사 대상)인 서비스 중 diff_*가 0이 아니거나 reported_* 조인이 NULL(summary 미도착)인 행만 표시. reconcile_status: derived_no_summary(is_derived=1, 정상)/summary_missing(대사 대상인데 summary 부재)/mismatch(대사값 불일치).",
+      "description": "mart.agg_token_service_1d_dist — is_derived=0(=summary 대사 대상)인 서비스 중 diff_*가 0이 아니거나 reported_* 조인이 NULL(summary 미도착)인 행만 표시. reconcile_status: summary_missing(대사 대상인데 summary 부재)/mismatch(대사값 불일치).",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "${DS_CLICKHOUSE}"
@@ -359,7 +359,7 @@
           "format": 1,
           "pluginVersion": "4.19.0",
           "queryType": "sql",
-          "rawSql": "SELECT\n    date,\n    service_group,\n    service,\n    is_derived,\n    reported_input_tokens,\n    diff_input_tokens,\n    diff_cache_read_tokens,\n    diff_cache_creation_tokens,\n    diff_output_tokens,\n    diff_requests,\n    multiIf(\n        is_derived = 1, 'derived_no_summary',\n        reported_input_tokens IS NULL, 'summary_missing',\n        'mismatch'\n    ) AS reconcile_status\nFROM mart.agg_token_service_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n  AND is_derived = 0\n  AND (\n        coalesce(diff_input_tokens, 0) != 0\n        OR coalesce(diff_cache_read_tokens, 0) != 0\n        OR coalesce(diff_cache_creation_tokens, 0) != 0\n        OR coalesce(diff_output_tokens, 0) != 0\n        OR coalesce(diff_requests, 0) != 0\n        OR reported_input_tokens IS NULL\n      )\nORDER BY date DESC, service",
+          "rawSql": "SELECT\n    date,\n    service_group,\n    service,\n    is_derived,\n    reported_input_tokens,\n    diff_input_tokens,\n    diff_cache_read_tokens,\n    diff_cache_creation_tokens,\n    diff_output_tokens,\n    diff_requests,\n    multiIf(\n        reported_input_tokens IS NULL, 'summary_missing',\n        'mismatch'\n    ) AS reconcile_status\nFROM mart.agg_token_service_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n  AND is_derived = 0\n  AND (\n        coalesce(diff_input_tokens, 0) != 0\n        OR coalesce(diff_cache_read_tokens, 0) != 0\n        OR coalesce(diff_cache_creation_tokens, 0) != 0\n        OR coalesce(diff_output_tokens, 0) != 0\n        OR coalesce(diff_requests, 0) != 0\n        OR reported_input_tokens IS NULL\n      )\nORDER BY date DESC, service",
           "refId": "A"
         }
       ]
@@ -530,7 +530,7 @@
       "id": 7,
       "type": "table",
       "title": "7. 일별 수집 커버리지",
-      "description": "view_token_usage_service_1d_dist — 일자별 보고 서비스 수(reporting_services)와 requests 합계. collectors endpoints.yaml의 enabled 서비스 수와 비교해 커버리지 판단(README 참조).",
+      "description": "view_token_usage_service_1d_dist — 일자별 보고 서비스 수(reporting_services), enabled 기준 서비스 수(enabled_services), requests 합계. enabled 기준 = gpu_data.dim_token_service_dist (collector가 매 실행 교체). README 참조.",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "${DS_CLICKHOUSE}"
@@ -590,7 +590,7 @@
           "format": 1,
           "pluginVersion": "4.19.0",
           "queryType": "sql",
-          "rawSql": "SELECT\n    date,\n    count(DISTINCT service) AS reporting_services,\n    sum(requests) AS requests\nFROM gpu_data.view_token_usage_service_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\nGROUP BY date\nORDER BY date DESC",
+          "rawSql": "SELECT\n    date,\n    count(DISTINCT service) AS reporting_services,\n    (SELECT count() FROM gpu_data.dim_token_service_dist WHERE enabled = 1) AS enabled_services,\n    sum(requests) AS requests\nFROM gpu_data.view_token_usage_service_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\nGROUP BY date\nORDER BY date DESC",
           "refId": "A"
         }
       ]

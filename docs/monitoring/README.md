@@ -16,6 +16,9 @@
   필요 — 스테이지 런북 T5의 설치 항목).
 - 버전 확인: Administration → Plugins → ClickHouse → 버전 배지. 4.x 미만이면 매크로 치환
   결과가 달라질 수 있으므로 업그레이드 후 사용.
+- **Grafana 코어 버전 확인** (최소 11.6.0, `__requires` 참조): Grafana UI 우측 하단 버전 표시 또는
+  `kubectl get deploy grafana -n monitoring -o jsonpath='{.spec.template.spec.containers[0].image}'` 
+  로 확인.
 
 ## 2. ClickHouse 데이터소스 설정
 
