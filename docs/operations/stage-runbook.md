@@ -91,7 +91,7 @@ kubectl --context homelab create secret docker-registry registry-pull-secret \
 mock-provider 2벌(Mock Service A/B) 배포:
 
 ```bash
-kubectl apply -n monitoring -f tools/mock-provider/k8s.yaml
+kubectl --context homelab apply -n monitoring -f tools/mock-provider/k8s.yaml
 ```
 
 4개 리소스(Service/Deployment × 2)가 생성된다. healthz 확인:
@@ -405,10 +405,12 @@ mart 단계 실패 시 mart rerun의 리턴값이 그대로 전파돼 비0이어
    입력 필드에 방금 만든 데이터소스 매핑(이 프롬프트가 안 뜨면 `__inputs` 선언
    문제이므로 중단하고 JSON을 재확인).
 
-판정: 8개 패널(데이터 패널 7 + 참고 텍스트 패널 1) 전부 "No data"/조회 에러 없이
-값이 표시된다. 특히 패널 1(서비스별 추이)·2(org 롤업)·3(모델별)·6(anon 핸들명 상위)에
-방금 적재한 `${D}` 데이터가 보이는지 확인한다(기본 시간범위 `now-30d`~`now`에 포함되므로
-별도 조정 불필요 — 안 보이면 시간범위를 넓혀 재확인).
+판정: 조회 에러가 있는 패널이 없어야 하며, 패널 1(서비스별 추이)·2(org 롤업)·3(모델별)·
+5(unknown 버킷)·6(anon 핸들명 상위)·7(커버리지)에 방금 적재한 `${D}` 데이터가 보인다
+(기본 시간범위 `now-30d`~`now`에 포함되므로 별도 조정 불필요 — 안 보이면 시간범위를
+넓혀 재확인). **예외 — 패널 4(대사 품질)는 위반 행만 표시하는 패널이라 정상 배포에서는
+"No data"가 곧 정상이다** (mock 데이터는 diff_* 전부 0 — §7-2 판정과 동일 근거).
+패널 4에 행이 보인다면 그것이 오히려 대사 불일치 신호다.
 
 ---
 

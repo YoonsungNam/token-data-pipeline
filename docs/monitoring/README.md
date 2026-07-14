@@ -74,9 +74,11 @@ Grafana → Connections → Data sources → Add data source → ClickHouse:
 패널 4(대사 품질)만 **mart DB**를 직접 조회한다(같은 `mart` 계정으로 접속되므로 추가 설정
 불필요) — 나머지는 전부 `gpu_data`(view) 조회다.
 
-패널 7 "reporting_services"는 CH만으로는 "enabled 서비스 수"(collectors `endpoints.yaml` 설정값)를
-알 수 없으므로 참고용 실측치만 반환한다 — 배포 중인 `endpoints.yaml`의 enabled 항목 수와
-수동으로 비교해 커버리지 결손을 판단한다.
+패널 7은 `reporting_services`(당일 summary 적재 서비스 수)와 `enabled_services`
+(`gpu_data.dim_token_service_dist WHERE enabled = 1` — collector가 매 실행 원자 교체하는
+레지스트리)를 **한 쿼리에서 함께 반환**해 커버리지 결손을 자동 비교한다(§7.1 coverage
+계약의 대시보드 반영). 두 값이 다르면 어느 서비스가 빠졌는지 STEP 0 마커
+(`missing_services=`)에서 확인한다.
 
 ## 5. 시간 필터 매크로 규칙
 
