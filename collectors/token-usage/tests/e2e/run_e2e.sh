@@ -31,6 +31,8 @@ python3 - <<'PY'
 import re, pathlib, urllib.request
 
 sql = pathlib.Path("ddl/company/raw_token_usage.sql").read_text()
+# 단일노드 E2E는 admin 수동 절차(accounts.sql)가 없으므로 이 스크립트가 fact DB를 대신 생성
+sql = "CREATE DATABASE IF NOT EXISTS fact;\n" + sql
 sql += "\nCREATE DATABASE IF NOT EXISTS gpu_data;\n"
 
 # dim ddl 파일명: PR #3 결정 반영 후 dim_token_service.sql로 개명됨 —
