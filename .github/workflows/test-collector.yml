@@ -3,10 +3,10 @@ name: test-collector
 on:
   push:
     branches: [main]
-    paths: ["collectors/token-usage/**", "tools/mock-provider/**",
+    paths: ["collectors/token-usage/**", "mart/token-usage/tools/rerun.py", "tools/mock-provider/**",
             ".github/workflows/test-collector.yml"]
   pull_request:
-    paths: ["collectors/token-usage/**", "tools/mock-provider/**",
+    paths: ["collectors/token-usage/**", "mart/token-usage/tools/rerun.py", "tools/mock-provider/**",
             ".github/workflows/test-collector.yml"]
 
 jobs:

@@ -50,7 +50,7 @@ HAVING count() != {EXP_DETAIL_ROWS}
 UNION ALL
 
 -- 재수집 멱등성: run_e2e.sh가 배치를 2회 실행한 뒤 이 verify를 1회 실행 —
--- insert_deduplicate=0 누락 시 여기서 행수가 어긋난다(중복 또는 소실).
+-- 단일노드 E2E는 MergeTree라 블록 중복제거 미발생 — insert_deduplicate=0의 실검증은 test_ch.py 설정 단정 + accounts.sql ALTER USER + Plan 5 stage 2-run
 SELECT 'no_duplicate_after_rerun', count(), {EXP_DETAIL_ROWS}
 FROM mart.token_usage_1d_dist
 WHERE date = '{DATE}'

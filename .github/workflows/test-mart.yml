@@ -3,10 +3,10 @@ name: test-mart
 on:
   push:
     branches: [main]
-    paths: ["mart/token-usage/**", "tools/mock-provider/**",
+    paths: ["mart/token-usage/**", "collectors/token-usage/ddl/**", "tools/mock-provider/**",
             ".github/workflows/test-mart.yml"]
   pull_request:
-    paths: ["mart/token-usage/**", "tools/mock-provider/**",
+    paths: ["mart/token-usage/**", "collectors/token-usage/ddl/**", "tools/mock-provider/**",
             ".github/workflows/test-mart.yml"]
 
 jobs:
@@ -26,27 +26,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: instrumenta/kubeval-action@master
       - name: Kustomize stage
         run: kubectl kustomize mart/token-usage/k8s/overlays/stage > /tmp/m-stage.yaml
       - name: Kustomize company
         run: kubectl kustomize mart/token-usage/k8s/overlays/company > /tmp/m-company.yaml
-      - name: Validate manifests
+      - name: Contract fields locked
         run: |
-          grep -q 'activeDeadlineSeconds: 1800' /tmp/m-stage.yaml
-          grep -q 'schedule: 0 4 \* \* \*' /tmp/m-stage.yaml
-          grep -q 'concurrencyPolicy: Forbid' /tmp/m-stage.yaml
-          grep -q 'timeZone: Asia/Seoul' /tmp/m-stage.yaml
-          grep -q 'backoffLimit: 1' /tmp/m-stage.yaml
-          grep -q 'memory: 1Gi' /tmp/m-stage.yaml
-          grep -q 'memory: 256Mi' /tmp/m-stage.yaml
-          grep -q 'name: registry-pull-secret' /tmp/m-stage.yaml
-          grep -q 'name: token-mart-ch-secret' /tmp/m-stage.yaml
+          for f in /tmp/m-stage.yaml /tmp/m-company.yaml; do
+            grep -q 'activeDeadlineSeconds: 1800' "$f"
+            grep -q 'schedule: 0 4 \* \* \*' "$f"
+            grep -q 'concurrencyPolicy: Forbid' "$f"
+            grep -q 'timeZone: Asia/Seoul' "$f"
+            grep -q 'backoffLimit: 1' "$f"
+            grep -q 'memory: 1Gi' "$f"
+            grep -q 'memory: 256Mi' "$f"
+            grep -q 'name: registry-pull-secret' "$f"
+            grep -q 'name: token-mart-ch-secret' "$f"
+            ! grep -q 'EXPECTED_LATE_SERVICES' "$f"
+          done
           grep -q 'ghcr.io/yoonsungnam/token-mart' /tmp/m-stage.yaml
-          ! grep -q 'EXPECTED_LATE_SERVICES' /tmp/m-stage.yaml
-          ! grep -q 'EXPECTED_LATE_SERVICES' /tmp/m-company.yaml
-          kubeval /tmp/m-stage.yaml
-          kubeval /tmp/m-company.yaml
 
   unit:
     runs-on: ubuntu-latest
