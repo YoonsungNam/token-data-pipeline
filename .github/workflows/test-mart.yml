@@ -10,6 +10,42 @@ on:
             ".github/workflows/test-mart.yml"]
 
 jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        run: |
+          docker buildx build --platform linux/amd64 \
+            -t token-mart:ci mart/token-usage --load
+      - name: Test image
+        run: docker run --rm token-mart:ci python -m app.batch --help
+
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: instrumenta/kubeval-action@master
+      - name: Kustomize stage
+        run: kubectl kustomize mart/token-usage/k8s/overlays/stage > /tmp/m-stage.yaml
+      - name: Kustomize company
+        run: kubectl kustomize mart/token-usage/k8s/overlays/company > /tmp/m-company.yaml
+      - name: Validate manifests
+        run: |
+          grep -q 'activeDeadlineSeconds: 1800' /tmp/m-stage.yaml
+          grep -q 'schedule: 0 4 \* \* \*' /tmp/m-stage.yaml
+          grep -q 'concurrencyPolicy: Forbid' /tmp/m-stage.yaml
+          grep -q 'timeZone: Asia/Seoul' /tmp/m-stage.yaml
+          grep -q 'backoffLimit: 1' /tmp/m-stage.yaml
+          grep -q 'memory: 1Gi' /tmp/m-stage.yaml
+          grep -q 'memory: 256Mi' /tmp/m-stage.yaml
+          grep -q 'name: registry-pull-secret' /tmp/m-stage.yaml
+          grep -q 'name: token-mart-ch-secret' /tmp/m-stage.yaml
+          grep -q 'ghcr.io/yoonsungnam/token-mart' /tmp/m-stage.yaml
+          kubeval /tmp/m-stage.yaml
+          kubeval /tmp/m-company.yaml
+
   unit:
     runs-on: ubuntu-latest
     defaults:
