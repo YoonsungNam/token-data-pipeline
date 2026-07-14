@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import pathlib
+import shlex
 
 import pytest
 
@@ -58,6 +59,29 @@ def test_mart_command_propagates_dates_verbatim():
     # §8.3 v1.4 체이닝 날짜 전달 계약: --from/--to 동일 값 그대로
     cmd = rerun.build_mart_command("homelab", "monitoring", "2026-07-01", "2026-07-03")
     assert "--from 2026-07-01" in cmd and "--to 2026-07-03" in cmd and "--context homelab" in cmd
+
+
+def test_chain_command_parses_in_mart_rerun():
+    # Plan 3 T8 Step 1(a): 클러스터 없이 체이닝 정합을 실증 — collectors
+    # build_mart_command의 출력 문자열을 shlex.split 후 mart rerun.py의
+    # argparse(build_arg_parser)에 그대로 투입해 성공 + 동일 날짜를 확인한다.
+    # 양쪽 rerun.py를 importlib로 파일 기준 상대 경로로 로드한다 (패키지화 없음).
+    mart_rerun_path = (pathlib.Path(__file__).resolve().parents[3]
+                       / "mart" / "token-usage" / "tools" / "rerun.py")
+    assert mart_rerun_path.exists(), f"mart rerun.py 미존재: {mart_rerun_path}"
+    mart_spec = importlib.util.spec_from_file_location("mart_rerun", mart_rerun_path)
+    mart_rerun = importlib.util.module_from_spec(mart_spec)
+    mart_spec.loader.exec_module(mart_rerun)
+
+    cmd = rerun.build_mart_command("homelab", "monitoring", "2026-07-01", "2026-07-03")
+    tokens = shlex.split(cmd)
+    assert tokens[0] == "python3"
+    assert tokens[1] == rerun.MART_RERUN            # collectors가 참조하는 상대경로 그대로
+    mart_args = mart_rerun.build_arg_parser().parse_args(tokens[2:])
+    assert mart_args.context == "homelab"
+    assert mart_args.namespace == "monitoring"
+    assert mart_args.from_d == "2026-07-01"          # collectors --from과 동일 날짜
+    assert mart_args.to_d == "2026-07-03"            # collectors --to와 동일 날짜
 
 
 def test_from_after_to_is_usage_error():

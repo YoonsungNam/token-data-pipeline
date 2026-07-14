@@ -1,6 +1,6 @@
 # token-data-pipeline 설계 문서
 
-- 작성일: 2026-07-10 · **현재 버전 v1.9 (2026-07-14)** — 개정 이력은 §0
+- 작성일: 2026-07-10 · **현재 버전 v1.10 (2026-07-14)** — 개정 이력은 §0
 - 상태: 설계 확정 (사용자 승인) — 구현 진행 중 (Plan 1 mock-provider·Plan 2a collector core 머지)
 - 참조: [gpu-data-pipeline 분석](../../gpu-data-pipeline-analysis.md), [token-usage-api-spec](https://github.com/YoonsungNam/token-usage-api-spec) (`token-usage-api.yaml` v1.1.0, 로컬 클론 `/home/mini/github/token-usage-api-spec`)
 
@@ -18,6 +18,7 @@
 | v1.6 | 2026-07-13 | **동료(클러스터 소유자) 리뷰 반영** (GitHub 이슈 #1 + 구두 확정): ① dim·view의 DB = **`gpu_data`**(동료 소유 공유 — token_data 폐지, §9-18 부분 확정), ② company 클러스터 **2샤드×2레플리카** 명시(§9-3 부분 해소), ③ §7.3 모니터링 방안 소유자 승인, ④ OOM 실경험 반영 — 페이지 배치 flush(MAX_BUFFER_ROWS)·Pod resources 명세(§5.1·§7.2), ⑤ §10에 DDL 초안 선리뷰 절차 추가 |
 | v1.8 | 2026-07-13 | 정례 뮤테이션 예산 **확정 적용: 일 총량 150건 / 피크 창(02:00~03:00) 80건** (사용자 결정 — 소유자 사후 컨펌 진행 중, 이슈 #1). §4.0(c) 갱신 |
 | v1.9 | 2026-07-14 | **Plan 3 mart DDL 초안 리뷰 반영**: §4.3에 summary 부재 시맨틱 신설(reported_\*/diff_\* Nullable — STEP 0 경고-후-진행 케이스의 거짓 대사 방지), created_by CHECK는 `_dist`에도 선언(비동기 INSERT 큐 정체 방지 — 24.8 실증), mart INSERT는 `_dist` 경유만(co-location 보장), org agg의 org_depth 물리 컬럼 제외(파생 가능 — YAGNI) |
+| v1.10 | 2026-07-14 | **Plan 3 T8 체인 통합 검증 + 최종 스펙 동기화**: §4.3에 summary-only(NODATA) 서비스의 `agg_token_service_1d` 보강 행 규칙 추가(sums 0·reported 유지·diff=0−reported — detail-부재/summary-부재 쌍대 규칙, 커버리지 도메인과 agg 도메인 일치), §5.6에 mart BATCH_RESULT `missing_services` 쌍따옴표 규약(서비스명 공백 보호) + `coverage=N/M`·`rows_mart`·`rows_view`는 mart 전용 필드 명시, §7.1 멱등성 불릿에 INSERT `insert_deduplicate=0` 계약(서버측 보강은 accounts.sql) 명문화 |
 
 ## 1. 배경과 목적
 
@@ -220,6 +221,9 @@ summary 행은 반드시 적재** — §5.2).
   reported_\*·diff_\* 전부 NULL로 적재한다. 비-Nullable이면 LEFT JOIN 미스가 "보고값 0"으로
   위장되고 diff가 거짓 대사 불일치를 기록한다. (§4.1의 is_derived=1 diff NULL 규칙과 별개
   케이스 — is_derived는 summary 행이 있되 파생인 경우, 이 규칙은 행 자체가 없는 경우.)
+- **summary-only(NODATA) 보강 (v1.10)**: summary만 있고 detail 0행인 서비스는
+  `agg_token_service_1d`에 sums 0·reported 유지·diff=0−reported(is_derived=0일 때) 행으로
+  노출 — 커버리지 도메인과 agg 도메인의 일치. detail-부재와 summary-부재의 쌍대 규칙.
 
 ### 4.4 비용 2계층 확장 모델 — Layer P(가격) / Layer C(원가) (확장 슬롯)
 
@@ -390,6 +394,9 @@ FAILURE로 마킹하고 **정상 경로로 종료**해 최종 BATCH_RESULT 출�
   VictoriaLogs로 수집되어 ClickHouse 접근 통제를 우회하기 때문 — "per-user 데이터는 VM에 넣지 않음"(§2)
   원칙의 로그 경로 확장. warning_messages.md는 WARN별 허용 로그 필드를 명세하고, CI E2E에 "거부 행 발생 시
   로그에 user_id 원문 부재" 검증을 포함한다(§8.2). 신규 소스 모듈은 §5.9 계약 6조로 이 규칙을 상속.
+- **mart BATCH_RESULT 필드 규약 (v1.10)**: mart BATCH_RESULT의 `missing_services` 값은
+  쌍따옴표로 감싼다(서비스명 공백 보호) — `coverage=N/M`·`rows_mart`·`rows_view` 필드는
+  mart 전용(§7.1, collectors BATCH_RESULT에는 없음).
 
 ### 5.7 파일 구성·환경변수
 
@@ -535,7 +542,10 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
 - STEP 2: mart → `gpu_data.view_token_usage_*` 적재 (created_by='token-pipeline' **명시 삽입**).
 - 멱등성: `DELETE WHERE date=... [AND created_by='token-pipeline']` → **`wait_for_mutations`**
   (system.mutations 폴링 3s/300s. **CH_CLUSTER 설정 시 `clusterAllReplicas(cluster, system.mutations)`로
-  전 레플리카 폴링** — 동료 mart/s2job 방식, 리뷰 #8) → INSERT.
+  전 레플리카 폴링** — 동료 mart/s2job 방식, 리뷰 #8) → INSERT. **INSERT는 `insert_deduplicate=0`
+  (v1.10)** — 재삽입(rerun의 DELETE→동일 데이터 INSERT)이 ReplicatedMergeTree 블록 중복제거에
+  걸려 조용히 폐기되는 것을 방지(클라이언트 설정은 `app/ch.py`의 `insert_select`, 서버측 보강은
+  `accounts.sql`의 `ALTER USER token_mart SETTINGS insert_deduplicate = 0`).
 - **INSERT 직후 count 검증 규칙** (리뷰 #10): Distributed 조회 재시도 10회/5초 간격(RETRY_* 조정 가능),
   `actual >= expected`면 통과(초과분은 중복 징후 CHECK WARN), 재시도 소진 후 미달이면 FAILURE.
   §6.1 dim 교체의 count 검증에도 동일 적용. (근거: 동료 verify_fact_rows — 레플리카 복제 lag)

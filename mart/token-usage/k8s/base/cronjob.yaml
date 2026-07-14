@@ -1,0 +1,44 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: token-mart-daily
+spec:
+  # 매일 04:00 KST 실행 (§5.9-9) — 수집 02:00 완료+적재 데드라인 03:30 이후
+  schedule: "0 4 * * *"
+  timeZone: Asia/Seoul
+  # §4.0 no-op DELETE 스킵 규칙의 전제: 단일 작성자 (경합 금지)
+  concurrencyPolicy: Forbid
+  # 컨트롤러 일시 중단 등으로 04:00을 놓쳐도 1시간 내에는 따라잡는다 (스펙 미명시 — 선택값)
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      # §7.2 mart는 서버사이드 SQL 경량 — 30분 타임아웃
+      # 산식과 연동된 값 — 단독 수정 금지
+      activeDeadlineSeconds: 1800
+      template:
+        spec:
+          # Never: 실패 시 새 파드로 1회 재시도(backoffLimit) — 파드 로그가 실행 단위와 1:1이 되어
+          # BATCH_RESULT '1 실행 = 1 마커 라인'(§5.6) 소비가 깔끔 (mart/s2job 관례)
+          restartPolicy: Never
+          imagePullSecrets:
+            - name: registry-pull-secret
+          containers:
+            - name: token-mart
+              image: token-mart:latest
+              imagePullPolicy: Always
+              envFrom:
+                - secretRef:
+                    name: token-mart-ch-secret
+              # EXPECTED_LATE_SERVICES 등 앱 env는 전부 envFrom(Secret) 경유 — 정적 env는 Secret 값을 덮어쓰므로 금지 (T7 리뷰)
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  # §7.2 (v1.6 OOM 실경험): limits 없는 배포 금지.
+                  # MAX_BUFFER_ROWS 20,000행 flush 전제의 1Gi
+                  memory: 1Gi

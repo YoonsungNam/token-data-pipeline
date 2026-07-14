@@ -5,7 +5,7 @@
 | 모듈 | CronJob | namespace | 모드 |
 |---|---|---|---|
 | collectors/token-usage | token-usage-collector | monitoring | 1회 수동 트리거 / 날짜 범위(--from/--to, inclusive) |
-| mart/token-usage (Plan 3) | (미정) | (미정) | 날짜 범위 |
+| mart/token-usage | token-mart-daily | monitoring | 1회 수동 트리거 / 날짜 범위(--from/--to, inclusive) |
 
 ## collectors/token-usage
 
@@ -25,6 +25,28 @@
   아직 미구현**)를 보면 운영자가 해당 (date, service)의 rerun 여부를 판단한다 —
   이 문서의 날짜 범위 재수집 + --service 조합을 사용.
 - 6시간 캡(TIMEOUT_RANGE_S) 기준 안전 범위는 약 5일 — 긴 구간은 분할 실행.
+
+## mart/token-usage
+
+    # 1회 수동 트리거 (실행 시점 기준 어제 KST — app.batch 기본 target_date 계약)
+    python3 mart/token-usage/tools/rerun.py --context homelab
+
+    # 날짜 범위 재수행 — 둘 다 inclusive (collectors와 동일 계약)
+    python3 mart/token-usage/tools/rerun.py --context homelab \
+        --from 2026-07-01 --to 2026-07-03
+
+- **collectors rerun 후 동일 날짜의 mart rerun은 의무다(§3/§8.3).** collectors
+  `tools/rerun.py --chain-mart`가 이 모듈을 직접 트리거한다(위 collectors 섹션 참조) —
+  이 모듈 자체는 체이닝의 **수신 측**이라 `--service`/`--push-vm`/`--chain-mart` 플래그가
+  없다(하류 없음). collectors rerun 완료 시 출력되는 mart rerun 명령을 그대로 복사해
+  실행해도 되고, `--chain-mart`로 자동 트리거해도 된다.
+- STEP 0→2 전체가 날짜별 독립 반복이라(§7.1) **날짜 범위 rerun은 날짜마다
+  `BATCH_RESULT` 마커가 별도 줄로 출력된다** — collectors rerun이 실행 전체를 하나의
+  요약 라인으로 내는 것과 다른 계약이니 로그 확인 시 유의(마커 상세는
+  `mart/token-usage/README.md` 참조).
+- mart는 VM push를 하지 않는다 — 아래 "VM push와 rerun" 절차는 collectors 전용.
+- 6시간 캡(TIMEOUT_RANGE_S) 기준 안전 범위는 약 12일(1800s×n_days 산식 — collectors의
+  4320s×n_days보다 산식 기저가 작아 캡까지 여유가 더 크다) — 긴 구간은 분할 실행.
 
 ## VM push와 rerun (§5.5)
 
