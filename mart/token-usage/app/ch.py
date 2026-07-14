@@ -94,9 +94,9 @@ class CHGate:
         result = self.client.command(sql, parameters=params, settings=settings)
         written = getattr(result, "written_rows", None)
         if written is None:
-            # clickhouse-connect의 command() 반환이 QuerySummary가 아닌 구현체 대비 폴백
-            fallback = self.client.query(sql, parameters=params)
-            written = len(fallback.result_rows) if fallback.result_rows else 0
+            raise RuntimeError(
+                "insert_select: written_rows 미획득 — 드라이버 반환형 확인 필요 "
+                "(재실행 폴백은 이중 적재 위험으로 금지)")
         return int(written)
 
     def verify_count(self, table_dist: str, date: str, expected: int) -> tuple[bool, int]:

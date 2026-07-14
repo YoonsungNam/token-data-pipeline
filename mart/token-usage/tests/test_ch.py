@@ -177,6 +177,19 @@ def test_insert_select_quorum_only_when_configured():
     assert ch2.commands[0][2]["insert_quorum"] == "auto"
 
 
+def test_insert_select_without_written_rows_raises():
+    # 재실행 폴백 금지 — 이중 적재 위험 (T1 리뷰)
+    class FakeCHNoWrittenRows:
+        def command(self, sql, parameters=None, settings=None):
+            # written_rows 없는 요약 반환
+            return FakeSummary(None)
+
+    ch = FakeCHNoWrittenRows()
+    g = CHGate(Config(), client=ch)
+    with pytest.raises(RuntimeError, match="insert_select: written_rows 미획득"):
+        g.insert_select("INSERT INTO mart.token_usage_1d_dist SELECT ...")
+
+
 def test_query_returns_rows():
     # 범용 SELECT 프리미티브 — STEP 0 커버리지·인라인 검증이 사용
     ch = FakeCH(rows=[["svc-a", 3], ["svc-b", 1]])
