@@ -28,9 +28,9 @@
 2. **INSERT SQL 생성** — `csv_to_dim_user_org_insert.py` 실행:
    ```bash
    python3 assets/user-org/csv_to_dim_user_org_insert.py \
-       --csv data/org_members_2026-07.csv \
+       --csv assets/user-org/data/org_members_2026-07.csv \
        --effective-from 2026-07-15 \
-       --out data/insert_20260715.sql
+       --out assets/user-org/data/dim_token_user_org_insert_20260715.sql
    ```
    - `--csv`: 입력 로스터 경로.
    - `--effective-from`: 발효 기준일 (YYYY-MM-DD). CSV에 없으면 적용.

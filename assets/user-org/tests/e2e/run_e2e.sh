@@ -245,7 +245,7 @@ FIXTURE_CSV="fixtures/synthetic_org_members.csv"
 FIXTURE_ROWS=$(($(wc -l < "${FIXTURE_CSV}") - 1))   # 헤더 제외
 echo "fixture 행수(동적 산출): ${FIXTURE_ROWS}"
 
-GEN_SQL=/tmp/assets_e2e_dim_user_org_insert.sql
+GEN_SQL=/tmp/assets_e2e_dim_token_user_org_insert.sql
 python3 csv_to_dim_user_org_insert.py --csv "${FIXTURE_CSV}" --out "${GEN_SQL}"
 
 python3 /tmp/assets_e2e_lib.py split "${ANCHOR}" "${GEN_SQL}" \

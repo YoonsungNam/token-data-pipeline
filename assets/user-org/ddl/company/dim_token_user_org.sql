@@ -7,7 +7,7 @@
 -- 주의: gpu_data는 기존(동료 소유) DB — CREATE DATABASE 하지 않음.
 -- 네이밍: dim_token_* 접두사 규칙 적용 (dim_token_service.sql 헤더의
 --   확정 규칙 — "토큰 파이프라인이 gpu_data에 만드는 모든 테이블").
---   스펙 v1.10까지의 §4.2 표기 dim_user_org는 잔존 문구 — v1.11에서 정리.
+--   스펙 §4.2 표기는 v1.11에서 정리 완료.
 -- 이력 규약 (§4.2·§6.1): (user_id, effective_from) 이력 append —
 --   조직 이동/퇴사는 새 effective_from 행 추가, 기존 행 불변
 --   (파기·가명화는 §6.1 보존 규칙의 예외 경로). mart STEP 1은

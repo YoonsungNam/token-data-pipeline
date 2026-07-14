@@ -6,7 +6,7 @@
 ## 협의 지점 (소유자 리뷰 요청)
 
 1. **네이밍**: `dim_token_user_org` — dim_token_service 때 확정한 `dim_token_*` 규칙의
-   적용입니다(스펙 §4.2의 무접두사 표기 `dim_user_org`는 잔존 문구 — v1.11에서 정리).
+   적용입니다(스펙 §4.2의 무접두사 표기는 v1.11에서 정리 완료).
    특히 `dim_model`류 범용 이름은 충돌 위험이 커서 접두사가 안전합니다. 이견 있으시면
    말씀 주세요.
 2. **gpu_data 신규 테이블 1종** + token_mart SELECT GRANT (dim_token_service 때와 동일 절차).
@@ -23,9 +23,8 @@
 
 ## 적용 순서
 
-0. **선행 차단 조건**: mart의 dim 참조 개명(steps.py의 `dim_user_org_dist`/`dim_model_dist`
-   → `dim_token_user_org_dist`/`dim_token_model_dist` + E2E ddl_test_dims.sql)이 **먼저
-   머지·배포**돼야 한다 — 아니면 mart STEP 1이 UNKNOWN_TABLE로 즉사한다 (Plan 4 T1).
+0. **배포 순서 주의**: mart dim 참조 개명(Plan 4 T1 — 이 브랜치에 포함)과 이 DDL은 함께
+   배포한다 — 개명 이전 mart 이미지가 남아 있으면 STEP 1이 UNKNOWN_TABLE로 즉사한다.
 1. 테이블 DDL(`dim_token_user_org.sql`) + `accounts.sql` GRANT — admin 수동.
 2. 로스터 투입: `csv_to_dim_user_org_insert.py`(Plan 4 도구)로 CSV → INSERT SQL 생성
    → 사내 리뷰 → admin 실행 (생성 SQL에 사전 검증·멱등 가드·말미 count 검증 포함).
