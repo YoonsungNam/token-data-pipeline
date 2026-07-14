@@ -1,0 +1,34 @@
+name: test-assets
+
+on:
+  push:
+    branches: [main]
+    paths: ["assets/**", ".github/workflows/test-assets.yml",
+            "mart/token-usage/tests/e2e/ddl_test_dims.sql"]
+  pull_request:
+    paths: ["assets/**", ".github/workflows/test-assets.yml",
+            "mart/token-usage/tests/e2e/ddl_test_dims.sql"]
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: assets/user-org
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "pytest>=8"
+      - run: python -m pytest tests/ -v --ignore=tests/e2e
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run E2E
+        run: ./assets/user-org/tests/e2e/run_e2e.sh
