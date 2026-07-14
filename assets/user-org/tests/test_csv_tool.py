@@ -67,14 +67,41 @@ def test_duplicate_key_rejected():
     assert "2" in str(excinfo.value)
 
 
-def test_anon_user_name_forced_empty():
+def test_anon_user_name_preserved_with_notice(tmp_path):
+    # 2026-07-14 결정: anon-* user_name 강제 빈 문자열 로직 폐지 — 값 보존 + stderr 안내
+    # (카운트만, 이름 원문은 미출력 — §7.2 데이터 경계 원칙 유지).
     rows = parse_roster(
-        [_row(user_id="anon-0001", user_name="실명입력됨")],
+        [_row(user_id="anon-0001", user_name="합성핸들-테스트")],
         "2020-01-01",
     )
-    assert rows[0].user_name == ""
-    anon_forced = sum(1 for r in rows if r.user_id.startswith("anon-"))
-    assert anon_forced == 1
+    assert rows[0].user_name == "합성핸들-테스트"
+
+    csv_path = tmp_path / "anon.csv"
+    csv_path.write_text(
+        "user_id,user_name,org,is_active,effective_from\n"
+        "anon-0001,합성핸들-테스트,A부문>X팀,1,2026-01-01\n",
+        encoding="utf-8",
+    )
+    out_path = tmp_path / "out.sql"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(TOOL_PATH),
+            "--csv",
+            str(csv_path),
+            "--out",
+            str(out_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    sql_text = out_path.read_text(encoding="utf-8")
+    assert "합성핸들-테스트" in sql_text            # 강제 빈 문자열 아님 — 값 보존
+    assert "anon 1행" in result.stderr               # 카운트 안내(stderr)
+    assert "비실명 핸들명" in result.stderr
+    assert "합성핸들-테스트" not in result.stderr    # 데이터 원문은 stderr에도 미출력
+    assert "합성핸들-테스트" not in result.stdout
 
 
 def test_default_effective_from_applied():

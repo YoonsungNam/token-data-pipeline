@@ -19,7 +19,7 @@ ON CLUSTER 'gpu-monitoring'
 (
     user_id        String                 COMMENT '사내 id (fact.user_id와 동일 체계)',
     effective_from Date                   COMMENT '이력 키 — 조직 이동/퇴사 시 신규 행 추가 (기존 행 불변)',
-    user_name      String                 COMMENT '실명 — anonymous 매핑 행은 빈 문자열 강제 (§6.1 실명 결합 금지)',
+    user_name      String                 COMMENT '식별 사용자는 실명, anonymous 매핑 행은 비실명 핸들명만 허용(실명 기입 금지 — 투입 리뷰 확인, §6.1, 2026-07-14 개정)',
     org_path       Array(String)          COMMENT '최상위→말단 가변 깊이 — 미매핑 귀속은 조인측(mart)이 [''unknown''] 처리 (§6.1)',
     org_depth      UInt8                  COMMENT '= length(org_path)',
     is_active      UInt8                  COMMENT '0 = 퇴사/비활성 — headcount 산정 제외 (§4.3)',

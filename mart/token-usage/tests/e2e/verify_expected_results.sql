@@ -2,7 +2,7 @@
 -- 출력 없으면 통과 (collectors/token-usage/tests/e2e/verify_expected_results.sql 패턴 재사용).
 -- 실행 전 치환: {DATE} {EXP_DETAIL_ROWS} {EXP_DETAIL_TOTAL_INPUT} {EXP_ORG_X} {EXP_ORG_Y}
 --              {EXP_ORG_Z} {EXP_UNKNOWN_ROWS} {EXP_HAIKU_NULL_ROWS} {EXP_UNKNOWN_MODEL_ROWS}
---              {EXP_COST_SUM} {EXP_MAIN_U5_ROWS} {EXP_MAY_U5_ROWS}
+--              {EXP_COST_SUM} {EXP_MAIN_U5_ROWS} {EXP_MAY_U5_ROWS} {EXP_ANON_HANDLE_ROWS}
 -- 2026-05-15는 5월 고정 시드 날짜(brief §Step2) — 토큰화하지 않고 리터럴로 고정.
 --
 -- Service B/C/D 체크는 "행 존재 + 필드 상태"를 하나의 COUNT(...)==1 조건으로 합쳐
@@ -231,3 +231,21 @@ UNION ALL
 SELECT 'created_by_leak_view_model', countIf(created_by != 'token-pipeline'), 0
 FROM gpu_data.view_token_usage_model_1d_dist WHERE date = '{DATE}'
 HAVING countIf(created_by != 'token-pipeline') != 0
+
+UNION ALL
+
+-- === 7) anon 비실명 핸들명 표기 경로 (스펙 v1.12, §4.3 — anonymous 행만 dim 핸들명) ===
+
+-- anon-0000: dim의 비실명 핸들명(합성핸들-알파)이 detail user_name에 그대로 표기되는지
+SELECT 'anon_handle_name_mismatch', count(), {EXP_ANON_HANDLE_ROWS}
+FROM mart.token_usage_1d_dist
+WHERE date = '{DATE}' AND user_id = 'anon-0000' AND user_name = '합성핸들-알파'
+HAVING count() != {EXP_ANON_HANDLE_ROWS}
+
+UNION ALL
+
+-- identified 행의 실명 표기 확대는 §9-1 보류 — user_name은 항상 빈 문자열이어야 한다
+SELECT 'identified_user_name_leak', countIf(user_name != ''), 0
+FROM mart.token_usage_1d_dist
+WHERE date = '{DATE}' AND user_type = 'identified'
+HAVING countIf(user_name != '') != 0

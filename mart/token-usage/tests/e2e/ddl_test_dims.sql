@@ -82,7 +82,15 @@ INSERT INTO gpu_data.dim_token_user_org_dist
 ('user-0018', '2026-06-15', 'user-0018', ['B부문','Z팀'], 2, 0, '2026-06-15 00:00:00'),
 ('user-0019', '2026-06-15', 'user-0019', ['B부문','Z팀'], 2, 0, '2026-06-15 00:00:00');
 
--- user-0020 이후(mock 기본 users=50까지) 및 anon-*/unclassified('')는 의도적으로
+-- anon-0000: 비실명 핸들명 표기 경로 검증(스펙 v1.12, §4.3) — B부문>Z팀 소속으로 등록
+-- (org 버킷 귀속도 함께 검증: mart_expectations.py resolve_org()가 이 행과 1:1 대응해야
+-- 한다 — 시드를 고치면 그 파일도 함께 갱신). anon-0000은 mock datagen이 anon_users>=1이면
+-- 모든 날짜에 결정적으로 생성하므로(seed_fact.py 기본 ANON=10) 메인/5월 날짜 둘 다 매칭.
+INSERT INTO gpu_data.dim_token_user_org_dist
+    (user_id, effective_from, user_name, org_path, org_depth, is_active, updated_at) VALUES
+('anon-0000', '2026-01-01', '합성핸들-알파', ['B부문','Z팀'], 2, 1, '2026-01-01 00:00:00');
+
+-- user-0020 이후(mock 기본 users=50까지) 및 anon-0001 이후/unclassified('')는 의도적으로
 -- 미등록 → mart STEP1 조인 미스 → org_path=['unknown'] 자연 귀속 + org 매핑
 -- 실패율 CHECK WARN 유발(§4.3, org_map_warn_threshold 기본 0.2) — 시드 행 불필요.
 

@@ -19,7 +19,10 @@
 - **실로스터 CSV·생성 INSERT SQL은 레포·사외 환경 취급 금지** — .gitignore 선제 패턴
   (`assets/user-org/data/`, `*roster*.csv`, `dim_user_org_insert*.sql`, `dim_token_user_org_insert*.sql`).
 - stage(사외 홈랩)에는 **합성 로스터만** (fixtures/ — mock user-#### 체계).
-- anonymous 매핑 행은 `user_name` 빈 문자열 강제 (실명 결합 금지, §6.1).
+- anonymous 매핑 행은 `user_name`에 **비실명 핸들명** 저장을 허용 (2026-07-14 개정 — 이전
+  "빈 문자열 강제" 규칙 완화). 실명 기입 금지는 사내 투입 리뷰에서 확인(도구는 판별 불가,
+  §6.1). 대시보드 표기 경로는 mart/view의 `user_name` 컬럼(anonymous 행만 — identified/
+  unclassified는 빈 문자열, §9-1 보류, §4.2/§4.3).
 
 ## 적용 순서
 

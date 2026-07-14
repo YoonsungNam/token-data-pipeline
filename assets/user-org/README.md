@@ -14,7 +14,7 @@
 | 열 | 필수 | 형식 | 의미 |
 |---|---|---|---|
 | `user_id` | ✓ | 문자열 | 시스템 사용자 ID (고유 식별자) |
-| `user_name` | ✓ | 문자열 | 표시명 (실명) — `anon-*` user_id는 공백 강제 |
+| `user_name` | ✓ | 문자열 | 표시명(실명) — `anon-*` user_id는 **비실명 핸들명만 허용**(실명 기입 금지, 투입 리뷰에서 확인 — 도구는 판별 불가) |
 | `org` | ✓ | `A>B>C` | 조직 경로 (계층 분리자 `>`). 빈 세그먼트 금지 |
 | `is_active` | ✗ | 0 or 1 | 활성 상태 (기본 1) |
 | `effective_from` | ✗ | YYYY-MM-DD | 발효 시점 (기본 §6.1 정책 기준일) |
@@ -55,7 +55,7 @@
 |---|---|
 | **실로스터 CSV·생성 INSERT SQL은 레포·사외 환경 반입 금지** | 개인정보(실명·조직명) 포함. `.gitignore`가 `assets/user-org/data/`, `*roster*.csv`, `dim_token_user_org_insert*.sql` 패턴으로 선제 차단. |
 | **stage(사외 홈랩) 환경에는 합성 로스터만** | `fixtures/synthetic_org_members.csv` — mock user ID 체계(user-####). fixtures는 공개 데이터지만, 실 로스터는 절대 반입 금지. |
-| **anonymous 매핑 행은 `user_name` 빈 문자열 강제** | `user_id` 접두사가 `anon-`이면 `user_name`을 공백으로 강제(도구 자동 처리). 실명 결합 금지(§6.1). |
+| **anonymous 매핑 행은 비실명 핸들명만 허용** (2026-07-14 개정) | `user_id` 접두사가 `anon-`이면 `user_name`에 비실명 핸들명을 저장(도구는 값을 보존 — 강제 빈 문자열 아님). 실명 기입은 금지되며 도구가 아니라 **사내 투입 리뷰**에서 확인한다. 대시보드 표기는 mart/view의 `user_name` 컬럼(anonymous 행만, §4.3)이 담당. |
 
 ## 도구 사용 예
 
@@ -68,12 +68,14 @@ python3 assets/user-org/csv_to_dim_user_org_insert.py \
     --effective-from 2026-07-01 \
     --out /tmp/test_insert.sql
 
-# 출력 예
+# 출력 예 (stdout)
 # 생성 완료: /tmp/test_insert.sql
 # 입력 행수: 30
 # chunk 크기: 500 (chunk 수: 1)
-# anon-* user_name 강제 치환: 1건
 # 검증: 출력 SQL 말미 "-- 검증: 결과가 비어야 정상" 섹션 실행 후 결과가 비어 있어야 정상 (admin 리뷰 절차)
+#
+# stderr 안내 (카운트만 — 이름 원문은 미출력, §7.2)
+# anon 1행: user_name은 비실명 핸들명이어야 함(실명 기입 금지 — 투입 리뷰 확인)
 ```
 
 ### --out 기본값과 .gitignore 이중 차단

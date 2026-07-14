@@ -116,9 +116,10 @@ def parse_roster(rows, default_effective_from: str) -> list:
             )
         seen_keys[key] = idx
 
+        # anon-* user_name 강제 빈 문자열 로직 폐지 (2026-07-14 결정) — 비실명 핸들명은
+        # 로스터에 그대로 보존한다. 실명 기입 금지는 이 도구가 판별할 수 없으므로
+        # 사내 투입 리뷰에서 확인한다 — main()의 stderr 안내가 건수로 리마인드한다.
         user_name = (raw.get("user_name") or "").strip()
-        if user_id.startswith(ANON_PREFIX):
-            user_name = ""
 
         parsed.append(
             Row(
@@ -321,7 +322,7 @@ def main(argv=None) -> int:
         print(f"검증 실패: {exc}", file=sys.stderr)
         return 1
 
-    anon_forced = sum(1 for r in rows if r.user_id.startswith(ANON_PREFIX))
+    anon_count = sum(1 for r in rows if r.user_id.startswith(ANON_PREFIX))
 
     sql_text = render_sql(rows, args.chunk_size, csv_path.name, default_effective_from)
 
@@ -333,7 +334,14 @@ def main(argv=None) -> int:
     print(f"생성 완료: {out_path}")
     print(f"입력 행수: {len(rows)}")
     print(f"chunk 크기: {args.chunk_size} (chunk 수: {num_chunks})")
-    print(f"anon-* user_name 강제 치환: {anon_forced}건")
+    # 카운트만(데이터 원문 미출력, §7.2) — anon user_name은 이제 강제 치환하지 않고
+    # 값을 보존하므로, 실명 기입 금지 확인 책임이 도구가 아니라 투입 리뷰로 이동했음을
+    # 매 실행마다 상기시킨다.
+    print(
+        f"anon {anon_count}행: user_name은 비실명 핸들명이어야 함"
+        "(실명 기입 금지 — 투입 리뷰 확인)",
+        file=sys.stderr,
+    )
     print(
         "검증: 출력 SQL 말미 \"-- 검증: 결과가 비어야 정상\" 섹션 실행 후 "
         "결과가 비어 있어야 정상 (admin 리뷰 절차)"

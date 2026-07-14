@@ -20,7 +20,14 @@
 | v1.9 | 2026-07-14 | **Plan 3 mart DDL 초안 리뷰 반영**: §4.3에 summary 부재 시맨틱 신설(reported_\*/diff_\* Nullable — STEP 0 경고-후-진행 케이스의 거짓 대사 방지), created_by CHECK는 `_dist`에도 선언(비동기 INSERT 큐 정체 방지 — 24.8 실증), mart INSERT는 `_dist` 경유만(co-location 보장), org agg의 org_depth 물리 컬럼 제외(파생 가능 — YAGNI) |
 | v1.10 | 2026-07-14 | **Plan 3 T8 체인 통합 검증 + 최종 스펙 동기화**: §4.3에 summary-only(NODATA) 서비스의 `agg_token_service_1d` 보강 행 규칙 추가(sums 0·reported 유지·diff=0−reported — detail-부재/summary-부재 쌍대 규칙, 커버리지 도메인과 agg 도메인 일치), §5.6에 mart BATCH_RESULT `missing_services` 쌍따옴표 규약(서비스명 공백 보호) + `coverage=N/M`·`rows_mart`·`rows_view`는 mart 전용 필드 명시, §7.1 멱등성 불릿에 INSERT `insert_deduplicate=0` 계약(서버측 보강은 accounts.sql) 명문화 |
 | v1.11 | 2026-07-14 | **dim_token_user_org/dim_token_model 명명 확정 반영 (PR #8, Plan 4 T1)**: gpu_data의 사용자-조직·모델 단가 dim 2종을 `dim_token_*` 규칙으로 확정하고(§4.2 도입부의 §9-18 잔여협의 문구를 "적용 확정(PR #8)"로 해소), 이 이름을 스펙 전역(§3 아키텍처 다이어그램, §4.2 표·본문, §4.3, §4.4, §5.9, §6.1/§7.2 .gitignore 패턴 문구, §7.1 조인·검증 문구, §8.5 사본 등급 표, §9 미결사항)에 동기화. mart STEP 1(`app/steps.py`)의 실제 조인 대상도 `dim_token_user_org_dist`/`dim_token_model_dist`로 동일 개명 — 로직·컬럼은 불변, 테이블명 표기만 갱신 |
-| v1.12 | 2026-07-14 | **① 계정 공유 결정 반영** (사용자·클러스터 소유자 합의, 이슈 #1): 전용 계정 3종(token_collector/token_mart/token_dashboard_reader)을 폐지하고 동료의 기존 운영계정 `mart`를 공유 — §7.2 계정·GRANT 경계 절 개정(accounts.sql 4파일에서 CREATE USER 제거·GRANT 대상을 `mart`로 전환, mart의 서버측 `ALTER USER ... SETTINGS insert_deduplicate=0`은 공유 계정 전역 영향이라 제거하고 클라이언트 설정으로만 유지). 잔여 리스크(대시보드=쓰기 권한 계정 사용, 실명 dim 접근)는 §9-1/§9-3 협의 항목에 추가. **② anon 핸들명**: (후속 커밋에서 반영 예정 — 이 행은 v1.12 개정 항목을 예고만 해 두고, 실제 anon 핸들명 확정 내용은 뒤따르는 커밋이 채운다) |
+| v1.12 | 2026-07-14 | **① 계정 공유 결정 반영** (사용자·클러스터 소유자 합의, 이슈 #1): 전용 계정 3종(token_collector/token_mart/token_dashboard_reader)을 폐지하고 동료의 기존 운영계정 `mart`를 공유 — §7.2 계정·GRANT 경계 절 개정(accounts.sql 4파일에서 CREATE USER 제거·GRANT 대상을 `mart`로 전환, mart의 서버측 `ALTER USER ... SETTINGS insert_deduplicate=0`은 공유 계정 전역 영향이라 제거하고 클라이언트 설정으로만 유지). 잔여 리스크(대시보드=쓰기 권한 계정 사용, 실명 dim 접근)는 §9-1/§9-3 협의 항목에 추가. **② anon 핸들명 표기 결정**(사용자, 2026-07-14): anonymous 계정의 **비실명 핸들명**을
+대시보드에 표기하기로 완화 — 이전 규칙("anon 행 `user_name` 강제 빈 문자열")을 폐지한다.
+저장: `gpu_data.dim_token_user_org.user_name`에 anon 행도 비실명 핸들명 저장을 허용(실명
+기입 금지는 사내 투입 리뷰에서 확인 — 도구는 실명 여부를 판별할 수 없음, §6.1 (2) 개정).
+표기: `mart.token_usage_1d`/`gpu_data.view_token_usage_1d`에 `user_name` 컬럼 신설(user_type
+다음 위치) — 값은 **anonymous 행만** dim의 date 기준 유효 핸들명, **identified/unclassified는
+빈 문자열**(identified 실명 표기는 재식별·실명 노출 확대 우려로 별도 결정 — §9-1 보류 항목에
+추가, §4.2/§4.3 개정) |
 
 ## 1. 배경과 목적
 
@@ -177,7 +184,7 @@ summary 행은 반드시 적재** — §5.2).
 | `dim_token_user_org` | **(user_id, effective_from)** — user_name, **org_path Array(String)**(최상위→말단, 가변 깊이 — 예: `['DS부문','반도체연구소','공정연구팀','소자파트']`), org_depth UInt8, is_active UInt8, updated_at | assets/user-org |
 | `dim_token_model` | (model, effective_from) — provider, **serving_type**(internal\|external), input/cache_read/cache_creation/output 단가(USD per MTok), currency, note | assets/model-catalog 시드 SQL. serving_type은 §4.4 Layer C 대상 판별("원가 NULL"이 미수집인지 대상외인지 구분) |
 | `dim_budget` *(2단계, 선택)* | (scope_type: org\|service_group, scope, month) — budget_usd | 미결 §9-8 |
-| `view_token_usage_1d` | mart.token_usage_1d와 동일 컬럼 | mart STEP 2 |
+| `view_token_usage_1d` | mart.token_usage_1d와 동일 컬럼(`user_name` 포함, v1.12 — **anonymous 행만** 비실명 핸들명 표기) | mart STEP 2 |
 | `view_token_usage_service_1d` / `_org_1d` / `_model_1d` | 각 agg와 동일 컬럼 | mart STEP 2 |
 
 - **`dim_token_user_org`는 "사용자 매핑"이 아니라 전 직원 로스터**(사용 이력 없는 직원 포함)를 목표로 한다
@@ -186,6 +193,11 @@ summary 행은 반드시 적재** — §5.2).
   mart STEP 1은 **date 기준 유효 행**(`effective_from <= date`인 최신 행)을 조인한다 —
   rerun이 실행 시점과 무관하게 결정적(deterministic)이 된다.
   **anonymous 계정도 매핑이 제공되면 로스터에 포함**해 부서 귀속한다 (§6.1).
+- **anon 비실명 핸들명 대시보드 표기 (v1.12, 사용자 결정 2026-07-14)**: 이전 "anon 행
+  `user_name` 강제 빈 문자열" 규칙을 완화 — `dim_token_user_org.user_name`에 비실명
+  핸들명 저장을 허용하고(§6.1 (2)), `view_token_usage_1d`(및 mart.token_usage_1d)에
+  `user_name` 컬럼을 신설해 **anonymous 행만** 표기한다. identified/unclassified는
+  빈 문자열 — identified 실명을 동일 경로로 노출할지는 §9-1 보류 항목.
 - `dim_token_model`의 시드에는 **`model='unknown'` 행(전 단가 NULL, note='계약 표준 값 — 단가 산정 불가')을
   포함**한다 (리뷰 #15) — "dim_token_model 미등록 WARN"이 unknown으로 상시 발화해 경보가 무력화되는 것을 방지.
   이 WARN의 의미는 "단가 등록이 필요한 진짜 신규 모델"로 warning_messages.md에 명시.
@@ -203,11 +215,16 @@ summary 행은 반드시 적재** — §5.2).
 
 | 테이블 | grain | 내용 |
 |---|---|---|
-| `mart.token_usage_1d` | date × service × user × model | raw + 조직(**org_path Array** + 편의 파생 `org_top`=org_path[1], `org_leaf`=말단) + `total_input_tokens`(=input+cache_read+cache_creation) + `cost` Nullable(Float64) + created_by |
+| `mart.token_usage_1d` | date × service × user × model | raw + `user_name`(표기용, v1.12 — **anonymous 행만** dim의 date 기준 유효 핸들명, identified/unclassified는 빈 문자열) + 조직(**org_path Array** + 편의 파생 `org_top`=org_path[1], `org_leaf`=말단) + `total_input_tokens`(=input+cache_read+cache_creation) + `cost` Nullable(Float64) + created_by |
 | `mart.agg_token_service_1d` | date × service_group × service | 토큰 합계, requests, distinct_users(detail에서 uniqExact, user_id≠''), reported_* 컬럼(=`fact.raw_token_usage_summary_1d`에서 조인한 서비스 보고값)과 차이 컬럼 |
 | `mart.agg_token_org_1d` | **date × org_path (말단 경로 단위)** | 조직별 합계 + distinct_users + **headcount**(로스터에서 해당 경로 소속 정원) + **adoption_rate**. 상위 레벨 롤업은 쿼리 시 `arraySlice(org_path, 1, k)` GROUP BY — 조직 수 × 일 수준의 소행수라 사전 롤업 불요. **서브트리 질의 표준 = prefix 비교**: `arraySlice(org_path, 1, length(P)) = P` (조직명 전역 유니크에 의존하지 않음 — 부서장 "내 하위 전체" 뷰) |
 | `mart.agg_token_model_1d` | date × model × provider | 모델별 합계 + 서비스 수 |
 
+- **anon 비실명 핸들명 표기 (v1.12)**: `mart.token_usage_1d`의 `user_name`(user_type 다음 위치)은
+  `if(user_type = 'anonymous', dim_token_user_org.user_name, '')` — **anonymous 행만** dim의
+  date 기준 유효 행(`effective_from <= date` 최신, argMax) 핸들명을 표기하고, identified/
+  unclassified는 항상 빈 문자열이다. identified 실명을 동일 경로로 노출할지는 재식별·실명
+  노출 확대 우려로 **별도 결정 대상**(§9-1 보류 — 위 anonymous 표기 확정과 무관).
 - `cost` = Σ(토큰별 단가 × 양) / 1e6. date 기준 유효 단가(`effective_from <= date` 최신 행) 사용.
   dim_token_model 미등록 모델은 cost NULL + 모델명 집합 CHECK WARN (`unknown`은 시드 포함으로 자연 제외).
 - **비용은 파생 데이터 (확장 원칙)**: mart에 토큰 4종 수량, dim_token_model에 단가 4종+이력이 있으므로
@@ -506,11 +523,14 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
 - **환경 데이터 경계 (v1.4)**: 도구 자체는 사외에서 **합성 fixture CSV**로만 개발·테스트한다.
   **실로스터 CSV와 생성 INSERT SQL은 레포·사외 환경 취급 금지** — 사내 반입 후 사내 절차로만
   투입·리뷰 (.gitignore 선제 패턴 등록, §7.2 환경 데이터 경계).
-- **anonymous 매핑 취급 (v1.4)**: (1) 수령 게이트 — anon id↔조직/실명 매핑의 수령은 개인정보 처리
-  근거(정책 승인) 확인 후로 게이트(§9-2). (2) 저장 범위 — 승인되어도 anon 행은 `user_name`을
-  저장하지 않고(빈 문자열) 조직 귀속 컬럼만 채움 (실명 결합 금지). (3) 사용 범위 — anon 조직
-  귀속은 org 단위 집계에만 사용, per-user 상세(mart/view)의 조직 부착 여부는 §9-1 협의
-  (소규모 부서 재식별 우려 기록).
+- **anonymous 매핑 취급 (v1.4, (2)는 v1.12 개정)**: (1) 수령 게이트 — anon id↔조직/실명 매핑의
+  수령은 개인정보 처리 근거(정책 승인) 확인 후로 게이트(§9-2). (2) 저장 범위 — 승인되어도 anon
+  행은 `user_name`에 **비실명 핸들명**만 저장 허용(실명 기입 금지 — 사내 투입 리뷰에서 확인,
+  도구는 실명 여부를 판별할 수 없음, 사용자 결정 2026-07-14) + 조직 귀속 컬럼을 채움. 이전
+  "빈 문자열 강제" 규칙은 폐지됐다 — 대시보드 표기 경로는 §4.2/§4.3(mart/view의 `user_name`
+  컬럼, anonymous 행만) 참조. (3) 사용 범위 — anon 조직 귀속은 org 단위 집계에도 사용,
+  per-user 상세(mart/view)의 조직 부착 여부는 §9-1 협의(소규모 부서 재식별 우려 기록) — 단
+  **비실명 핸들명 표기 자체는 §9-1과 별개로 확정**(위 (2)).
 - **보존 규칙 (v1.4)**: 퇴사(is_active=0) 후 N년 경과 행은 삭제 또는 user_name 가명화 —
   N·방식은 사내 개인정보 보존 정책과 함께 확정(§9-7). 파기 요청 처리는 §8.3의 user_id 축 삭제 경로.
 - **미매핑 규칙** (리뷰 #13, v1.5 개정): 매핑 없는 user_id는 **`org_path = ['unknown']`, org_depth=1**로
@@ -725,7 +745,7 @@ ClickHouse가 유일 사본, 25개월 보존·차지백 근거). 동료 레포�
 
 | # | 항목 | 임시 방침 | 확정 방법 |
 |---|---|---|---|
-| 1 | 사내 대시보드 view table 컬럼 계약 — **org 롤업 기본 표시 깊이·서브트리 필터 UX(가변 깊이 전제), anonymous 버킷 표시·per-user 행 조직 부착 여부, 불완전 데이터 마커, 노출 grain(per-user vs agg만), 소규모 조직(headcount 1~2) 셀 억제 기준.** **잔여 리스크(v1.12 계정 공유 결정으로 추가)**: 대시보드가 쓰기 권한을 가진 공유 계정 `mart`로 접근하게 되어 계정 분리에 의한 접근 통제가 사라짐 — per-user 노출 grain 확정 시 이 리스크를 함께 다룰 것 | mart와 동일 스키마 | 대시보드 담당과 협의 |
+| 1 | 사내 대시보드 view table 컬럼 계약 — **org 롤업 기본 표시 깊이·서브트리 필터 UX(가변 깊이 전제), anonymous 버킷 표시·per-user 행 조직 부착 여부, 불완전 데이터 마커, 노출 grain(per-user vs agg만), 소규모 조직(headcount 1~2) 셀 억제 기준, identified 사용자 실명(user_name) 표기 여부(v1.12 — anon 비실명 핸들명 표기는 확정됐으나 identified 실명은 재식별·노출 확대 우려로 보류).** **잔여 리스크(v1.12 계정 공유 결정으로 추가)**: 대시보드가 쓰기 권한을 가진 공유 계정 `mart`로 접근하게 되어 계정 분리에 의한 접근 통제가 사라짐 — per-user 노출 grain 확정 시 이 리스크를 함께 다룰 것 | mart와 동일 스키마(anon 비실명 핸들명 `user_name`은 v1.12로 확정 적용) | 대시보드 담당과 협의 |
 | 2 | dim_token_user_org 소스 시스템 (인사/조직 DB — **전 직원 로스터+이력+조직 전체 경로(가변 깊이) 제공 가능 여부**, **anon 매핑 제공의 정책 승인 여부**(별도 항목), §7.2 환경 데이터 경계 상속) | CSV 시드(경로 `>` 구분 컬럼) | 사내 확인 후 2단계 sync 설계 |
 | 3 | company ClickHouse 네임스페이스·계정 정책 (+per-user 조회의 ROW POLICY/계정 분리 정책) — **클러스터 'gpu-monitoring' 2샤드×2레플리카는 확인됨(이슈 #1). 계정 정책은 v1.12에서 "공유 계정 `mart`로 확정"(전용 계정 3종 폐지) — 잔여는 네임스페이스 + 공유 계정 하에서의 실명 dim(dim_token_user_org) 접근 통제(ROW POLICY 등)** | 잔여: 네임스페이스·ROW POLICY | 사내 반입 시 확인 |
 | 4 | VM push 엔드포인트(vminsert)와 사내 VM 정책 | stage 홈랩 VM으로 검증 | 사내 확인 |

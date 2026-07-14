@@ -41,11 +41,14 @@ PRICES = {
 
 # dim_token_user_org 시드(ddl_test_dims.sql)와 동일 매핑 — user-0000~0019만 등록
 # (X팀 0~6 / Y팀 7~13 / Z팀 14~19), user-0005는 2026-06-01부로 X팀→Z팀 이관.
-# user-0020 이후(및 anon-*, unclassified '')는 의도적 미등록 → unknown 버킷.
+# anon-0000은 2026-01-01부로 B부문>Z팀 등록(비실명 핸들명 표기 경로 검증, v1.12).
+# user-0020 이후(및 anon-0001 이후, unclassified '')는 의도적 미등록 → unknown 버킷.
 ORG_X = ("A부문", "X팀")
 ORG_Y = ("A부문", "Y팀")
 ORG_Z = ("B부문", "Z팀")
 ORG_UNKNOWN = ("unknown",)
+
+ANON_HANDLE_USER_ID = "anon-0000"
 
 
 def resolve_org(user_id: str, date: str) -> tuple:
@@ -54,6 +57,8 @@ def resolve_org(user_id: str, date: str) -> tuple:
     mart STEP1의 조인은 user_id 문자열 키만 사용하므로(user_type 무관) 여기도
     동일하게 user_id 패턴만으로 판정한다.
     """
+    if user_id == ANON_HANDLE_USER_ID:
+        return ORG_Z
     if user_id and user_id.startswith("user-"):
         idx = int(user_id[5:])
         if idx == 5:
@@ -79,6 +84,7 @@ def compute(date: str, seed: str, users: int, anon: int, models: list[str],
     unknown_model_rows = 0
     cost_sum = 0.0
     user5_rows = 0
+    anon_handle_rows = 0
 
     for r in records:
         uid = r.user_id or ""                      # userId None -> '' (§5.4 정규화 재현)
@@ -101,6 +107,8 @@ def compute(date: str, seed: str, users: int, anon: int, models: list[str],
                          + r.cache_creation_tokens * p_cc + r.output_tokens * p_out) / 1e6
         if uid == "user-0005":
             user5_rows += 1
+        if uid == ANON_HANDLE_USER_ID:
+            anon_handle_rows += 1
 
     n = num_services
     return {
@@ -114,6 +122,7 @@ def compute(date: str, seed: str, users: int, anon: int, models: list[str],
         "haiku_null_rows": n * haiku_rows,
         "unknown_model_rows": n * unknown_model_rows,
         "cost_sum": f"{n * cost_sum:.10f}",
+        "anon_handle_rows": n * anon_handle_rows,
         "user5_rows": n * user5_rows,
     }
 
