@@ -202,3 +202,21 @@ def test_multi_date_rerun_emits_single_batch_line(capsys, monkeypatch):
     code = main(["--from", "2026-06-14", "--to", "2026-06-15"])
     out = capsys.readouterr().out
     assert out.count("BATCH_RESULT") == 1 and code == 0
+
+
+def test_rerun_vm_push_default_skip_and_push_vm_opt_in():
+    calls = []
+
+    def spy_pusher(cfg, entry, date, summary, session):
+        calls.append(entry.service)
+        return []
+
+    code = run_collection(Config(), [E1], DATE, is_rerun=True, clock=Clock(),
+                          sleeper=lambda s: None, fetcher=lambda e, d, c, s: payload(entry=e),
+                          writer=FakeWriter(), pusher=spy_pusher)
+    assert code == 0 and calls == []                     # rerun 기본: push 생략 (§5.5)
+
+    code = run_collection(Config(), [E1], DATE, is_rerun=True, clock=Clock(),
+                          sleeper=lambda s: None, fetcher=lambda e, d, c, s: payload(entry=e),
+                          writer=FakeWriter(), pusher=spy_pusher, push_vm=True)
+    assert code == 0 and calls == ["S1"]                 # --push-vm 옵트인

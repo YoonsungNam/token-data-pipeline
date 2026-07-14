@@ -73,7 +73,7 @@ def _batch_line(outcomes: list[ServiceOutcome], started: float, clock) -> str:
 
 
 def _collect_one(cfg: Config, entry: ServiceEntry, target_date: str,
-                 fetcher, writer, pusher, is_rerun: bool, *,
+                 fetcher, writer, pusher, is_rerun: bool, push_vm: bool = False, *,
                  deadline: float | None = None, clock=time.monotonic) -> ServiceOutcome:
     o = ServiceOutcome(service=entry.service)
     payload = fetcher(entry, target_date, cfg, _session(cfg))
@@ -112,7 +112,7 @@ def _collect_one(cfg: Config, entry: ServiceEntry, target_date: str,
                            "load_budget_exhausted — 적재 미착수 (§5.1-3-5)")
     o.rows = writer.replace_service_day(entry, target_date, iter(norm.rows),
                                         summary_row, audit_prev)
-    if not is_rerun:
+    if not is_rerun or push_vm:
         for w in pusher(cfg, entry, target_date, {**s, "is_derived": 0}, _session(cfg)):
             o.warns += 1
             print(f"CHECK WARN service={entry.service} {w}", flush=True)
@@ -148,7 +148,7 @@ def _session(cfg: Config):
 
 
 def run_collection(cfg: Config, entries: list[ServiceEntry], target_date: str, *,
-                   is_rerun: bool = False, clock=time.monotonic, sleeper=time.sleep,
+                   is_rerun: bool = False, push_vm: bool = False, clock=time.monotonic, sleeper=time.sleep,
                    fetcher=api_client.fetch_service, writer=None,
                    pusher=vm_push.push_service_summary,
                    register_dims: bool = True, dim_entries: list[ServiceEntry] | None = None,
@@ -189,7 +189,7 @@ def run_collection(cfg: Config, entries: list[ServiceEntry], target_date: str, *
         queue.remove(item)
         try:
             _record(outcomes, _collect_one(cfg, item.entry, target_date,
-                                           fetcher, writer, pusher, is_rerun,
+                                           fetcher, writer, pusher, is_rerun, push_vm,
                                            deadline=deadline, clock=clock))
         except CollectError as err:
             if err.event is Event.NOT_READY:
@@ -248,6 +248,8 @@ def main(argv=None) -> int:
     parser.add_argument("--from", dest="from_date", default=None)
     parser.add_argument("--to", dest="to_date", default=None)
     parser.add_argument("--service", default=None, help="단일 서비스만 (재수집용)")
+    parser.add_argument("--push-vm", dest="push_vm", action="store_true",
+                        help="rerun 경로에서도 VM push (§5.5 옵트인)")
     args = parser.parse_args(argv)
 
     signal.signal(signal.SIGTERM, _sigterm_handler)
@@ -267,6 +269,7 @@ def main(argv=None) -> int:
         worst = 0
         for i, d in enumerate(dates):
             worst = max(worst, run_collection(cfg, entries, d, is_rerun=is_rerun,
+                                              push_vm=args.push_vm,
                                               register_dims=(i == 0), dim_entries=all_entries,
                                               fetcher=api_client.fetch_service))
         return worst
@@ -278,6 +281,7 @@ def main(argv=None) -> int:
     started = time.monotonic()
     for i, d in enumerate(dates):
         worst = max(worst, run_collection(cfg, entries, d, is_rerun=is_rerun,
+                                          push_vm=args.push_vm,
                                           register_dims=(i == 0), dim_entries=all_entries,
                                           fetcher=api_client.fetch_service,
                                           emit_batch=False, outcomes_sink=all_outcomes))

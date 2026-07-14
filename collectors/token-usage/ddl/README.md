@@ -35,8 +35,8 @@ ReplicatedMergeTree의 `{shard}/{replica}` 매크로가 흡수. 환경별 차이
 
 ## 적용 순서 (스펙 §7.2 — DDL 실행 주체 분리)
 
-1. `accounts.sql`의 `CREATE DATABASE`·`CREATE USER`·GRANT는 **admin 수동 실행** (company에서는
-   클러스터 소유자 협의 후). `CHANGE_ME_*` 비밀번호는 실행 전 치환.
+1. `accounts.sql`의 `CREATE DATABASE`(fact DB 생성 포함)·`CREATE USER`·GRANT는 **admin 수동 실행**
+   (company에서는 클러스터 소유자 협의 후). `CHANGE_ME_*` 비밀번호는 실행 전 치환.
 2. 테이블 DDL(`raw_token_usage.sql`, `dim_token_service.sql`)은 install.sh 자동 적용 대상.
 3. 이후 스키마 변경은 `migrate_add_*.sql` 관행 (GRANT 추가 포함).
 

@@ -10,6 +10,10 @@
 --  - 신규 테이블 추가 시 GRANT 추가는 migrate_add_*.sql 절차의 일부
 -- =============================================================
 
+-- fact DB 생성은 admin — §7.2 DDL 실행 주체 분리
+CREATE DATABASE IF NOT EXISTS fact
+ON CLUSTER 'gpu-monitoring';
+
 -- 1) 수집기 계정 -----------------------------------------------
 CREATE USER IF NOT EXISTS token_collector
 ON CLUSTER 'gpu-monitoring'
