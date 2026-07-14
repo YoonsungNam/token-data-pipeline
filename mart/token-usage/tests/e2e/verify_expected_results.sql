@@ -106,7 +106,9 @@ UNION ALL
 
 -- === 4) cost 기대값(opus+sonnet, ±1e-6) + haiku/unknown 모델 cost NULL 전파 ===
 
-SELECT 'cost_sum_mismatch', sum(cost), {EXP_COST_SUM}
+-- 표시 컬럼은 μUSD 정수로 캐스팅 — UNION 체인의 UInt64/Float64 supertype 부재
+-- (NO_COMMON_TYPE, CH 24.8) 회피. 정밀 비교(±1e-6)는 HAVING에서 원값으로 수행.
+SELECT 'cost_sum_mismatch', toUInt64(round(sum(cost) * 1e6)), toUInt64(round({EXP_COST_SUM} * 1e6))
 FROM mart.token_usage_1d_dist
 WHERE date = '{DATE}' AND model IN ('claude-opus-4-8', 'claude-sonnet-5')
 HAVING abs(sum(cost) - {EXP_COST_SUM}) > 1e-6
