@@ -7,6 +7,7 @@ on:
             "mart/token-usage/tests/e2e/ddl_test_dims.sql",
             "tools/gen_verify_ddl.py",
             "collectors/token-usage/ddl/company/**", "collectors/token-usage/ddl/company-verify/**",
+            "**/ddl/stage/**", "tools/gen_stage_ddl.py",
             "mart/token-usage/ddl/company/**", "mart/token-usage/ddl/company-verify/**",
             "assets/user-org/ddl/company-verify/**", "assets/model-catalog/ddl/company-verify/**",
             "collectors/token-usage/k8s/overlays/company-verify/**",
@@ -16,6 +17,7 @@ on:
             "mart/token-usage/tests/e2e/ddl_test_dims.sql",
             "tools/gen_verify_ddl.py",
             "collectors/token-usage/ddl/company/**", "collectors/token-usage/ddl/company-verify/**",
+            "**/ddl/stage/**", "tools/gen_stage_ddl.py",
             "mart/token-usage/ddl/company/**", "mart/token-usage/ddl/company-verify/**",
             "assets/user-org/ddl/company-verify/**", "assets/model-catalog/ddl/company-verify/**",
             "collectors/token-usage/k8s/overlays/company-verify/**",
@@ -31,6 +33,8 @@ jobs:
           python-version: "3.12"
       - name: gen_verify_ddl.py --check (드리프트 가드)
         run: python3 tools/gen_verify_ddl.py --check
+      - name: stage DDL drift check
+        run: python3 tools/gen_stage_ddl.py --check
       - name: 원 DB명 구조 토큰 잔존 0 (격리 실패 시 최악 케이스 — ZK 경로 등)
         run: |
           ! grep -rnE "\b(fact|gpu_data|mart)\.|/clickhouse/tables/\{shard\}/(fact|gpu_data|mart)/|Distributed\('gpu-monitoring', ?'(fact|gpu_data|mart)',|CREATE DATABASE IF NOT EXISTS (fact|gpu_data|mart)\b|\bTO mart\b" \

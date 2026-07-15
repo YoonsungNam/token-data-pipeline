@@ -119,8 +119,19 @@ kill %1
 ## 2. admin DDL — 계정 공유 GRANT + fact DB 생성
 
 계정 공유 결정(2026-07-14)으로 `mart` 계정은 **동료 소유의 기존 운영계정**이다 — 이
+**stage 실사(2026-07-15)**: 홈랩 CHI에는 ZooKeeper/Keeper가 없어 `ON CLUSTER`·
+`ReplicatedMergeTree`가 불가하다 — 그래서 이 런북의 DDL은 전부 `ddl/stage/`
+(tools/gen_stage_ddl.py 생성 변형 — MergeTree·클러스터 절 없음)를 쓴다. 또한 이
+클러스터에는 **`mart` 계정이 존재하지 않으므로 stage에서는 직접 생성**한다
+(비밀번호는 stage 검증용으로 직접 결정 — company 반입 시에만 동료의 실제 비밀번호 사용):
+
+    read -rsp 'stage mart 비밀번호: ' PW && kubectl --context homelab exec -i \
+      -n clickhouse chi-gpu-monitoring-gpu-monitoring-0-0-0 -- \
+      clickhouse-client -q "CREATE USER IF NOT EXISTS mart IDENTIFIED WITH sha256_password BY '$PW'" \
+      && unset PW && echo " -> created"
+
 런북의 어떤 `accounts.sql`도 `CREATE USER`를 하지 않으며(4개 파일 전부 확인됨,
-`CHANGE_ME` 류 치환 대상 없음), GRANT만 수행한다. **`mart` 계정의 실제 비밀번호는
+`CHANGE_ME` 류 치환 대상 없음), GRANT만 수행한다. **company에서 `mart` 계정의 실제 비밀번호는
 이 단계에서 다루지 않는다** — 3·5단계 install.sh의 `CH_PASSWORD` 프롬프트에 입력할
 값이며, 동료(클러스터 소유자)에게 사전에 확인해 둔다(Secret 입력값과 반드시 동일해야
 접속이 성공한다).
@@ -147,10 +158,10 @@ apply_sql() {
 assets는 mart보다 선행):
 
 ```bash
-apply_sql collectors/token-usage/ddl/company/accounts.sql
-apply_sql assets/user-org/ddl/company/accounts.sql
-apply_sql assets/model-catalog/ddl/company/accounts.sql
-apply_sql mart/token-usage/ddl/company/accounts.sql
+apply_sql collectors/token-usage/ddl/stage/accounts.sql
+apply_sql assets/user-org/ddl/stage/accounts.sql
+apply_sql assets/model-catalog/ddl/stage/accounts.sql
+apply_sql mart/token-usage/ddl/stage/accounts.sql
 ```
 
 - `collectors/.../accounts.sql`: `CREATE DATABASE IF NOT EXISTS fact ON CLUSTER
@@ -180,7 +191,7 @@ apply_sql mart/token-usage/ddl/company/accounts.sql
 |---|---|---|---|
 | [1/6] | `registry-pull-secret` 갱신? `[y/N]` | `N` | 1단계에서 이미 생성 완료 |
 | [2/6] | `CH_USER [mart]` | (enter → `mart`) | 계정 공유 결정 |
-| [2/6] | `CH_PASSWORD` | *동료 제공 `mart` 비밀번호* | 2단계 admin DDL과 무관 — 동료에게 확인한 값 |
+| [2/6] | `CH_PASSWORD` | *2단계에서 직접 정한 `mart` 비밀번호* | stage는 직접 생성한 계정 — company에서만 동료 제공 값 |
 | [2/6] | `COLLECTOR_HTTPS_PROXY` | `none` | mock은 http, 홈랩 직접 연결 전제(사내 프록시 경유 환경이면 프록시 URL 입력) |
 | [2/6] | 사내 CA 번들 파일 경로 | (enter, 빈값) | mock은 http라 CA 불요 |
 | [2/6] | `CH_DB_FACT` | (enter, 빈값) | company-verify 전용 — stage는 기본값 `fact` |
@@ -202,9 +213,9 @@ assets 모듈은 install.sh를 갖지 않는다 — dim 테이블 DDL은 전부 
 세션이 아니라면 2단계 앞부분을 다시 실행).
 
 ```bash
-apply_sql assets/user-org/ddl/company/dim_token_user_org.sql
-apply_sql assets/model-catalog/ddl/company/dim_token_model.sql
-apply_sql assets/model-catalog/ddl/company/seed_dim_token_model.sql
+apply_sql assets/user-org/ddl/stage/dim_token_user_org.sql
+apply_sql assets/model-catalog/ddl/stage/dim_token_model.sql
+apply_sql assets/model-catalog/ddl/stage/seed_dim_token_model.sql
 ```
 
 `seed_dim_token_model.sql` 적용 후 콘솔에 말미 검증 SELECT 결과(`dup_key`,
@@ -246,7 +257,7 @@ apply_sql /tmp/stage_org_insert.sql
 |---|---|---|---|
 | [1/5] | `registry-pull-secret` 갱신? `[y/N]` | `N` | 1단계에서 이미 생성 완료 |
 | [2/5] | `CH_USER [mart]` | (enter → `mart`) | |
-| [2/5] | `CH_PASSWORD` | *동료 제공 `mart` 비밀번호* | 3단계와 동일 값 |
+| [2/5] | `CH_PASSWORD` | *2단계에서 직접 정한 값* | 3단계와 동일 값 |
 | [2/5] | `EXPECTED_LATE_SERVICES` | (enter, 빈값) | mock 2서비스는 지연 시나리오 없음(기본 설정) |
 | [2/5] | `CH_DB_FACT` | (enter, 빈값) | company-verify 전용 |
 | [2/5] | `CH_DB_DIM` | (enter, 빈값) | company-verify 전용 |
@@ -400,7 +411,7 @@ mart 단계 실패 시 mart rerun의 리턴값이 그대로 전파돼 비0이어
 `docs/monitoring/README.md` 절차를 그대로 따른다:
 1. §1 — `grafana-clickhouse-datasource` 플러그인 설치 확인(미설치 시 안내된
    `grafana-cli plugins install grafana-clickhouse-datasource` 또는 Administration UI 경로).
-2. §2 — ClickHouse 데이터소스 등록(계정 `mart`, 비밀번호는 3·5단계와 동일 값 — 동료 확인).
+2. §2 — ClickHouse 데이터소스 등록(계정 `mart`, 비밀번호는 2단계에서 직접 정한 값(3·5단계와 동일)).
 3. §3 — `docs/monitoring/grafana_dashboard_token_usage.json` 임포트, `DS_CLICKHOUSE`
    입력 필드에 방금 만든 데이터소스 매핑(이 프롬프트가 안 뜨면 `__inputs` 선언
    문제이므로 중단하고 JSON을 재확인).

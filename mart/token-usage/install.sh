@@ -175,6 +175,8 @@ apply_sql() {
 }
 DDL_DIR="ddl/company"
 [[ "${ENV}" == "company-verify" ]] && DDL_DIR="ddl/company-verify"
+# stage 홈랩 CHI는 ZK 없음 — Replicated/ON CLUSTER 불가, 생성 변형 사용 (tools/gen_stage_ddl.py)
+[[ "${ENV}" == "stage" ]] && DDL_DIR="ddl/stage"
 if [[ "${ENV}" == "company-verify" ]]; then
   echo "  (격리 검증(1단계) — ${DDL_DIR}/의 테이블 DDL만 적용. DB 3종·전용 계정 token_verify는"
   echo "   admin이 ${DDL_DIR}/accounts.sql로 먼저 생성해야 아래 테이블 DDL이 성공합니다: python3"
