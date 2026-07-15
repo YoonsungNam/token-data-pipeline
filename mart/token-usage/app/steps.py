@@ -401,7 +401,11 @@ def _run_table(gate, date: str, dist: str, local: str, sql: str, expected_sql: s
     docstring 참조). written_rows는 텔레메트리로만 로그에 남긴다.
 
     verify_count 실패는 StepError(FAILURE 전파). 초과분(actual > expected)은
-    "dup_suspect:<table>" 경고를 warns에 추가한다."""
+    "dup_suspect:<table>" 경고를 warns에 추가한다.
+
+    반환은 **verify_count의 actual**(실제 적재 행수 — 소스 카운트 기반)이다.
+    written_rows는 Distributed 경로에서 신뢰 불가(단일노드에서 0, 다샤드에서 이중
+    계상)라 마커 행수로 쓸 수 없다 — 텔레메트리로 로그에만 남긴다."""
     if gate.exists(dist, date):
         gate.delete_day(local, date, extra_pred=extra_pred)
     written = gate.insert_select(sql, {"d": date})
@@ -418,7 +422,7 @@ def _run_table(gate, date: str, dist: str, local: str, sql: str, expected_sql: s
         f"STEP table ok: {dist} date={date} written_rows={written} "
         f"expected={expected} actual={actual}",
         flush=True)
-    return written
+    return actual
 
 
 def run_step1(gate, date: str) -> dict:

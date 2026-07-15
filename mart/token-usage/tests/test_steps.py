@@ -157,12 +157,18 @@ def test_sql_views_no_select_star():
         assert "SELECT *" not in sql                 # 컬럼 드리프트 조기 검출
 
 
-def test_run_step1_sequence(fake_gate):
+def test_run_step1_sequence():
     # FakeGate가 호출 순서를 기록: exists→(delete)→insert_select→query(expected)→
-    # verify_count ×4테이블
-    r = steps.run_step1(fake_gate, DATE)
-    assert fake_gate.order == ["detail", "agg_service", "agg_org", "agg_model"]
-    assert r["rows_detail"] == fake_gate.written["detail"]
+    # verify_count ×4테이블.
+    # written_rows(insert_select 반환, 기본 1)와 verify actual(verify_count 반환, 여기서는
+    # 99로 오버라이드)을 의도적으로 다르게 둔다 — 기본 fake_gate 픽스처는 written==actual이라
+    # 마커가 written을 반환해도 이 테스트가 회귀를 잡지 못했다(stage rows_view=0 버그의 원인).
+    shorts = ("detail", "agg_service", "agg_org", "agg_model")
+    gate = FakeGate(verify_actual=99, expected_overrides={s: 99 for s in shorts})
+    r = steps.run_step1(gate, DATE)
+    assert gate.order == ["detail", "agg_service", "agg_org", "agg_model"]
+    assert r["rows_detail"] == 99                       # actual(verify_count) 기준
+    assert r["rows_detail"] != gate.written["detail"]    # written(기본 1)과는 다름을 명시
     assert set(r.keys()) == {"rows_detail", "rows_svc", "rows_org", "rows_model", "warns"}
     assert r["warns"] == []
 
@@ -193,11 +199,16 @@ def test_run_step2_deletes_view_with_created_by_pred(fake_gate):
     assert fake_gate.delete_preds                                  # 공허 통과 방지 — 실제 호출됨
 
 
-def test_run_step2_returns_rows_view_detail_and_total(fake_gate):
-    r = steps.run_step2(fake_gate, DATE)
+def test_run_step2_returns_rows_view_detail_and_total():
+    # written_rows(기본 1)와 verify actual(50으로 오버라이드)을 다르게 둬 마커가
+    # actual 기준인지 검증한다(기본 fake_gate 픽스처는 written==actual이라 회귀를 못 잡음).
+    shorts = ("view_detail", "view_service", "view_org", "view_model")
+    gate = FakeGate(verify_actual=50, expected_overrides={s: 50 for s in shorts})
+    r = steps.run_step2(gate, DATE)
     assert set(r.keys()) == {"rows_view_detail", "rows_view_total", "warns"}
-    assert r["rows_view_detail"] == fake_gate.written["view_detail"]
-    assert r["rows_view_total"] == sum(fake_gate.written.values())
+    assert r["rows_view_detail"] == 50                       # actual(verify_count) 기준
+    assert r["rows_view_detail"] != gate.written["view_detail"]  # written(기본 1)과는 다름
+    assert r["rows_view_total"] == 50 * 4
     assert r["warns"] == []
 
 
@@ -229,5 +240,37 @@ def test_verify_uses_source_count_not_written_rows():
     assert all(expected == 3 for _, expected in gate.verify_calls)
     # actual(=expected=3, FakeGate 기본) == expected(3) → 초과 아님, dup_suspect 없음.
     assert r["warns"] == []
-    # written_rows 자체는 여전히 반환값(텔레메트리)으로 보존된다.
-    assert r["rows_detail"] == 6
+    # 마커 반환값은 written_rows(6)가 아니라 verify_count의 actual(3) — written_rows는
+    # 이제 텔레메트리(로그)로만 남고 반환값에는 쓰이지 않는다.
+    assert r["rows_detail"] == 3
+
+
+def test_marker_rows_use_verify_actual_not_written():
+    # 회귀 가드(stage 실배포 실측 재현): mart/token-usage/app/steps.py의 _run_table이
+    # written_rows(=insert_select 반환값)를 마커로 반환하던 버그 — 단일노드 stage에서
+    # written_rows=0인데 실제로는 208행이 정상 적재되어 BATCH_RESULT rows_view=0으로
+    # 오보되었다(gpu_data.view_token_usage_1d 3계층 합계로는 208행 확인됨). written_rows=0,
+    # 실제 적재(verify_count actual)=208인 FakeGate로 STEP 1/2를 돌려 반환 dict의
+    # rows_*가 written(0)이 아니라 actual(208)을 따르는지 단정한다.
+    step1_shorts = ("detail", "agg_service", "agg_org", "agg_model")
+    step2_shorts = ("view_detail", "view_service", "view_org", "view_model")
+
+    gate1 = FakeGate(verify_actual=208, expected_overrides={s: 208 for s in step1_shorts})
+    for s in step1_shorts:
+        gate1.written[s] = 0   # stage 실측 재현: written_rows=0
+
+    r1 = steps.run_step1(gate1, DATE)
+    assert r1["rows_detail"] == 208
+    assert r1["rows_svc"] == 208
+    assert r1["rows_org"] == 208
+    assert r1["rows_model"] == 208
+    assert r1["warns"] == []
+
+    gate2 = FakeGate(verify_actual=208, expected_overrides={s: 208 for s in step2_shorts})
+    for s in step2_shorts:
+        gate2.written[s] = 0   # stage 실측 재현: written_rows=0
+
+    r2 = steps.run_step2(gate2, DATE)
+    assert r2["rows_view_detail"] == 208            # written(0)이 아니라 actual(208)
+    assert r2["rows_view_total"] == 208 * 4
+    assert r2["warns"] == []
