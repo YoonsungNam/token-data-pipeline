@@ -84,6 +84,35 @@ python3 mart/token-usage/tools/rerun.py --context company \
 - 긴 기간은 분할 실행 가능 (안전 범위 약 12일 참조).
 - 성공 조건: BATCH_RESULT 마커가 `status=SUCCESS` (§5.6/§7.1).
 
+## 파기 요청 처리 (§8.3 user_id 축 삭제)
+
+퇴사자 처리·개인정보 파기 요청 등 **user_id 단위 영구 삭제**는
+`tools/data-admin/delete_data.py --mode user`를 사용한다. fact·mart·view 25개월치를
+mart rerun으로 우회 재생성하는 것은 비현실적이므로, 이 모드는 3계층(fact 상세·mart
+상세·view 상세)에 직접 ALTER DELETE를 실행한다(§8.3 ②) — **삭제는 되돌릴 수 없다.**
+
+    # 1) dry-run(기본) — 대상 건수만 확인, 삭제는 수행되지 않음
+    python3 tools/data-admin/delete_data.py --mode user --user-id <user_id>
+
+    # 2) 대상 건수를 확인한 뒤 실제 삭제
+    python3 tools/data-admin/delete_data.py --mode user --user-id <user_id> --yes
+
+- **대상**: `fact.raw_token_usage_1d`, `mart.token_usage_1d`, `gpu_data.view_token_usage_1d`
+  (상세 3테이블). `agg_token_*`·`raw_token_usage_summary_1d` 등 집계 테이블은 user_id
+  컬럼이 없어(개인 식별 불가 집계) 대상이 아니다.
+- `--yes` 없이 실행하면 대상 건수만 출력하고 종료한다(exit 0) — 실제 삭제는 `--yes`를
+  붙여 재실행해야 한다. `--yes` 시에도 실행 직전 대상 요약을 다시 출력한 뒤에만 삭제한다.
+- ON CLUSTER + wait_for_mutations(3s 폴링/300s 타임아웃, CH_CLUSTER 설정 시
+  clusterAllReplicas)로 전 레플리카 완료까지 대기한 뒤 종료한다.
+- **`gpu_data.dim_token_user_org` 행의 파기/가명화는 이 도구의 범위 밖이다** — 별도
+  admin 경로로 처리한다(§6.1 보존 규칙: 퇴사 후 N년 경과 행 삭제/가명화와 동일 트랙).
+  사용 이력(fact/mart/view)과 기준정보(dim)는 소유·절차가 분리되어 있으므로, 파기
+  요청 처리 시 두 경로를 모두 확인해야 한다.
+- 날짜 범위 기준 fact 정정(서비스 폐기·오적재 회수 등)은 `--mode date`를 사용한다 —
+  이는 §8.4 정정(restatement) 프로토콜의 수동 정정 경로에 해당하며, 완료 후 동일
+  기간 mart rerun이 의무다(위 "mart/token-usage" 절 참조 — 완료 시 도구가 실행할
+  rerun 커맨드를 직접 안내한다).
+
 ## VM push와 rerun (§5.5)
 
 rerun 경로는 VM push를 기본 생략한다 — VictoriaMetrics는 동일 timestamp 재push 시

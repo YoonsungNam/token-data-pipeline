@@ -1,0 +1,121 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: token-mock-provider-a
+spec:
+  selector:
+    app: token-mock-provider-a
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: token-mock-provider-a
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: token-mock-provider-a
+  template:
+    metadata:
+      labels:
+        app: token-mock-provider-a
+    spec:
+      imagePullSecrets:
+        - name: registry-pull-secret
+      containers:
+        - name: mock-provider
+          image: ghcr.io/yoonsungnam/token-mock-provider:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+          env:
+            - name: MOCK_SERVICE_GROUP
+              value: "Mock Group"
+            - name: MOCK_SERVICE
+              value: "Mock Service A"
+            - name: MOCK_SEED
+              value: "stage-seed-a"
+            - name: MOCK_USERS
+              value: "50"
+            - name: MOCK_ANON_USERS
+              value: "10"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: token-mock-provider-b
+spec:
+  selector:
+    app: token-mock-provider-b
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: token-mock-provider-b
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: token-mock-provider-b
+  template:
+    metadata:
+      labels:
+        app: token-mock-provider-b
+    spec:
+      imagePullSecrets:
+        - name: registry-pull-secret
+      containers:
+        - name: mock-provider
+          image: ghcr.io/yoonsungnam/token-mock-provider:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+          env:
+            - name: MOCK_SERVICE_GROUP
+              value: "Mock Group"
+            - name: MOCK_SERVICE
+              value: "Mock Service B"
+            - name: MOCK_SEED
+              value: "stage-seed-b"
+            - name: MOCK_USERS
+              value: "50"
+            - name: MOCK_ANON_USERS
+              value: "10"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: 64Mi
+            limits:
+              memory: 256Mi

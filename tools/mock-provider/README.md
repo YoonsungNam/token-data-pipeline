@@ -35,3 +35,48 @@ summary_extra_pct · name_drift · generated_at_change_at_page · not_ready_at_p
     ./run_conformance.sh            # 스펙 레포의 conformance_check 통과
 
 이미지 빌드·컨테이너 스모크는 CI의 image job에서 검증 (로컬 개발 머신에는 docker 없음).
+
+## stage 배포
+
+**전제:**
+- `registry-pull-secret` Secret이 `monitoring` 네임스페이스에 존재해야 함 (stage-runbook 참조)
+- 이미지는 `release-images` CI 워크플로에서 공급됨 (`ghcr.io/yoonsungnam/token-mock-provider:latest`)
+
+**배포:**
+
+    kubectl apply -n monitoring -f tools/mock-provider/k8s.yaml
+
+4개 리소스가 생성됨:
+- `token-mock-provider-a` Service/Deployment (Mock Service A)
+- `token-mock-provider-b` Service/Deployment (Mock Service B)
+
+각 서비스는 포트 8000에서 동작하며, `collectors/token-usage/endpoints.yaml`의 baseUrl을 통해 수집기에서 접근됨.
+
+**env 커스터마이즈:** `k8s.yaml`의 각 Deployment `env` 블록을 직접 편집해 위 "설정
+(환경변수)" 표의 값을 덮어쓸 수 있다 — 데이터 볼륨·결정적 시드를 바꾸고 싶을 때 사용.
+
+```yaml
+# 예: Mock Service A의 사용자 수를 늘리고 시드를 바꾸는 경우
+env:
+  - name: MOCK_SERVICE_GROUP
+    value: "Mock Group"
+  - name: MOCK_SERVICE
+    value: "Mock Service A"
+  - name: MOCK_SEED
+    value: "stage-seed-a-v2"      # 시드를 바꾸면 같은 date라도 다른 데이터셋이 생성됨
+  - name: MOCK_USERS
+    value: "200"                  # identified 사용자 수 확장(기본 50)
+  - name: MOCK_ANON_USERS
+    value: "10"
+```
+
+편집 후에는 재적용이 필요하다:
+
+```bash
+kubectl apply -n monitoring -f tools/mock-provider/k8s.yaml
+kubectl -n monitoring rollout restart deployment/token-mock-provider-a
+```
+
+`MOCK_SEED`를 바꾸면 이전 시드로 이미 적재된 fact/mart 데이터와 정합이 깨지므로(§8.1
+결정적 재현성 전제), 배포 중간에 바꿀 경우 해당 날짜 이후 구간은 collectors/mart
+rerun이 필요하다(`docs/operations/rerun.md`).
