@@ -134,10 +134,14 @@ if [[ "${ans}" == "y" || "${ans}" == "Y" ]]; then
     read -r -p "  CH_DB_DIM (격리 검증(company-verify) 전용 — 평시 enter): " ch_db_dim_v
     read -r -p "  CH_DB_MART (격리 검증(company-verify) 전용 — 평시 enter): " ch_db_mart_v
   fi
+  # stage 홈랩 CHI는 ZK 없음 — ON CLUSTER/clusterAllReplicas 불가하므로 단일노드 모드(빈 값).
+  # company/company-verify는 클러스터명 주입 (CH_CLUSTER와 DDL의 ON CLUSTER 리터럴 일치 전제 — §7.2)
+  CH_CLUSTER_VALUE="gpu-monitoring"
+  [[ "${ENV}" == "stage" ]] && CH_CLUSTER_VALUE=""
   args=(--from-literal="CH_USER=${ch_user}"
         --from-literal="CH_PASSWORD=${ch_pass}"
         --from-literal="CH_PORT=8123"
-        --from-literal="CH_CLUSTER=gpu-monitoring")
+        --from-literal="CH_CLUSTER=${CH_CLUSTER_VALUE}")
   if [[ -n "${expected_late_v}" ]]; then
     args+=(--from-literal="EXPECTED_LATE_SERVICES=${expected_late_v}")
   fi
