@@ -22,6 +22,55 @@ company 2샤드×2레플리카) + 동일 실 서비스 API를 대상으로 하�
 - VictoriaLogs/BATCH_RESULT 등 stage에서 검증 불가능했던 항목(§7.2 환경 전제)의 검증
   경로를 company 반입 이전에 확보한다.
 
+## 0. 사내 반입 (레포 · 이미지 · 컨텍스트)
+
+사내망은 GitHub private repo·ghcr.io에 접근할 수 없으므로, 검증 작업 머신에 **소스와
+이미지를 먼저 반입**한다. 아래 `<...>`는 사내에서 실값으로 치환한다 — **이 문서에 사내
+호스트명·주소를 커밋하지 않는다**(레포가 반입 중 공개 상태가 될 수 있으므로 — 아래 (a)).
+
+### (a) 레포 반입 — 임시 공개 전환
+
+private→**임시 public**→다운로드→**즉시 private 복귀**. 공개 창(window) 동안 **전체 git
+히스토리가 외부에 노출**되므로, 전환 전 아래를 확인한다(이미 통과 상태 — 2026-07-15 스캔):
+
+- 실 비밀번호·토큰: accounts.sql은 `CHANGE_ME_*` 플레이스홀더만, 커밋된 실 비밀번호 0
+- 실데이터: `endpoints.company.yaml`·실로스터 CSV·`*_insert*.sql`·`.env`는 .gitignore로 **커밋 이력 0**, fixture는 합성(`합성-NNNN`)만
+- 사내 인프라 식별자: harbor 호스트·프로젝트명은 **미커밋**(build.sh가 런타임 파생) — 이 문서도 플레이스홀더 유지로 노출 안 함
+
+```bash
+# 전환 전 재확인 (0 이어야 안전)
+git log --all --diff-filter=A --name-only --pretty=format: \
+  | grep -iE "roster.*\.csv$|_insert.*\.sql$|endpoints\.company\.yaml$|\.env$" | sort -u
+
+# GitHub: Settings → Danger Zone → Change visibility → Public (사내 다운로드 직후 즉시 Private 복귀)
+# 사내 머신에서:
+git clone https://github.com/YoonsungNam/token-data-pipeline.git
+# 복귀 확인 후 작업 — 공개 창은 최소화 (다운로드 완료 즉시 Private)
+```
+
+> 대안(공개 노출 0): mini 머신에서 `git bundle create token-pipeline.bundle --all` 후 번들
+> 파일만 승인된 채널로 반입 → 사내에서 `git clone token-pipeline.bundle`. 공개 전환이
+> 부담되면 이 방식을 권장.
+
+### (b) 이미지 반입 — 사내 Harbor 빌드·푸시
+
+company는 **실 서비스 API**를 대상으로 하므로 mock-provider 이미지는 불요 — collectors·mart
+2개만 사내 Harbor에 올린다(build.sh company 경로가 Harbor proxy 베이스 이미지·`linux/amd64`를
+처리):
+
+```bash
+# <harbor> = 사내 레지스트리 호스트, <project> = Harbor 프로젝트  (실값은 사내에서만)
+./collectors/token-usage/build.sh --registry <harbor>/<project> company
+./mart/token-usage/build.sh        --registry <harbor>/<project> company
+# → <harbor>/<project>/token-usage-collector:<sha>, <harbor>/<project>/token-mart:<sha> 푸시
+```
+
+### (c) kubectl 컨텍스트
+
+사내 클러스터 컨텍스트를 확인·지정한다(`--context <company-context>`). 이 문서의 이후
+커맨드는 `<company-context>`·`-n <ns>`를 사내 실값으로 치환해 사용한다(네임스페이스는
+§9-3 미결 — 착수 체크리스트 참조).
+
 ## 격리 성립 vs 공유 잔여 (리스크 표)
 
 | 구분 | 항목 | 상태 |
