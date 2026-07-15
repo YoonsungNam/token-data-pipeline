@@ -2,6 +2,9 @@
 -- stage 변형: ON CLUSTER 제거 + Replicated→MergeTree (홈랩 CHI는 ZK 없음)
 -- 원본: mart/token-usage/ddl/company/accounts.sql
 
+-- stage 한정: mart DB 생성 (홈랩엔 동료 스택 부재 — company에선 §9-18 공유 DB)
+CREATE DATABASE IF NOT EXISTS mart;
+
 -- =============================================================
 -- mart 모듈 GRANT 추가분 (스펙 v1.12 §7.2 계정·GRANT 경계)
 -- 실행 주체: admin 수동 (install.sh 자동 적용 대상 아님 — §7.2)

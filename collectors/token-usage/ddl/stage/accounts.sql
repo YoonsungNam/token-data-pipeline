@@ -2,6 +2,9 @@
 -- stage 변형: ON CLUSTER 제거 + Replicated→MergeTree (홈랩 CHI는 ZK 없음)
 -- 원본: collectors/token-usage/ddl/company/accounts.sql
 
+-- stage 한정: gpu_data DB 생성 (홈랩엔 동료 스택 부재 — company에선 생성 금지)
+CREATE DATABASE IF NOT EXISTS gpu_data;
+
 -- =============================================================
 -- 공유 계정 mart 앞 GRANT (스펙 v1.12 §7.2 계정·GRANT 경계)
 -- 실행 주체: admin 수동 (install.sh 자동 적용 대상 아님 — §7.2)

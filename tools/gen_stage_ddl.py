@@ -44,6 +44,18 @@ HEADER = (
 )
 
 
+# stage 한정 DB 부트스트랩 — 홈랩에는 동료 스택이 없어 gpu_data/mart DB도 우리가
+# 생성한다 (company에서는 동료 소유라 생성 금지 — company 정본에는 없음, 실사 2026-07-15)
+STAGE_DB_PREPEND = {
+    "collectors/token-usage/ddl/company/accounts.sql":
+        "-- stage 한정: gpu_data DB 생성 (홈랩엔 동료 스택 부재 — company에선 생성 금지)\n"
+        "CREATE DATABASE IF NOT EXISTS gpu_data;\n\n",
+    "mart/token-usage/ddl/company/accounts.sql":
+        "-- stage 한정: mart DB 생성 (홈랩엔 동료 스택 부재 — company에선 §9-18 공유 DB)\n"
+        "CREATE DATABASE IF NOT EXISTS mart;\n\n",
+}
+
+
 def transform(sql: str) -> str:
     # 1) ON CLUSTER — GRANT 정규형(GRANT ON CLUSTER '...' <priv>) 먼저,
     #    그다음 라인 단독/인라인 잔여 전부
@@ -64,7 +76,7 @@ def main() -> int:
     for rel in SOURCES:
         src = REPO / rel
         out = REPO / rel.replace("/company/", "/stage/")
-        body = transform(src.read_text())
+        body = STAGE_DB_PREPEND.get(rel, "") + transform(src.read_text())
         rendered = HEADER.format(src=rel) + body
         # 자기 검증: 변환 잔존 0 — 주석(`--`) 제외 실코드 라인만 검사
         code_lines = [l for l in body.splitlines() if not l.lstrip().startswith("--")]
