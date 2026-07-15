@@ -35,6 +35,27 @@ company 2샤드×2레플리카) + 동일 실 서비스 API를 대상으로 하�
 | **공유 잔여** | 실 서비스 API | **이중 수집 금지 — 병행 금지, 교체 전환.** company-verify CronJob과 2단계 정규(company) CronJob은 **동시에 활성화하지 않는다** — 같은 실 서비스 API를 두 파이프라인이 동시에 폴링하면 provider 측 rate-limit 예산을 이중 소모하고, 이상 수집 패턴으로 오탐될 수 있다. 검증이 끝나면 1단계를 suspend하고 정규 파이프라인으로 **교체**한다(아래 "2단계 전환" 절차) |
 | **공유 잔여** | 디스크 | 격리 DB 3종도 동일 클러스터의 물리 디스크를 사용한다 — 검증 기간(서비스 수 × 검증 일수)의 예상 데이터량을 클러스터 소유자에게 사전 통지 |
 
+## 착수 전 소유자·운영자 확정 체크리스트 (blocking)
+
+1단계는 아래가 전부 확보돼야 착수한다 — 코드는 준비 완료 상태이고, 남은 것은 소유자
+승인·운영 산출물이다:
+
+- [ ] **뮤테이션 예산 (소유자)** — 2배 증가(~136건/일)가 확정 예산(150/일)에 근접하므로,
+  근원 예산 미확정(이슈 #1 사후 컨펌 진행 중)과 함께 **소유자 통지 + 무이의** 확보. §0 사전 통지.
+- [ ] **격리 DB·계정 생성 승인 (소유자/DBA)** — 공유 클러스터에 `CREATE DATABASE token_verify_*` ×3
+  + `CREATE USER token_verify`(스펙 §7.2의 "레포는 CREATE USER 안 함" 원칙의 **명시적 예외** —
+  격리 검증 전용, 소유자 승인 필수) + 테이블 레벨 GRANT를 admin이 수동 실행. `CHANGE_ME_VERIFY`
+  비밀번호를 실행 전 치환하고, **동일 값**을 install.sh `[2/6] CH_PASSWORD` 프롬프트에 입력.
+- [ ] **endpoints.company.yaml (운영자)** — 실 서비스 URL 목록(gitignored). collectors install [3/6]가 필요.
+- [ ] **이미지 (company harbor)** — token-usage-collector·token-mart를 사내 harbor에 push,
+  install.sh `--registry <harbor>`로 배포.
+- [ ] **네임스페이스** — 이 문서·install.sh는 `monitoring`을 기본 가정(§9-3 미결). company k8s ns가
+  다르면 모든 커맨드의 `-n monitoring`·install.sh `--namespace`를 실제 ns로 교체.
+
+> insert_deduplicate 서버측 여부(이슈 #1)는 1단계에 무관하다 — 전용 `token_verify` 계정이라
+> "공유 계정 전역 영향" 문제가 성립하지 않고, 멱등성은 클라이언트 `insert_deduplicate=0`으로 충족.
+> 이 협의는 2단계(공유 mart 계정) 전환에서만 유효.
+
 ## 1단계 설치 절차
 
 ### 0) 사전 통지
@@ -145,8 +166,17 @@ stage E2E(`mart/token-usage/tests/e2e/run_e2e.sh` 등)가 합성 fixture의 **�
 6. **마커** — collectors/mart 양쪽의 `BATCH_RESULT status=SUCCESS`가 `-verify` 파드에서
    발화하고, VictoriaLogs에서 해당 파드명으로 조회 가능해야 한다(SERVICE_RESULT 포함).
 
-체크리스트 SQL은 `mart/token-usage/tests/e2e/verify_expected_results.sql`의 구조를 참고해
-DB명만 `token_verify_*`로 바꿔 재사용할 수 있다(고정 기대값 대신 위 불변식으로 대체).
+위 3~5의 SQL 불변식은 **`tools/verify/invariants.sql` + `tools/verify/run_invariants.py`**로
+실행형으로 제공된다(고정 기대값 대신 위반 행 노출 — 빈 출력이면 통과). 1단계는 격리 DB로 실행:
+
+```bash
+CH_DB_FACT=token_verify_fact CH_DB_DIM=token_verify_dim CH_DB_MART=token_verify_mart \
+CH_HOST=<chi-host> CH_USER=token_verify CH_PASSWORD=<...> \
+    python3 tools/verify/run_invariants.py --date <D>
+```
+
+1(멱등)·2(coverage)·6(마커)는 SQL 불변식이 아니라 실행 행위·마커 확인이므로 위 커맨드와
+별개로 수동 확인한다(1은 rerun 2회 후 count 비교, 2·6은 BATCH_RESULT 로그).
 
 ## 2단계 전환 (카나리아)
 
@@ -170,8 +200,13 @@ DB명만 `token_verify_*`로 바꿔 재사용할 수 있다(고정 기대값 대
        --from <D> --to <D> --chain-mart
    ```
 
-3. **검증 SQL** — 위 "성공 기준 체크리스트" 1)~6)을 이번엔 `fact`/`gpu_data`/`mart`
-   (production DB명, override 없는 기본값)를 대상으로 동일하게 재확인한다.
+3. **검증 SQL** — 동일 불변식을 이번엔 production DB명(기본값)으로 재확인:
+
+   ```bash
+   CH_HOST=<chi-host> CH_USER=mart CH_PASSWORD=<...> \
+       python3 tools/verify/run_invariants.py --date <D>
+   ```
+   (CH_DB_* override 없이 기본 `fact`/`gpu_data`/`mart` 사용.)
 
 4. **정상 확인 후 정규 CronJob 기동** — `install.sh company`가 아직 적용되지 않았다면
    지금 적용한다(overlay `company`, DDL 대상 `ddl/company/`). 이미 배포돼 있었다면 별도

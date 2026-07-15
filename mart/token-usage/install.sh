@@ -105,7 +105,7 @@ fi
 # collectors와 델타: CH_USER 기본값은 계정 공유 결정(2026-07-14)으로 동일(mart) —
 # proxy/CA 프롬프트 없음(mart는 아웃바운드 HTTP 없음 — YAGNI), EXPECTED_LATE_SERVICES
 # 선택 입력(enter=스킵 — 키 자체를 Secret에 넣지 않아 컨테이너 env 미설정 → app 기본값
-# '' 사용). INSERT_QUORUM은 company에서만 'auto' 자동 포함 — Global Constraints
+# '' 사용). INSERT_QUORUM은 company·company-verify에서 'auto' 자동 포함(동일 2s×2r 물리 클러스터) — Global Constraints
 # 레플리카 지연 게이트(§9-19), 대화형 프롬프트 아님.
 echo ""
 echo "[2/5] app secret '${SECRET_NAME}'"

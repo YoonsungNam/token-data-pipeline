@@ -630,6 +630,11 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
   (company에서는 클러스터 소유자/DBA 협의 절차 포함). `CREATE USER`는 더 이상 이 레포의
   책임이 아니다(계정은 동료 소유). install.sh의 chi-* 자동 DDL 적용 대상은 테이블
   DDL·migrate로 한정. stage에서도 동일 경계 적용(습관 차이로 인한 반입 재작업 방지).
+  - **예외 — company-verify 격리 검증(v1.13)**: 1단계 격리 검증은 전용 계정 `token_verify`를
+    신규 생성한다(`tools/gen_verify_ddl.py`가 accounts에 `CREATE USER token_verify` 프리펜드).
+    이는 위 "CREATE USER 안 함" 원칙의 **의도된 예외**로, production 공유계정(`mart`)과 분리해
+    검증 오염을 원천 차단하기 위함이다 — 공유 클러스터 신규 계정이므로 **소유자 승인 후 admin
+    수동 실행**하고, 1단계 철수 시 `DROP USER token_verify`로 회수한다(docs/operations/company-verify.md).
 
 - 스크립트 규약: `./build.sh <stage|company>` / `./install.sh <stage|company>` +
   `--registry/--tag/--context/--namespace`. 태그 기본 git short SHA. stage=ghcr.io 기본,
