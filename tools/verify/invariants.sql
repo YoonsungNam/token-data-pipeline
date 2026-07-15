@@ -88,44 +88,63 @@ WHERE date = '{DATE}'
 
 UNION ALL
 
--- 4) cost_null_contract — model='unknown'인데 cost IS NOT NULL(위반) 또는
---    dim_token_model에 등록된 모델(unknown 제외)인데 cost IS NULL(위반).
---    등록 여부는 {DIM}.dim_token_model_dist에 (model, effective_from<=date) 존재로
---    판정 — dim에 'unknown' 행이 있어도(가격 NULL 캐치올) 그 행은 "등록"으로
---    치지 않는다($0/가격 위장 없음, §4.2 리뷰 #15). {MART}.token_usage_1d_dist ×
---    {DIM}.dim_token_model_dist, model 단위로 GROUP BY해 위반 모델당 1행.
+-- 4) cost_null_contract — 계약(company-verify.md:164): 등록 모델(dim_token_model에
+--    (model, effective_from<=date) 존재, unknown 제외) = cost IS NOT NULL,
+--    미등록·unknown 모델(dim에 없거나 model='unknown') = cost IS NULL. 위반은
+--    이 XOR이 깨지는 모든 행 — 등록인데 cost NULL, 또는 미등록인데 cost NOT NULL.
+--    과거 리뷰(§4.2 #15, "$0 위장" 버그)는 "미등록·unknown인데 cost가 채워짐"이
+--    새 모델 온보딩 시 조용히 새는 사례였다. 예전 WHERE는
+--    `model='unknown' OR model IN (등록집합)`만 봐서 dim에 아직 없는 신규
+--    비-unknown 모델은 검사 대상에서 통째로 빠졌다(커버리지 갭) — 이번 수정은
+--    WHERE 필터 없이 해당 일자의 전 모델을 대상으로 하여 그 갭을 없앤다.
+--    dim에 'unknown' 행이 있어도(가격 NULL 캐치올) "등록"으로 치지 않는다
+--    (registered 판정에서 model != 'unknown' 강제). {MART}.token_usage_1d_dist를
+--    행 단위로 등록 여부 플래그를 매긴 뒤 model로 GROUP BY, 위반 모델당 1행.
 SELECT
     'cost_null_contract' AS check_name,
     concat('model=', model,
-           ' unknown_cost_leak=', toString(countIf(model = 'unknown' AND cost IS NOT NULL)),
-           ' registered_cost_null=', toString(countIf(cost IS NULL))) AS detail,
-    toUInt64(countIf(model = 'unknown' AND cost IS NOT NULL) + countIf(cost IS NULL)) AS bad_count
-FROM {MART}.token_usage_1d_dist
-WHERE date = '{DATE}'
-  AND (
-        model = 'unknown'
-        OR model IN (
-            SELECT model FROM {DIM}.dim_token_model_dist
-            WHERE effective_from <= '{DATE}' AND model != 'unknown'
-        )
-      )
+           ' registered=', toString(max(registered)),
+           ' violation_rows=', toString(countIf(bad = 1))) AS detail,
+    toUInt64(countIf(bad = 1)) AS bad_count
+FROM
+(
+    SELECT
+        model,
+        registered,
+        toUInt8((registered = 1 AND cost IS NULL) OR (registered = 0 AND cost IS NOT NULL)) AS bad
+    FROM
+    (
+        SELECT
+            model,
+            cost,
+            toUInt8(model != 'unknown' AND model IN (
+                SELECT model FROM {DIM}.dim_token_model_dist
+                WHERE effective_from <= '{DATE}' AND model != 'unknown'
+            )) AS registered
+        FROM {MART}.token_usage_1d_dist
+        WHERE date = '{DATE}'
+    )
+) AS t
 GROUP BY model
-HAVING (model = 'unknown' AND countIf(cost IS NOT NULL) > 0)
-    OR (model != 'unknown' AND countIf(cost IS NULL) > 0)
+HAVING countIf(bad = 1) > 0
 
 UNION ALL
 
 -- 5) identified_name_leak — {DIM}.view_token_usage_1d_dist에서 user_type='identified'
 --    AND user_name != '' (실명 노출 경계, §9-1 보류 — 0이어야 함).
---    detail에는 user_name 원문 대신 길이만 노출한다(진단은 가능하되 실명 자체를
---    추가로 유출하지 않기 위함 — §8.3 delete_data.py의 원문 비노출 관례와 동일).
+--    §5.6/v1.4 로깅 계약: "모든 로그에 레코드 페이로드와 user_id 원문을 남기지
+--    않는다" — 이 검사 자체가 PII 누출 탐지기이므로 detail에 user_id·user_name
+--    원문을 절대 심지 않는다(과거 리뷰에서 user_id를 detail에 노출해 §5.6을 스스로
+--    위반한 High 결함이 있었다 — 재발 방지). 위반 건수만 집계해 노출한다
+--    (§8.3 delete_data.py의 원문 비노출 관례와 동일). GROUP BY 없이 단일 집계이므로
+--    위반이 0건이면 HAVING이 행 자체를 없애 "빈 출력 = 통과" 계약을 유지한다.
 SELECT
     'identified_name_leak' AS check_name,
-    concat('user_id=', user_id, ' service=', service,
-           ' user_name_len=', toString(length(user_name))) AS detail,
-    toUInt64(1) AS bad_count
+    concat('identified rows with non-empty user_name: ', toString(count())) AS detail,
+    toUInt64(count()) AS bad_count
 FROM {DIM}.view_token_usage_1d_dist
 WHERE date = '{DATE}' AND user_type = 'identified' AND user_name != ''
+HAVING count() > 0
 
 UNION ALL
 

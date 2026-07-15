@@ -101,6 +101,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _print_violations(rows: list[tuple], date_str: str, dbs: dict) -> None:
+    # detail은 invariants.sql의 각 검사 SQL이 만든 문자열을 그대로(verbatim) 찍는다.
+    # §5.6/v1.4 로깅 계약("모든 로그에 레코드 페이로드와 user_id 원문을 남기지
+    # 않는다")은 SQL 쪽 책임이다 — 각 검사 SQL은 detail에 user_id/user_name
+    # 원문을 절대 넣지 않는다(특히 identified_name_leak — 위반 건수만 집계해
+    # 노출, PII 원문 0). 여기서 다시 필터링하는 건 과설계이므로 하지 않는다.
     print(f"[FAIL] {len(rows)}건의 불변식 위반 발견 "
           f"(date={date_str}, DBs={dbs['fact']}/{dbs['dim']}/{dbs['mart']})")
     header = f"{'check_name':<28} {'bad_count':>10}  detail"

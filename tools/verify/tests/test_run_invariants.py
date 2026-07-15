@@ -6,6 +6,7 @@ FakeCH는 tools/data-admin/tests/test_delete_data.py 관례를 따른다 — que
 """
 import datetime as dt
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -88,6 +89,52 @@ def test_load_sql_reads_committed_file_and_contains_all_tokens():
     assert "bad_count" in sql
 
 
+def _select_list(sql: str, check_name: str) -> str:
+    """check_name 검사의 SELECT 컬럼 리스트(check_name/detail/bad_count 산출식)만
+    추출한다 — FROM 절 이전까지."""
+    marker = f"'{check_name}' AS check_name"
+    start = sql.index(marker)
+    end = sql.index("\nFROM ", start)
+    return sql[start:end]
+
+
+def _strip_string_literals(fragment: str) -> str:
+    """단일따옴표 문자열 리터럴 내용을 지운다 — 사람이 읽는 진단 라벨 텍스트에
+    'user_name' 같은 단어가 포함돼도(예: 'identified rows with non-empty
+    user_name: 3') 실제 컬럼 원문 참조와 혼동하지 않기 위함."""
+    return re.sub(r"'[^']*'", "''", fragment)
+
+
+def test_identified_name_leak_select_never_references_user_id_or_user_name_column():
+    """§5.6/v1.4 로깅 계약 회귀(High 픽스): "모든 로그에 레코드 페이로드와 user_id
+    원문을 남기지 않는다"는 계약을 identified_name_leak 검사 자체가 스스로
+    위반해선 안 된다. 과거 리뷰에서 detail에 concat('user_id=', user_id, ...)로
+    user_id 원문을 그대로 심어 stdout에 노출한 결함이 있었다(재발 방지) —
+    SELECT 컬럼 리스트에 user_id·user_name 컬럼 원문 참조가 전혀 없어야 한다."""
+    select_list = _select_list(ri.load_sql(), "identified_name_leak")
+    stripped = _strip_string_literals(select_list)
+    assert "user_id" not in stripped
+    assert "user_name" not in stripped
+
+
+def test_cost_null_contract_covers_unregistered_non_unknown_models():
+    """cost_null_contract 커버리지 갭 회귀(Medium 픽스, §4.2 리뷰 #15 "$0 위장"
+    버그와 동일 계열): 과거 WHERE는 `model='unknown' OR model IN (등록집합)`만
+    봐서 dim_token_model에 아직 등록되지 않은 신규 비-unknown 모델이 검사
+    대상에서 통째로 빠졌다. 수정 후에는 해당 검사 블록에 모델을 사전 필터링하는
+    WHERE 절이 없어야 한다(전 모델이 registered 플래그로 판정된다)."""
+    sql = ri.load_sql()
+    start = sql.index("'cost_null_contract' AS check_name")
+    end = sql.index("UNION ALL", start)
+    block = sql[start:end]
+    # 등록 판정(registered)은 남아있어야 하고, model 자체를 걸러내는
+    # `model = 'unknown' OR model IN (...)` 식의 사전 WHERE 필터는 없어야 한다.
+    assert "registered" in block
+    assert "model = 'unknown'\n        OR model IN" not in block
+    assert re.search(r"WHERE\s+date = '\{DATE\}'\s*\)", block), (
+        "가장 안쪽 서브쿼리 WHERE가 date 필터만 남아 있어야 한다(모델 전건 대상)")
+
+
 # ---------------------------------------------------------------------------
 # 위반 행 판정 — FakeCH: 위반 행 반환 시 exit 1, 빈 결과 시 exit 0
 # ---------------------------------------------------------------------------
@@ -115,7 +162,7 @@ def test_main_exits_0_and_prints_pass_when_no_rows(capsys):
 
 def test_main_multiple_violation_rows_all_reported(capsys):
     ch = FakeCH(rows=[
-        ("identified_name_leak", "user_id=u1 service=S user_name_len=3", 1),
+        ("identified_name_leak", "identified rows with non-empty user_name: 1", 1),
         ("created_by_wrong", "table=mart_detail created_by=other", 5),
     ])
     rc = ri.main(["--date", "2026-07-14"], client=ch)
@@ -124,6 +171,21 @@ def test_main_multiple_violation_rows_all_reported(capsys):
     assert "2건" in out
     assert "identified_name_leak" in out
     assert "created_by_wrong" in out
+
+
+def test_main_output_contains_no_user_id_pattern_on_violations(capsys):
+    """§5.6 PII 미노출 회귀: identified_name_leak이 위반 행을 반환해도(픽스 후
+    detail은 건수 집계 요약뿐) 최종 stdout에 user_id 원문 형태(예: user-1234)가
+    전혀 없어야 한다. _print_violations()는 SQL이 만든 detail을 verbatim
+    출력하므로, 이 테스트는 러너가 아니라 계약이 지켜지는지의 종단 확인이다."""
+    ch = FakeCH(rows=[
+        ("identified_name_leak", "identified rows with non-empty user_name: 3", 3),
+        ("created_by_wrong", "table=mart_detail created_by=other", 5),
+    ])
+    rc = ri.main(["--date", "2026-07-14"], client=ch)
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert not re.search(r"user-\d+", out), "user_id 원문 패턴이 출력에 노출됨(§5.6 위반)"
 
 
 def test_main_uses_db_env_overrides_in_query_and_message(monkeypatch, capsys):
