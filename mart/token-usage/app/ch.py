@@ -94,8 +94,11 @@ class CHGate:
     def insert_select(self, sql: str, params: dict | None = None) -> int:
         """INSERT INTO ... SELECT 실행 — 항상 _dist 경유(co-location).
         insert_deduplicate=0 필수(재삽입 중복제거 차단 — Global Constraints).
-        cfg.insert_quorum이 설정된 경우만 insert_quorum 설정을 포함한다."""
-        settings = {"insert_distributed_sync": 1, "insert_deduplicate": 0}
+        cfg.insert_quorum이 설정된 경우만 insert_quorum 설정을 포함한다.
+        distributed_product_mode='global': GLOBAL LEFT JOIN이 각 샤드에서 dim을
+        전역 조회하도록 강제(로컬 샤드만 보고 부분 조인하는 사고 방지 — §4.0 분산 조인 표준)."""
+        settings = {"insert_distributed_sync": 1, "insert_deduplicate": 0,
+                    "distributed_product_mode": "global"}
         if self.cfg.insert_quorum:
             settings["insert_quorum"] = self.cfg.insert_quorum
         result = self.client.command(sql, parameters=params, settings=settings)

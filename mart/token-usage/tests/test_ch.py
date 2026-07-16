@@ -169,6 +169,7 @@ def test_insert_select_returns_written_rows_and_sync_setting():
     _sql, _params, settings = ch.commands[0]
     assert settings["insert_distributed_sync"] == 1
     assert settings["insert_deduplicate"] == 0
+    assert settings["distributed_product_mode"] == "global"   # §4.0 분산 조인 — 각 샤드 전역 조회
     assert "insert_quorum" not in settings        # 기본 미설정
 
 

@@ -38,8 +38,9 @@ class FakeCH:
         self.rows = rows if rows is not None else []
         self.queries = []
 
-    def query(self, sql, parameters=None):
+    def query(self, sql, parameters=None, settings=None):
         self.queries.append(sql)
+        self.last_settings = settings
         return FakeResult(self.rows)
 
 
@@ -272,3 +273,11 @@ def test_help_exits_0():
     with pytest.raises(SystemExit) as e:
         ri.main(["--help"], client=FakeCH())
     assert e.value.code == 0
+
+
+def test_query_passes_distributed_product_mode_global():
+    """불변식 쿼리는 distributed_product_mode='global'로 실행 — _dist 조인이
+    각 샤드에서 전역 조회하도록 강제 (§4.0 분산 조인 표준)."""
+    ch = FakeCH(rows=[])
+    ri.main(["--date", "2026-07-14"], client=ch)
+    assert ch.last_settings == {"distributed_product_mode": "global"}

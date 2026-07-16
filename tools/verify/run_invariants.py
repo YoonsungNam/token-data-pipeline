@@ -137,7 +137,10 @@ def main(argv=None, client=None, now_fn=now_kst) -> int:
         host=conn["host"], port=conn["port"], username=conn["user"],
         password=conn["password"])
 
-    result = ch_client.query(sql)
+    # distributed_product_mode='global': 불변식 SQL도 _dist 대상 서브쿼리/조인을 각
+    # 샤드에서 전역 조회하도록 강제 — insert_select와 동일 취지(로컬 샤드만 보고 부분
+    # 집계하는 사고 방지, §4.0 분산 조인 표준).
+    result = ch_client.query(sql, settings={"distributed_product_mode": "global"})
     rows = list(result.result_rows or [])
 
     if rows:
