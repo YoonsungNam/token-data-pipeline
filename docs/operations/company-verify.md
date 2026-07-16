@@ -161,8 +161,19 @@ clickhouse-client --multiquery < assets/model-catalog/ddl/company-verify/dim_tok
 clickhouse-client --multiquery < assets/model-catalog/ddl/company-verify/seed_dim_token_model.sql
 ```
 
-로스터 투입(§6.1)은 `csv_to_dim_user_org_insert.py`가 생성한 INSERT SQL을 사내 리뷰 후
-`token_verify_dim.dim_token_user_org_dist`에 실행 — 정규 절차와 동일, 대상 DB만 격리명.
+로스터 투입(§6.1)은 정규 절차와 동일하되 **`--target-db token_verify_dim`**으로 대상 DB만
+격리명으로 생성한다(기본값 `gpu_data`를 override — INSERT·검증문·헤더 전부 격리 DB로 치환):
+
+```bash
+# 실로스터 CSV(사내, gitignored)로 생성 — 산출 SQL은 사내 리뷰 후 admin 실행
+python3 assets/user-org/csv_to_dim_user_org_insert.py \
+    --csv <실로스터.csv> --target-db token_verify_dim \
+    --out dim_token_user_org_insert.sql
+# 사내 리뷰 후:
+clickhouse-client --multiquery < dim_token_user_org_insert.sql
+```
+
+(산출 파일명 `dim_token_user_org_insert.sql`은 .gitignore가 커버 — 레포 반입 금지.)
 
 ### 4) install.sh company-verify (collectors/mart 테이블 DDL + CronJob 배포)
 
