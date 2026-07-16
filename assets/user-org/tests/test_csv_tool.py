@@ -153,6 +153,36 @@ def test_chunking():
     assert sql.count("'dup_key' AS check_name") == 1
 
 
+def test_render_sql_target_table_default_is_gpu_data():
+    rows = parse_roster([_row(user_id="user-0001", effective_from="2026-01-01")], "2020-01-01")
+    sql = render_sql(rows, 500, "r.csv", "2020-01-01")
+    assert "gpu_data.dim_token_user_org_dist" in sql
+    assert "token_verify_dim" not in sql
+
+
+def test_render_sql_target_table_override():
+    # company-verify 격리: gpu_data가 아니라 token_verify_dim에 INSERT — INSERT/검증문
+    # 전부(INSERT INTO·NOT IN 가드·dup_key·missing_key·key_conflict) 대상 DB가 치환돼야
+    rows = parse_roster([_row(user_id="user-0001", effective_from="2026-01-01")], "2020-01-01")
+    sql = render_sql(rows, 500, "r.csv", "2020-01-01",
+                     "token_verify_dim.dim_token_user_org_dist")
+    assert "token_verify_dim.dim_token_user_org_dist" in sql
+    assert "gpu_data.dim_token_user_org_dist" not in sql
+
+
+def test_cli_target_db_option(tmp_path):
+    out_path = tmp_path / "out.sql"
+    result = subprocess.run(
+        [sys.executable, str(TOOL_PATH), "--csv", str(FIXTURE_CSV),
+         "--out", str(out_path), "--target-db", "token_verify_dim"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    body = out_path.read_text()
+    assert "INSERT INTO token_verify_dim.dim_token_user_org_dist" in body
+    assert "gpu_data." not in body
+
+
 def test_stdout_summary_only(capsys, tmp_path):
     out_path = tmp_path / "out.sql"
     result = subprocess.run(

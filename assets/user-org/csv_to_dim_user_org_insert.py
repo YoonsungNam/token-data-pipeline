@@ -182,7 +182,8 @@ def _union_all(literals) -> str:
     return "\n    UNION ALL\n    ".join(literals)
 
 
-def render_sql(rows, chunk_size: int, source_name: str, default_effective_from: str) -> str:
+def render_sql(rows, chunk_size: int, source_name: str, default_effective_from: str,
+               target_table: str = TARGET_TABLE) -> str:
     """검증된 Row 목록 → 결정적(byte-identical) INSERT SQL 문자열 (순수 함수).
 
     (a) 헤더 주석(basename·행수·기본 effective_from, 생성 시각 없음 — 결정성)
@@ -197,7 +198,7 @@ def render_sql(rows, chunk_size: int, source_name: str, default_effective_from: 
 
     lines = []
     lines.append("-- =============================================================")
-    lines.append("-- gpu_data.dim_token_user_org 로스터 INSERT")
+    lines.append(f"-- {target_table} 로스터 INSERT")
     lines.append("-- 생성: csv_to_dim_user_org_insert.py (Plan 4 T2)")
     lines.append(f"-- 소스 파일: {source_name}")
     lines.append(f"-- 행수: {len(rows)}")
@@ -208,7 +209,7 @@ def render_sql(rows, chunk_size: int, source_name: str, default_effective_from: 
     lines.append("")
 
     for chunk in chunks:
-        lines.append(f"INSERT INTO {TARGET_TABLE}")
+        lines.append(f"INSERT INTO {target_table}")
         lines.append(
             "    (user_id, effective_from, user_name, org_path, org_depth, is_active, updated_at)"
         )
@@ -217,7 +218,7 @@ def render_sql(rows, chunk_size: int, source_name: str, default_effective_from: 
         lines.append("    " + _union_all(_full_row_literal(r) for r in chunk))
         lines.append(")")
         lines.append("WHERE (user_id, effective_from) NOT IN (")
-        lines.append(f"    SELECT user_id, effective_from FROM {TARGET_TABLE}")
+        lines.append(f"    SELECT user_id, effective_from FROM {target_table}")
         lines.append(")")
         lines.append("SETTINGS insert_distributed_sync = 1;")
         lines.append("")
@@ -225,7 +226,7 @@ def render_sql(rows, chunk_size: int, source_name: str, default_effective_from: 
     lines.append("-- 검증: 결과가 비어야 정상 ------------------------------------------------")
     lines.append("-- 1) dup_key: (user_id, effective_from) 전역 중복 없음")
     lines.append("SELECT 'dup_key' AS check_name, user_id, effective_from, count() AS cnt")
-    lines.append(f"FROM {TARGET_TABLE}")
+    lines.append(f"FROM {target_table}")
     lines.append("GROUP BY user_id, effective_from")
     lines.append("HAVING count() > 1;")
     lines.append("")
@@ -244,7 +245,7 @@ def render_sql(rows, chunk_size: int, source_name: str, default_effective_from: 
         lines.append("    " + _union_all(_key_literal(r) for r in chunk))
         lines.append(") AS chunk_keys")
         lines.append("WHERE (chunk_keys.user_id, chunk_keys.effective_from) NOT IN (")
-        lines.append(f"    SELECT user_id, effective_from FROM {TARGET_TABLE}")
+        lines.append(f"    SELECT user_id, effective_from FROM {target_table}")
         lines.append(");")
         lines.append("")
 
@@ -260,7 +261,7 @@ def render_sql(rows, chunk_size: int, source_name: str, default_effective_from: 
         lines.append("FROM (")
         lines.append("    " + _union_all(_conflict_row_literal(r) for r in chunk))
         lines.append(") AS file_kv")
-        lines.append(f"INNER JOIN {TARGET_TABLE} AS db")
+        lines.append(f"INNER JOIN {target_table} AS db")
         lines.append("    ON file_kv.user_id = db.user_id AND file_kv.effective_from = db.effective_from")
         lines.append("WHERE file_kv.user_name != db.user_name")
         lines.append("   OR file_kv.org_path != db.org_path")
@@ -290,6 +291,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_CHUNK_SIZE,
         help=f"INSERT/검증 chunk 크기 (기본 {DEFAULT_CHUNK_SIZE})",
+    )
+    parser.add_argument(
+        "--target-db",
+        default="gpu_data",
+        help="INSERT 대상 dim DB명 (기본: gpu_data — company-verify는 token_verify_dim)",
     )
     return parser
 
@@ -324,7 +330,9 @@ def main(argv=None) -> int:
 
     anon_count = sum(1 for r in rows if r.user_id.startswith(ANON_PREFIX))
 
-    sql_text = render_sql(rows, args.chunk_size, csv_path.name, default_effective_from)
+    target_table = f"{args.target_db}.dim_token_user_org_dist"
+    sql_text = render_sql(rows, args.chunk_size, csv_path.name, default_effective_from,
+                          target_table)
 
     out_path = Path(args.out)
     out_path.write_text(sql_text, encoding="utf-8")
