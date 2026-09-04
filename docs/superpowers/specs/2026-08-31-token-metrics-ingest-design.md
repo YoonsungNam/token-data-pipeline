@@ -1,6 +1,6 @@
 # token-data-pipeline — /v1/metrics(GPU Hour·성능 메트릭) 반입 설계 문서
 
-- 작성일: 2026-08-31 · **현재 버전 v0.5.1 (초안 — 사용자 승인 전)** — 개정 이력은 §0
+- 작성일: 2026-08-31 · **현재 버전 v0.5.1 (2026-09-04 사용자 승인 — 구현 계획 Plan 6a/6b/6c 단계)** — 개정 이력은 §0
 - 상태: 설계 제안 (브레인스토밍 산출물). 승인 후 writing-plans로 구현 계획(Plan 6a/6b/6c) 작성
 - 참조: [마스터 설계 v1.13](2026-07-10-token-data-pipeline-design.md), **[비용 모델 정의서 Draft v0.1](../../cost-model-spec.md) — §6.4의 계산 규칙 정본**, [token-metric-api-spec](https://github.com/YoonsungNam/token-metric-api-spec) (`token-metric-api.yaml` v0.1.0 @6a552d2, `docs/METRICS_COLLECTION_SPEC.md`, `docs/internal/DECISIONS.md` #1~#24, `docs/internal/COLLECTOR_DESIGN.md`, `docs/METADATA_SHEET_TEMPLATE.xlsx`), [token-usage-api-spec](https://github.com/YoonsungNam/token-usage-api-spec) v1.1.0 @6c32650, [gpu-data-pipeline 분석](../../gpu-data-pipeline-analysis.md)
 - 관계: 마스터 설계의 **자매 스펙**. 마스터 §4.4(Layer C 확장 슬롯)·§5.9(적재 계약)·§9-12~15(미결)를 이 문서가 구체화한다. 마스터 스펙은 **v1.14**로 §0 개정 이력 1행 + 계약 개정 절(§8 목록)만 반영한다.
