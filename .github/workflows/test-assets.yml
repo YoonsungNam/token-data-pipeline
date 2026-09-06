@@ -11,7 +11,9 @@ on:
             "mart/token-usage/ddl/company/**", "mart/token-usage/ddl/company-verify/**",
             "assets/user-org/ddl/company-verify/**", "assets/model-catalog/ddl/company-verify/**",
             "collectors/token-usage/k8s/overlays/company-verify/**",
-            "mart/token-usage/k8s/overlays/company-verify/**"]
+            "mart/token-usage/k8s/overlays/company-verify/**",
+            "collectors/token-metrics/ddl/company/**", "collectors/token-metrics/ddl/company-verify/**",
+            "mart/token-metrics/ddl/company/**", "mart/token-metrics/ddl/company-verify/**"]
   pull_request:
     paths: ["assets/**", ".github/workflows/test-assets.yml",
             "mart/token-usage/tests/e2e/ddl_test_dims.sql",
@@ -21,7 +23,9 @@ on:
             "mart/token-usage/ddl/company/**", "mart/token-usage/ddl/company-verify/**",
             "assets/user-org/ddl/company-verify/**", "assets/model-catalog/ddl/company-verify/**",
             "collectors/token-usage/k8s/overlays/company-verify/**",
-            "mart/token-usage/k8s/overlays/company-verify/**"]
+            "mart/token-usage/k8s/overlays/company-verify/**",
+            "collectors/token-metrics/ddl/company/**", "collectors/token-metrics/ddl/company-verify/**",
+            "mart/token-metrics/ddl/company/**", "mart/token-metrics/ddl/company-verify/**"]
 
 jobs:
   verify-ddl:
@@ -41,7 +45,9 @@ jobs:
             collectors/token-usage/ddl/company-verify \
             mart/token-usage/ddl/company-verify \
             assets/user-org/ddl/company-verify \
-            assets/model-catalog/ddl/company-verify
+            assets/model-catalog/ddl/company-verify \
+            collectors/token-metrics/ddl/company-verify \
+            mart/token-metrics/ddl/company-verify
       - name: Render company-verify overlays
         run: |
           kubectl kustomize collectors/token-usage/k8s/overlays/company-verify > /tmp/collectors-company-verify.yaml
@@ -57,6 +63,20 @@ jobs:
     defaults:
       run:
         working-directory: assets/user-org
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "pytest>=8"
+      - run: python -m pytest tests/ -v --ignore=tests/e2e
+
+  # Plan 6a: model-catalog — DDL 매니페스트 lint(T2) + alias 생성기(T8) + Layer C 생성기(T9)
+  unit-model-catalog:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: assets/model-catalog
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
