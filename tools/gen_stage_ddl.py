@@ -35,6 +35,21 @@ SOURCES = [
     "assets/model-catalog/ddl/company/dim_token_model.sql",
     "assets/model-catalog/ddl/company/seed_dim_token_model.sql",
     "assets/model-catalog/ddl/company/accounts.sql",
+    # Plan 6a (설계 2026-08-31 §4.0 매니페스트) — collectors/mart token-metrics + 메트릭 기준정보 dim 4·시드 4·GRANT 사본
+    "collectors/token-metrics/ddl/company/raw_token_metrics.sql",
+    "collectors/token-metrics/ddl/company/dim_token_metrics_service.sql",
+    "collectors/token-metrics/ddl/company/accounts.sql",
+    "mart/token-metrics/ddl/company/mart_metrics_tables.sql",
+    "mart/token-metrics/ddl/company/accounts.sql",
+    "assets/model-catalog/ddl/company/dim_token_model_alias.sql",
+    "assets/model-catalog/ddl/company/dim_token_gpu_tco.sql",
+    "assets/model-catalog/ddl/company/dim_token_gpu_allocation.sql",
+    "assets/model-catalog/ddl/company/dim_token_vendor_price.sql",
+    "assets/model-catalog/ddl/company/seed_dim_token_model_alias.sql",
+    "assets/model-catalog/ddl/company/seed_dim_token_gpu_tco.sql",
+    "assets/model-catalog/ddl/company/seed_dim_token_gpu_allocation.sql",
+    "assets/model-catalog/ddl/company/seed_dim_token_vendor_price.sql",
+    "assets/model-catalog/ddl/company/accounts_metrics.sql",
 ]
 
 HEADER = (
