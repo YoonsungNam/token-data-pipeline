@@ -1,0 +1,81 @@
+-- =============================================================
+-- gpu_data.dim_token_model_alias 시드 (설계 2026-08-31 §4.2 — dim_holiday 3요소 패턴)
+-- (a) 출처·기준일: 플레이스홀더만 — unknown→unknown identity 행(2026-01-01). 실제 매핑은
+--     메타데이터 시트 '모델' CSV → assets/model-catalog/sheet_to_dim_token_model_alias_insert.py
+--     생성 SQL(gitignore: dim_token_model_alias_insert*.sql)을 admin이 적용.
+-- (b) NOT IN 멱등 가드 — 재실행 안전.
+-- (c) 말미 검증 SELECT — 결과가 비어야 정상.
+-- 실행 주체: admin 수동. mart는 SELECT만.
+-- 재매핑 절차: 기존 행 수정 금지 — 새 effective_from 행 append 후 해당 기간 mart-metrics rerun.
+-- 검증 6종(설계 §4.2): dup_key, alias_maps_to_two_canonicals, alias_loop, empty_canonical, missing_identity_row,
+--   service_not_in_registry — 마지막은 gpu_data.dim_token_metrics_service_dist 대조. 레지스트리 테이블은
+--   collectors/token-metrics/ddl/company/dim_token_metrics_service.sql(README 적용 순서 2단계)이 만들고 이 시드는
+--   4단계에 적용되므로 항상 먼저 존재한다.
+-- =============================================================
+
+INSERT INTO gpu_data.dim_token_model_alias_dist
+    (alias, effective_from, canonical, defining_service, source, note)
+SELECT *
+FROM (
+    -- 계약 표준값 unknown: identity — 정규화 불가 모델이 canon()에서 unknown으로 유지되게
+    SELECT 'unknown' AS alias, toDate('2026-01-01') AS effective_from, 'unknown' AS canonical,
+           '' AS defining_service, 'seed' AS source, '계약 표준 값 — identity (정규화 불가 모델)' AS note
+)
+WHERE (alias, effective_from) NOT IN (
+    SELECT alias, effective_from FROM gpu_data.dim_token_model_alias_dist
+)
+-- 동기 분산 삽입 — 같은 파일의 멱등 가드·말미 검증이 미플러시 행을 놓치지 않게
+SETTINGS insert_distributed_sync = 1;
+
+-- 검증: 결과가 비어야 정상 ------------------------------------------------
+-- 1) (alias, effective_from) 키 중복 없음
+SELECT 'dup_key' AS check_name, alias AS key, effective_from, count() AS cnt
+FROM gpu_data.dim_token_model_alias_dist
+GROUP BY alias, effective_from
+HAVING count() > 1
+
+UNION ALL
+
+-- 2) 같은 (alias, effective_from)이 서로 다른 canonical로 — 모순 매핑
+SELECT 'alias_maps_to_two_canonicals', alias, effective_from, uniqExact(canonical)
+FROM gpu_data.dim_token_model_alias_dist
+GROUP BY alias, effective_from
+HAVING uniqExact(canonical) > 1
+
+UNION ALL
+
+-- 3) alias_loop: 비-identity 행의 canonical이 다시 다른 비-identity 행의 alias — 체인·순환 금지(1단계 매핑만)
+SELECT 'alias_loop', alias, effective_from, toUInt64(1)
+FROM gpu_data.dim_token_model_alias_dist
+WHERE alias != canonical
+  AND canonical GLOBAL IN (
+      SELECT alias FROM gpu_data.dim_token_model_alias_dist WHERE alias != canonical
+  )
+
+UNION ALL
+
+-- 4) empty_canonical: canonical 빈 문자열 금지
+SELECT 'empty_canonical', alias, effective_from, toUInt64(1)
+FROM gpu_data.dim_token_model_alias_dist
+WHERE canonical = ''
+
+UNION ALL
+
+-- 5) missing_identity_row: 모든 canonical은 identity 행(alias = canonical)을 가져야 함
+SELECT 'missing_identity_row', canonical, min(effective_from), count()
+FROM gpu_data.dim_token_model_alias_dist
+WHERE canonical != ''
+  AND canonical GLOBAL NOT IN (
+      SELECT alias FROM gpu_data.dim_token_model_alias_dist WHERE alias = canonical
+  )
+GROUP BY canonical
+
+UNION ALL
+
+-- 6) service_not_in_registry: alias 행의 defining_service는 메트릭 레지스트리 서비스와 바이트 동일해야 함
+SELECT 'service_not_in_registry', alias, effective_from, toUInt64(1)
+FROM gpu_data.dim_token_model_alias_dist
+WHERE defining_service != ''
+  AND defining_service GLOBAL NOT IN (
+      SELECT service FROM gpu_data.dim_token_metrics_service_dist
+  );
