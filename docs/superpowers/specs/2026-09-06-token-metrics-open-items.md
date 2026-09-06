@@ -2,7 +2,8 @@
 
 - 원천: [설계 2026-08-31 §9 미결사항](2026-08-31-token-metrics-ingest-design.md#9-미결사항-open-questions)(M1~M22, M7·M13 결번). 이 문서는 §9를 **대체하지 않고** 각 항목에 재기준 날짜·담당(역할)·기본값·차단 관계·요청/회신 형식·미회신 시 조치·상태를 붙인 **실행용 장부**다.
 - 일정 정본: [Plan 6a §일정 재기준 (2026-09-06 기준)](../plans/2026-09-04-token-metrics-schema.md#일정-재기준-2026-09-06-기준). 아래 날짜는 전부 재기준 날짜(§9 표의 8/31 원안 날짜가 아님).
-- 갱신 규칙: 해소되면 **상태** 칸만 `resolved(날짜 — 근거)`로 바꾸고 행은 지우지 않는다. 새 항목은 M24부터(M23은 아래에서 사용). 담당은 역할명만 적는다(이름·이메일·사내 주소 금지 — 공개 레포).
+- 전제 정정(2026-09-06): 토큰 메트릭 API(`/v1/metrics`)는 **서비스 담당자가 구현·제공**하고, 추론엔진 `/metrics` 스크랩은 **교차검증 전용(P2)**이다 — 설계 §2 데이터 종류 #4·#14, §7.4 P2와 동일한 전제라 6a/6b/6c 코드·DDL 변경은 없다. 새 정보는 **엔진 `/metrics`를 노출하는 서비스가 소수**라는 점 → M24(신설)·M10(범위 재정의)·D10(WARN 면제)에 반영.
+- 갱신 규칙: 해소되면 **상태** 칸만 `resolved(날짜 — 근거)`로 바꾸고 행은 지우지 않는다. 새 항목은 M25부터(M23·M24는 아래에서 사용). 담당은 역할명만 적는다(이름·이메일·사내 주소 금지 — 공개 레포).
 - 상태 범례: `open` 회신 대기 · `default` 기본값으로 진행 중(회신 오면 정정) · `resolved` 해소 · `deferred` 이번 범위 밖(P1/P2 이월).
 
 ## 0. HARD 게이트와 미충족 시 결과
@@ -23,6 +24,7 @@
 | M1 | GPU 기종 TCO(원/GPU·h)·basis·이력 시작일 | 재무/인프라 | 9/8 EOD | NULL → 비용 `n/a`(0원 위장 금지) | 9/14 보고의 비용 값 | open |
 | M14 | 서비스별 `apiSince`·이력 제공 여부 | 서비스 담당자 | 9/8 EOD | `apiSince=2026-09-09`, `coverageSince=2026-08-26`, API backfill 없음 | 9/10 backfill 범위 | default |
 | M14-수기 | manual-v0 수기 수치 8/26~9/8 (템플릿 3파일) | 서비스 담당자 | **9/9 12:00** | 없음 — HARD ②(해당 서비스 구간 `metrics_missing`) | ② | open |
+| M24 | 서비스별 블록 제공 범위 — `expectGpu`/`expectServing`(레지스트리 키) + 추론엔진 `/metrics` 노출 여부(예/아니오) | 서비스 담당자 | 9/8 EOD | 둘 다 true, 엔진 `/metrics` 미노출 | 없음(오답이면 `*_block_empty_unexpected`·`serving_missing_for_gpu_model` WARN 소음만, 데이터 손실 없음) | open |
 | M23 | 메타데이터 시트 `모델` 탭 CSV(canonical·aliases·defining_service) — 신규 ID(§9에 없음; Plan 6a 체크리스트 L54가 이를 "(M18)"로 오라벨 — 6b 착수 시 같이 정정) | 시트 소유자 | 9/8 EOD | identity-only alias(플레이스홀더 시드) — 모델명이 원문 그대로 표시 | alias 실값 | default |
 | M3 | GPU 할당표(serviceGroup × gpu_type × 장수)·출처·허용 오차 | GPU 대시보드 소유자 | 9/8 EOD (stretch) | 수기 시드 없음 → M2 패널 제외, 오차 ±1원 | 9/14 M2 패널 | default |
 | Harbor | 이미지 2종 반입 슬롯(`token-metrics-collector`, `token-mart-metrics`, sha7) | 사내 admin | 9/9 | 없음 — HARD ② | ② | open |
@@ -66,6 +68,11 @@ H100,2026-08-26,<원/GPU·h>,tco,<출처·기준월>
 - 적재: 9/9 저녁 `manual_load.py`(6b) → `rerun.py --from 2026-08-26 --to 2026-09-08 --chunk-days 7`(6c, ≥10:50 창). 이력 가능 서비스는 9/10 ≥10:50 `collectors/token-metrics/tools/rerun.py --context <ctx> --from <apiSince> --to 2026-09-09 --chunk-days 7 --chain-mart --replace`(`--context/--from/--to` 필수 쌍, 없으면 exit 2; manual 앵커가 있으므로 `--replace` 필수 — 없으면 `SKIPPED reason=already_loaded`).
 - 미회신 시: 해당 서비스는 8/26~9/8 `metrics_missing`으로 보고. 9/9 12:00 이후 도착분은 9/10 저녁 적재.
 
+**M24 블록 제공 범위 / 엔진 `/metrics`** — 요청 문안(M14와 같은 메일, 서비스당 3문항): "① 모델별 GPU Hour(`gpu[]`)를 제공할 수 있는가(예/아니오) ② TTFT/ITL/E2E 백분위·outputTps(`serving[]`)를 **자체 산출**할 수 있는가(예/아니오 — 추론엔진 `/metrics` 없이 게이트웨이 로그 등으로 산출해도 '예') ③ 추론엔진 `/metrics`(Prometheus)를 노출하는가(예/아니오 — **요구사항 아님**, 교차검증 P2 표본 선정용)".
+- 안내 문구: 엔진 `/metrics` 노출은 **필수가 아니다**. `/v1/metrics` 최상위 `engine`은 자기신고 문자열이고 `engine: null`이 허용된다(6b `parse_engine`: None = 정상 부재 → `''`, WARN 없음; 형태 불량만 `engine_malformed` WARN). 수기 템플릿 `..._engine.csv`도 선택. 9/9까지의 필수 산출물은 **`/v1/metrics`의 `gpu[]`·`serving[]`**(또는 M14-수기 템플릿)뿐.
+- 반영: ①②는 `endpoints-metrics.company.yaml`(gitignore) 각 서비스의 `expectGpu`/`expectServing`(설계 §4.3 yaml 예시 227~228행) — 6b Task 2 로더가 `dim_token_metrics_service.expect_gpu/expect_serving`으로 동기화(정기 실행에서 집합이 다를 때만 diff 동기화 — Q2). '아니오'인 블록은 `[]`로 응답하는 것이 정상. ③은 시트 `서비스` 탭에 예/아니오만 기록(URL은 레포 밖 — §7.2).
+- 미회신 시: 둘 다 true로 등록 → 빈 블록이면 `gpu_block_empty_unexpected`/`serving_block_empty_unexpected`(6c T7 stretch) WARN. 회신 도착 시 yaml만 고치면 다음 정기 실행부터 반영(재수집 불요; 과거 날짜 WARN 행은 `rerun.py` 재산출 시 사라짐).
+
 **M23 시트 모델 탭** — 회신 형식 = `sheet_to_dim_token_model_alias_insert.py` 헤더 `canonical,aliases,defining_service,effective_from,note`. **aliases는 `,`(쉼표) 구분** — 생성기가 `split(",")`으로 자르므로 `;`로 받으면 `a;b` 전체가 alias 1개로 조용히 적재된다(exit 0, 검증 6종 어느 것도 못 잡음). 엑셀에서 셀 안에 쉼표를 그대로 두고 CSV UTF-8로 저장하면 필드가 자동으로 큰따옴표로 감싸진다. `defining_service`는 `endpoints-metrics.company.yaml`의 `service:`와 바이트 동일. 예시 행:
 ```text
 canonical,aliases,defining_service,effective_from,note
@@ -95,7 +102,7 @@ mock-model-a,"Mock-Model-A,mock_model_a",Mock Service A,2026-08-26,예시
 | ID | 질문 | 처리 |
 |---|---|---|
 | M5 | 알림 채널·수신자 | 온보딩 안내 시 결정. 그때까지 체크 테이블 패널 + 수동 통보 |
-| M10 | 스크랩 교차검증 임계값 | P2 |
+| M10 | 스크랩 교차검증 임계값 | P2 — **전제 정정(2026-09-06)**: 엔진 `/metrics`는 노출 서비스 **소수 부분집합**에서만 가능하므로 전수 대사가 아니라 **표본 교차검증**으로 범위 재정의(대상 = M24 ③ '예' 서비스). 6a/6b/6c 영향 없음(설계 #14 "별도 모듈" 유지). 설계 §7.4 P2 문구 정정은 9/14 이후 설계 개정판에서 |
 | M11 | `/v1/usage` 보존 하한·RESTATEMENT 메트릭 확장 | 14일 계약 유지, 서비스팀 협의 P1 |
 | M12 | 시트·CSV 실파일 보관 경로, owner 회신 반영 절차 | 레포 밖 + gitignore(§7.2 패턴). 6c 런북 §1에 "보관 경로는 사내 문서" 한 줄 |
 | M16 | 사내 분기본 ↔ GitHub 동기화 | 별도 협의 |
@@ -114,6 +121,7 @@ mock-model-a,"Mock-Model-A,mock_model_a",Mock Service A,2026-08-26,예시
 | D7 | `service_not_in_registry`(alias 시드 검증 6)는 레지스트리 첫 동기화 뒤에만 유의미 | §6 순서 | 순서 2(운영자 install.sh) 이후에만 시드 적용 — D2로 문서화 | resolved(D2) |
 | D8 | 생성기 2종 사용법의 발견성 — `assets/model-catalog/README.md`는 zero-diff 대상이라 생성기·zero-diff 절이 없다(시드 갱신 절차만) | 6c T11 런북 §1 | 런북 §1에서 Plan 6a의 생성기 표('생성기 \| 시그니처 \| 입력 CSV 헤더')로 링크. README에 생성기 절 추가는 P1(zero-diff 해제 후) | open |
 | D9 | 6b 플랜 완료 기준(L10460)·T1 Step 1(L138 `git branch --show-current` 기대값)의 작업 브랜치명이 `feat/token-metrics-design`(원격은 #12 스쿼시로 삭제, 로컬 브랜치는 잔존) | 6b 착수 시 Ruling | 플랜이 L10460에서 이미 허용한 대안 채택: 6b 브랜치 = `feat/token-metrics-collector`(6a 브랜치에서 분기), PR base = 6a 브랜치 → 6a 머지 후 main. L138 기대값도 같은 Ruling에 포함 | open |
+| D10 | 6c T4 `serving_missing_for_gpu_model`(core WARN)이 `expect_serving=0`을 면제하지 않음(설계 §5.3 267행은 `serving_without_gpu_serving_row`만 `expect_gpu=0` 면제). M24 ②가 '아니오'인 서비스가 다수면 매일 서비스×모델 수만큼 WARN 소음 | 6c 착수 시 Ruling | 권장: T4 SQL 최종 WHERE에 레지스트리 `expect_serving=1` 조건 추가(`SUB_REG` GLOBAL JOIN, 동일 패턴의 `serving_without_gpu_serving_row` 참조) + 설계 267행 정정을 §8 이력에 기재. 대안: 유지(WARN이라 게이트·집계 영향 없음) | open |
 
 ## 5. E군 — 레포·프로세스 결정 기록
 
@@ -156,3 +164,4 @@ admin 턴 접기: GRANT는 이름 기반이라 순서 3의 mart `accounts.sql`�
 |---|---|
 | 2026-09-06 | 최초 작성 — §9 20항목 재기준, D1~D9·E1~E6 추가, 9/9 단일 순서·리뷰 예상 질문 7건 |
 | 2026-09-06 | 검증(3렌즈) 정정 — alias 구분자 `;`→`,`(생성기 계약), M15 DESCRIBE `_dist`·프리플라이트 범위 분리, 모델 탭 CSV를 M23으로 분리하고 M18 §9 원문 복원, M6-a 14파일 구성, M14 rerun 필수 인자, TCO 헤더(currency 선택), admin 턴 수, D4 명명·D8·D9 줄 번호, E1 잔존 범위·E3 `--onto` 명령·push 전 게이트, Q2 빈 창 표현, §0 ① 결과 문구 |
+| 2026-09-06 | 전제 정정 — `/v1/metrics`는 서비스 담당자 구현, 엔진 `/metrics` 스크랩은 교차검증 전용이며 노출 서비스가 소수: 헤더 전제 한 줄, M24 신설(블록 제공 범위·엔진 노출 여부 3문항 + 안내 문구), M10 표본 교차검증으로 재정의, D10(`serving_missing_for_gpu_model`의 `expect_serving` 면제) 추가. 코드·DDL 변경 없음 |
