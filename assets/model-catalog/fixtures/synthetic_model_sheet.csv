@@ -1,0 +1,4 @@
+canonical,aliases,defining_service,effective_from,note
+claude-sonnet-5,"claude-sonnet-5-20260101, sonnet-5",Mock Service A,2026-08-26,합성 — 날짜 접미 alias 2종
+claude-opus-4-8,opus-4.8,Mock Service B,2026-08-26,합성 — 점 표기 alias
+claude-haiku-4-5,,,,합성 — canonical-only (identity만; effective_from은 --effective-from)

@@ -1,0 +1,23 @@
+# 합성 — sheet_to_dim_token_model_alias_insert.py --services 테스트 입력 (설계 2026-08-31 §4.3 endpoints-metrics 형식)
+# 실제 사내 파일은 collectors/token-metrics/endpoints-metrics.company.yaml (gitignore)
+services:
+  - serviceGroup: "Mock Group"          # 토큰 레지스트리와 바이트 동일
+    service: "Mock Service A"
+    baseUrl: "http://token-mock-provider-a.monitoring.svc:8000"
+    enabled: true
+    apiSince: "2026-09-09"
+    coverageSince: "2026-08-26"
+    until: null
+    expectGpu: true
+    expectServing: true
+    usageIncludesConsumers: false
+  - serviceGroup: "Mock Group"
+    service: 'Mock Service B'           # 작은따옴표도 허용
+    baseUrl: "http://token-mock-provider-b.monitoring.svc:8000"
+    enabled: true
+    apiSince: "2026-09-09"
+    coverageSince: "2026-08-26"
+    until: null
+    expectGpu: true
+    expectServing: false
+    usageIncludesConsumers: false
