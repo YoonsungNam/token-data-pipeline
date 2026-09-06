@@ -132,7 +132,7 @@ Task 순서: T1 gitignore → T2 DDL 매니페스트 lint 테스트(RED) → T3 
 ### Task 1: `.gitignore` — 메타데이터 시트·Layer C·수기 실데이터 경계 (설계 §7.2)
 
 **Files:**
-- Modify (additive): `.gitignore` (현재 12행 — 말미에 블록 추가, 기존 행 무수정)
+- Modify (additive): `.gitignore` (현재 16행 — 말미에 블록 추가, 기존 행 무수정)
 - Test: `git check-ignore -q` 양성/음성 검증 (Step 2)
 
 **Interfaces:**
@@ -1226,7 +1226,7 @@ ON CLUSTER 'gpu-monitoring'
     observed      Nullable(Float64)                 COMMENT '관측값 (수치가 없는 검사는 NULL)',
     threshold     Nullable(Float64)                 COMMENT '기준값 (없으면 NULL)',
     detail        String DEFAULT ''                 COMMENT '수·이름만 (예: rejected=3, gpu_type=H100)',
-    source_type   LowCardinality(String) DEFAULT '' COMMENT 'metrics-api-v1 | manual-v0 | ''(앵커 없음)',
+    source_type   LowCardinality(String) DEFAULT '' COMMENT 'metrics-api-v1 | manual-v0 | 빈 문자열(앵커 없음)',
     created_by    LowCardinality(String)            COMMENT 'token-metrics-pipeline 고정',
     CONSTRAINT check_created_by CHECK created_by != ''
 )
@@ -3627,12 +3627,12 @@ Expected:
 chunk 크기: 500 (chunk 수: 1)
 검증: 출력 SQL 말미 "-- 검증: 결과가 비어야 정상" 섹션 실행 후 결과가 비어 있어야 정상 (admin 리뷰 절차; service_not_in_registry는 레지스트리 동기화 이후에만 유의미)
 exit=0
-.gitignore:22:dim_token_model_alias_insert*.sql	dim_token_model_alias_insert.sql
+.gitignore:26:dim_token_model_alias_insert*.sql	dim_token_model_alias_insert.sql
 6
 -- 1) dup_key -- 2) alias_maps_to_two_canonicals -- 3) alias_loop -- 4) empty_canonical -- 5) missing_identity_row -- 6) service_not_in_registry 
 0
 ```
-(`22` = T1이 추가한 패턴의 `.gitignore` 줄 번호(원본 12행 + 빈 줄 + 주석 + 8번째 패턴). 마지막 `0` = 생성 SQL은 `git status`에 나타나지 않는다(§7.2 경계). 검증 6종 순서 1)~6), `service_not_in_registry`가 6).)
+(`26` = T1이 추가한 패턴의 `.gitignore` 줄 번호(원본 16행 + 빈 줄 + 주석 + 8번째 패턴). 마지막 `0` = 생성 SQL은 `git status`에 나타나지 않는다(§7.2 경계). 검증 6종 순서 1)~6), `service_not_in_registry`가 6).)
 
 - [ ] **Step 5: 커밋**
 
@@ -4584,9 +4584,9 @@ exit=0
 입력 데이터 행수: 3 → 출력 행수: 3 (NULL 숫자 셀 0)
 생성 완료: dim_token_vendor_price_insert.sql (--table vendor_price)
 입력 데이터 행수: 2 → 출력 행수: 2 (NULL 숫자 셀 2)
-.gitignore:23:dim_token_gpu_*_insert*.sql	dim_token_gpu_tco_insert.sql
-.gitignore:23:dim_token_gpu_*_insert*.sql	dim_token_gpu_allocation_insert.sql
-.gitignore:24:dim_token_vendor_price_insert*.sql	dim_token_vendor_price_insert.sql
+.gitignore:27:dim_token_gpu_*_insert*.sql	dim_token_gpu_tco_insert.sql
+.gitignore:27:dim_token_gpu_*_insert*.sql	dim_token_gpu_allocation_insert.sql
+.gitignore:28:dim_token_vendor_price_insert*.sql	dim_token_vendor_price_insert.sql
 dim_token_gpu_tco_insert.sql: INSERT 1 / NULL 1 / -- 1) dup_key -- 2) unknown_row_state -- 3) basis_domain -- 4) currency_krw 
 dim_token_gpu_allocation_insert.sql: INSERT 1 / NULL 0 / -- 1) dup_key -- 2) unknown_row_state -- 3) negative_count 
 dim_token_vendor_price_insert.sql: INSERT 1 / NULL 2 / -- 1) dup_key -- 2) unknown_row_state -- 3) tier_domain 
@@ -4742,11 +4742,11 @@ Claude-Session: https://claude.ai/code/session_01EfFw32XY5K7iztKUnyQa54"
 ### Task 11: 마스터 스펙 v1.14 개정 — `docs/superpowers/specs/2026-07-10-token-data-pipeline-design.md` (설계 §8 개정 목록)
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-07-10-token-data-pipeline-design.md` (허용된 additive 편집 — 설계 §8 표의 12행을 그대로 반영, 기존 문장은 §9 #12·#13·#14의 "Layer C 보류" 3셀과 3행 머리말 버전 문자열만 치환)
+- Modify: `docs/superpowers/specs/2026-07-10-token-data-pipeline-design.md` (허용된 additive 편집 — 설계 §8 표의 11행을 그대로 반영, 기존 문장은 §9 #12·#13·#14의 "Layer C 보류" 3셀과 3행 머리말 버전 문자열만 치환)
 
 **Interfaces:**
 - 개정 방식: **앵커 치환 스크립트 1회 실행**. 모든 앵커는 파일에 정확히 1회 존재해야 하며(`assert count == 1`), 이미 개정된 파일(`v1.14` 문자열 존재)에는 재실행이 거부된다(AssertionError, exit 1). 스크립트는 레포에 남기지 않는다(표준입력 실행) — 산출물은 마스터 스펙 diff 1파일뿐.
-- 설계 §8 표 12행 ↔ 삽입 위치(모든 삽입은 해당 절의 **끝**, 다음 제목 바로 앞 — 기존 문단·표·제목은 이동하지 않음):
+- 설계 §8 표 11행 ↔ 삽입 위치(모든 삽입은 해당 절의 **끝**, 다음 제목 바로 앞 — 기존 문단·표·제목은 이동하지 않음):
 
 | 설계 §8 행 | 마스터 스펙 편집 | 형태 |
 |---|---|---|
@@ -4956,7 +4956,7 @@ v1.14 적용 완료: docs/superpowers/specs/2026-07-10-token-data-pipeline-desig
 ```
 (앵커가 1회가 아니면 `AssertionError: 앵커 N회: '…'`로 exit 1 — 파일은 쓰지 않는다(치환은 메모리, `write_text`는 마지막). 그 경우 Step 1을 다시 확인하고 스펙 원문이 v1.13 상태인지 `git diff --stat -- docs/superpowers/specs/2026-07-10-token-data-pipeline-design.md`로 확인한다.)
 
-- [ ] **Step 3: 개정 결과 검증 (설계 §8 12행 전부 반영 + 제목·앵커 무변경)**
+- [ ] **Step 3: 개정 결과 검증 (설계 §8 11행 전부 반영 + 제목·앵커 무변경)**
 
 ```bash
 cd /home/mini/github/token-data-pipeline
@@ -5008,7 +5008,7 @@ git status --porcelain | grep -v "^ M docs/superpowers/specs/2026-07-10-token-da
 git add docs/superpowers/specs/2026-07-10-token-data-pipeline-design.md
 git commit -m "docs: 마스터 스펙 v1.14 — 메트릭 싱크 확장 개정 (Plan 6a T11)
 
-- 자매 스펙 2026-08-31 §8 개정 목록 12행 반영: §0 v1.14 행, §3 트리(collectors/mart token-metrics), §4.0 물리 표 13행 + --replace 배칭·예산 45/64·--chunk-days·장부, §4.2 P0 대시보드 직접 조회 예외, §4.4 Layer C 확정(실제 테이블명·조인 키 (date, service, canonical)·비용 모델 정의서), §5.2 8슬롯 NOT_READY 번역·소프트 데드라인 산식, §5.6/§7.3 마커 라벨·패널 규칙, §5.9 2′·3′·6조 예외·9조 데드라인, §7.2 배포 원칙(zero-diff·독립 배포·release-images 분리), §8.3 rerun 체인 표, §9 #12·#13·#14 확정 + #21~#27
+- 자매 스펙 2026-08-31 §8 개정 목록 11행 반영: §0 v1.14 행, §3 트리(collectors/mart token-metrics), §4.0 물리 표 13행 + --replace 배칭·예산 45/64·--chunk-days·장부, §4.2 P0 대시보드 직접 조회 예외, §4.4 Layer C 확정(실제 테이블명·조인 키 (date, service, canonical)·비용 모델 정의서), §5.2 8슬롯 NOT_READY 번역·소프트 데드라인 산식, §5.6/§7.3 마커 라벨·패널 규칙, §5.9 2′·3′·6조 예외·9조 데드라인, §7.2 배포 원칙(zero-diff·독립 배포·release-images 분리), §8.3 rerun 체인 표, §9 #12·#13·#14 확정 + #21~#27
 - 전부 additive(제목 추가 0, 기존 문단 이동 0) — 삭제 4줄은 버전 문자열·§9 보류 셀 3개 치환분
 - 공개 레포 규칙: 사내 주소·코드명·이메일 0 (<harbor>·<sha7> 플레이스홀더)
 
@@ -5037,7 +5037,7 @@ DDL: `collectors/token-metrics/ddl/company/raw_token_metrics.sql`(4테이블 × 
 
 ### B. 메트릭 레지스트리 (gpu_data — 6b가 원자 교체, 6c가 읽음)
 
-DDL: `collectors/token-metrics/ddl/company/dim_token_metrics_service.sql`. 시드 없음(6b `install.sh company`가 `endpoints-metrics.company.yaml`에서 적재 — 파일은 gitignore 21행).
+DDL: `collectors/token-metrics/ddl/company/dim_token_metrics_service.sql`. 시드 없음(6b `install.sh company`가 `endpoints-metrics.company.yaml`에서 적재 — 파일은 gitignore 25행).
 
 | 테이블 | 컬럼(타입) | ORDER BY / 샤딩키 |
 |---|---|---|
@@ -5082,7 +5082,7 @@ DEFAULT(`defining_service ''`, `source 'metadata-sheet'`, `currency 'KRW'`, `bas
 | `assets/model-catalog/sheet_to_dim_token_model_alias_insert.py` | `python3 sheet_to_dim_token_model_alias_insert.py --csv <모델탭.csv> --services <endpoints*.yaml> [--services …] [--effective-from YYYY-MM-DD] [--out dim_token_model_alias_insert.sql] [--chunk-size 500] [--target-db gpu_data\|token_verify_dim]` | `canonical,aliases,defining_service,effective_from,note`(`aliases`는 쉼표 구분, 빈 값 = identity 행만) | canonical마다 identity 행(alias=canonical, defining_service='') + alias 행; 검증 6종 `dup_key, alias_maps_to_two_canonicals, alias_loop, empty_canonical, missing_identity_row, service_not_in_registry`(마지막은 `gpu_data.dim_token_metrics_service_dist` 대조); exit 0/1(SheetError)/2(argparse) |
 | `assets/model-catalog/csv_to_layer_c_dim_insert.py` | `python3 csv_to_layer_c_dim_insert.py --table gpu_tco\|gpu_allocation\|vendor_price --csv <파일> [--effective-from YYYY-MM-DD] [--out dim_token_<table>_insert.sql] [--chunk-size 500] [--target-db gpu_data\|token_verify_dim]` | gpu_tco `gpu_type,effective_from,tco_krw_per_gpu_hour,basis,note` / gpu_allocation `service_group,gpu_type,effective_from,allocated_gpu_count,source,note` / vendor_price `provider,model,tier,effective_from,krw_per_mtok_input,krw_per_mtok_cached,krw_per_mtok_cache_creation,krw_per_mtok_output,note`(선택 컬럼 `currency`는 ''/'KRW'만) | 파일 내 검증 `empty_key, unknown_reserved, bad_number, negative_value, currency_krw, basis_domain, tier_domain, effective_from_is_placeholder_date, dup_key`; SQL 검증 = 시드와 동일 항목(gpu_tco `dup_key, unknown_row_state, basis_domain, currency_krw` / gpu_allocation `dup_key, unknown_row_state, negative_count` / vendor_price `dup_key, unknown_row_state, tier_domain`); exit 0/1(LayerCError)/2 |
 
-공통 규칙: `effective_from` 빈 값 → `--effective-from`(둘 다 없으면 오류), `2026-01-01`(시드 플레이스홀더 키) 금지, 키 값 `unknown` 금지, 자동 교정 없음(strip만), 출력은 `NOT IN` 가드 + `SETTINGS insert_distributed_sync = 1;` + 검증 앵커, stdout/stderr에 데이터 원문 미출력(행 번호·필드명·건수만), 결정적 출력(타임스탬프 없음). 기본 `--out` 파일명은 전부 gitignore 22~24행에 걸린다. 테스트: `cd assets/model-catalog && python3 -m pytest -q` → 128 passed(T2 매니페스트 45 + T8 alias 35 + T9 Layer C 48).
+공통 규칙: `effective_from` 빈 값 → `--effective-from`(둘 다 없으면 오류), `2026-01-01`(시드 플레이스홀더 키) 금지, 키 값 `unknown` 금지, 자동 교정 없음(strip만), 출력은 `NOT IN` 가드 + `SETTINGS insert_distributed_sync = 1;` + 검증 앵커, stdout/stderr에 데이터 원문 미출력(행 번호·필드명·건수만), 결정적 출력(타임스탬프 없음). 기본 `--out` 파일명은 전부 gitignore 26~28행에 걸린다. 테스트: `cd assets/model-catalog && python3 -m pytest -q` → 134 passed(T2 매니페스트 45 + T8 alias 35+3 + T9 Layer C 48+3 — 최종 리뷰 fix 커밋의 인코딩·--out 테스트 6).
 
 ### F. 수기(manual-v0) 템플릿 (6b `manual_load.py`·`--manual-*` 파서 계약)
 
@@ -5094,9 +5094,9 @@ DEFAULT(`defining_service ''`, `source 'metadata-sheet'`, `currency 'KRW'`, `bas
 | `token_metrics_manual_v0_serving.csv` | `date,service,model,metric,name,unit,p50,p90,p95,p99` | `metric`은 **API 키** `ttftMs\|itlMs\|outputTps\|e2eMs\|custom`(fact `metric` 변환은 normalize); `ttftMs/itlMs/e2eMs`는 p50·p90·p95·p99 전부 필수, `outputTps`는 p50만, `custom`은 `name`(≤64)·`unit`(≤32) 필수 + p-키 ≥1 |
 | `token_metrics_manual_v0_engine.csv` | `service,engine_type,engine_version` | 선택 파일(`--manual-engine`); `engine_type ≤64`, `engine_version ≤64`(빈 값 허용) → summary `engine_type/engine_version` |
 
-실제 제출 파일은 `*manual_metrics*.csv`로 저장(gitignore 20행) — 템플릿 파일명은 패턴 밖이라 커밋된다. 수기 적재의 `source_type='manual-v0'`, `generated_at`은 `--generated-at`(없으면 적재 시각).
+실제 제출 파일은 `*manual_metrics*.csv`로 저장(gitignore 24행) — 템플릿 파일명은 패턴 밖이라 커밋된다. 수기 적재의 `source_type='manual-v0'`, `generated_at`은 `--generated-at`(없으면 적재 시각).
 
-### G. `.gitignore` 패턴 (T1 — 14~26행)
+### G. `.gitignore` 패턴 (T1 — 18~30행)
 
 ```
 # 설계 2026-08-31 §7.2 (Plan 6a): 메타데이터 시트·Layer C 실값·수기 CSV·생성 SQL·사내 endpoints 반입 금지
@@ -5113,7 +5113,7 @@ dim_token_vendor_price_insert*.sql
 alert_routing*.json
 assets/model-catalog/data/
 ```
-커밋되는 합성 파일은 패턴을 피한 이름을 쓴다: `synthetic_model_sheet.csv`, `synthetic_layer_c_{tco,allocation,price}.csv`, `synthetic_endpoints_metrics.yaml`, `token_metrics_manual_v0_*.csv`. 6b의 사내 endpoints는 `collectors/token-metrics/endpoints-metrics.company.yaml`(21행), 6c의 알림 라우팅 실파일은 `alert_routing*.json`(25행) 이름을 쓴다.
+커밋되는 합성 파일은 패턴을 피한 이름을 쓴다: `synthetic_model_sheet.csv`, `synthetic_layer_c_{tco,allocation,price}.csv`, `synthetic_endpoints_metrics.yaml`, `token_metrics_manual_v0_*.csv`. 6b의 사내 endpoints는 `collectors/token-metrics/endpoints-metrics.company.yaml`(25행), 6c의 알림 라우팅 실파일은 `alert_routing*.json`(29행) 이름을 쓴다.
 
 ### H. 공유 도구 등록 상태 (T7)
 
@@ -5128,13 +5128,13 @@ assets/model-catalog/data/
 - [ ] `git diff --stat main -- collectors/token-usage mart/token-usage assets/user-org tools/verify/invariants.sql docs/operations docs/monitoring/grafana_dashboard_token_usage.json .github/workflows/release-images.yml .github/workflows/test-collector.yml .github/workflows/test-mart.yml` 출력 없음(zero-diff). `assets/model-catalog/`의 기존 파일(`ddl/company/{dim_token_model,seed_dim_token_model,accounts}.sql`, `ddl/stage/*` 기존 4, `ddl/company-verify/*` 기존 3, `README.md`, `ddl/README.md`)도 `git diff --stat main --` 출력 없음.
 - [ ] 신규 DDL 매니페스트 14파일 존재: `collectors/token-metrics/ddl/company/{raw_token_metrics,dim_token_metrics_service,accounts}.sql`, `mart/token-metrics/ddl/company/{mart_metrics_tables,accounts}.sql`, `assets/model-catalog/ddl/company/{dim_token_model_alias,dim_token_gpu_tco,dim_token_gpu_allocation,dim_token_vendor_price,seed_dim_token_model_alias,seed_dim_token_gpu_tco,seed_dim_token_gpu_allocation,seed_dim_token_vendor_price,accounts_metrics}.sql` + README 2(`collectors/token-metrics/ddl/README.md`, `mart/token-metrics/ddl/README.md`).
 - [ ] `python3 tools/gen_stage_ddl.py --check`·`python3 tools/gen_verify_ddl.py --check` 모두 exit 0(25파일), 미러 28파일이 생성기 출력과 바이트 동일.
-- [ ] `cd assets/model-catalog && python3 -m pytest -q` → `128 passed`(매니페스트 lint 45 + alias 생성기 35 + Layer C 생성기 48). `python3 -m py_compile` 대상 2파일 OK. CI `test-assets.yml`의 `unit-model-catalog`·`verify-ddl` green.
+- [ ] `cd assets/model-catalog && python3 -m pytest -q` → `134 passed`(매니페스트 lint 45 + alias 생성기 38 + Layer C 생성기 51 — 최종 리뷰 fix 커밋 +6). `python3 -m py_compile` 대상 2파일 OK. CI `test-assets.yml`의 `unit-model-catalog`·`verify-ddl` green.
 - [ ] 시드 4파일·stage fixture 4파일 모두 3요소(헤더·`NOT IN` 가드·`-- 검증: 결과가 비어야 정상` 앵커) + 4열 검증 계약; 사내 시드에 `unknown`·NULL 외 수치 0건(`grep -c "toNullable(" assets/model-catalog/ddl/company/seed_dim_token_model_alias.sql assets/model-catalog/ddl/company/seed_dim_token_gpu_tco.sql assets/model-catalog/ddl/company/seed_dim_token_gpu_allocation.sql assets/model-catalog/ddl/company/seed_dim_token_vendor_price.sql` 각 0 — 기존 `seed_dim_token_model.sql`의 4건은 대상 밖).
-- [ ] `.gitignore` 14~26행 존재, `git check-ignore -q` 양성 목록(실파일명 예시 13줄) exit 0·음성 목록(합성 fixture·템플릿) exit 1. `git status --porcelain --untracked-files=all | grep -vE '^(A|M)  '` 출력 없음(추적 외 파일 0).
+- [ ] `.gitignore` 18~30행 존재, `git check-ignore -q` 양성 목록(실파일명 예시 13줄) exit 0·음성 목록(합성 fixture·템플릿) exit 1. `git status --porcelain --untracked-files=all | grep -vE '^(A|M)  '` 출력 없음(추적 외 파일 0).
 - [ ] 템플릿 3파일 헤더가 설계 §5.5와 바이트 동일, 예시 행은 합성값(Mock Service A/B)만.
 - [ ] 마스터 스펙 v1.14: Step 3 검증 출력과 동일(`68 4`, v1.14 24회, `Layer C 보류` 0, 제목 수 36, #21~#27).
 - [ ] 공개 레포 규칙: `git grep -n -i -E "harbor\.[a-z]+\.(co\.kr|com)|@[a-z]+\.(co\.kr|com)" | grep -v "noreply@anthropic.com"` 출력 0줄(커밋 트레일러의 `noreply@anthropic.com`만 제외)(`harbor.example.internal`·`chi-<cluster>.<ns>.svc` 플레이스홀더만); 사내 프로젝트 코드명 0건.
-- [ ] draft PR 생성(제목 `feat: 메트릭 싱크 스키마·기준정보 (Plan 6a) — DDL 리뷰 요청`), 본문에 (a) 매니페스트 14파일 목록, (b) T5·T6 중간 커밋의 `verify-ddl` red 허용 사유(T7에서 green), (c) `## 6b/6c가 소비하는 인터페이스` 링크, (d) fact/gpu_data/mart 소유자 리뷰 요청·사인오프 목표 9/7 오전.
+- [ ] draft PR 생성(제목 `feat: 메트릭 싱크 스키마·기준정보 (Plan 6a) — DDL 리뷰 요청`), 본문에 (a) 매니페스트 14파일 목록, (b) T5·T6 중간 커밋의 `verify-ddl` red 허용 사유(T7에서 green), (c) `## 6b/6c가 소비하는 인터페이스` 링크, (d) fact/gpu_data/mart 소유자 리뷰 요청·사인오프 목표 9/8 오전.
 
 ## Self-Review 노트
 
@@ -5161,7 +5161,7 @@ assets/model-catalog/data/
 | §4.0 매니페스트 14파일·뮤테이션 장부·컨벤션 | T2(lint) · T3(fact 4 + 레지스트리 + accounts + README 장부) · T4(mart 4 + accounts + README) · T5(dim 4 + accounts_metrics) · T6(시드 4) |
 | §4.1 fact 컬럼·ORDER BY·앵커 | T3 |
 | §4.2 dim 컬럼·effective_from 규약·KRW 고정·시드 플레이스홀더 | T5 · T6 · T8 · T9 |
-| §4.3 레지스트리 `dim_token_metrics_service`·endpoints-metrics 형식 | T3 · T8 fixture(`synthetic_endpoints_metrics.yaml`) · T1(gitignore 21행) |
+| §4.3 레지스트리 `dim_token_metrics_service`·endpoints-metrics 형식 | T3 · T8 fixture(`synthetic_endpoints_metrics.yaml`) · T1(gitignore 25행) |
 | §5.2 (마커 라벨·슬롯) | T11(v1.14 §5.6) — 코드는 6b |
 | §5.5 수기 템플릿 헤더 | T10 |
 | §5.6 (rerun·manual 도구) | T11(v1.14 §8.3) — 코드는 6b |
@@ -5170,8 +5170,8 @@ assets/model-catalog/data/
 | §7.1 미러 생성기 등록 | T7 |
 | §7.2 데이터 경계(gitignore)·시트→alias 생성기·Layer C 생성기 | T1 · T8 · T9 |
 | §7.5 zero-diff·additive 목록 | Global Constraints · 각 커밋 Step의 `git diff --stat main` 검사 · 완료 기준 |
-| §8 마스터 스펙 v1.14 12행 | T11 |
-| §10 일정 | `## 일정 재기준 (2026-09-04 기준)` |
+| §8 마스터 스펙 v1.14 11행 | T11 |
+| §10 일정 | `## 일정 재기준 (2026-09-06 기준)` |
 
 ### 리뷰 반영
 
