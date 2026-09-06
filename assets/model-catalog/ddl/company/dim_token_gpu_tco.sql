@@ -1,0 +1,39 @@
+-- =============================================================
+-- Company/Stage ClickHouse DDL — gpu_data.dim_token_gpu_tco (설계 2026-08-31 §4.2, P0 — Layer C)
+-- Target cluster: gpu-monitoring
+-- Writer: admin 수동 (seed_dim_token_gpu_tco.sql 플레이스홀더 + csv_to_layer_c_dim_insert.py --table gpu_tco 생성 SQL) /
+--         Reader: mart (공유 계정 — mart-metrics M1 model_cost_krw = Σ gpu_hours × tco_krw_per_gpu_hour)
+-- 주의: gpu_data는 기존(동료 소유) DB — DB 생성문 없음.
+-- 이력 규약 (§4.2): (gpu_type, effective_from) — 단가 변경은 새 effective_from 행 append. 통화 KRW 고정.
+--   TCO는 Nullable — 플레이스홀더·미등록 기종은 NULL → 비용 NULL 전파(부분 합 금지, 0원 위장 금지).
+-- gpu_type은 fact.raw_token_metrics_gpu_1d.gpu_type과 정확 일치(대소문자 포함) — TCO표 키.
+-- =============================================================
+
+CREATE TABLE IF NOT EXISTS gpu_data.dim_token_gpu_tco_local
+ON CLUSTER 'gpu-monitoring'
+(
+    gpu_type             String                            COMMENT 'TCO표 키 — fact gpu_type과 정확 일치 (≤64)',
+    effective_from       Date                              COMMENT '단가 적용 시작일 (이력 키)',
+    tco_krw_per_gpu_hour Nullable(Float64)                 COMMENT 'KRW per GPU-hour — 플레이스홀더는 NULL',
+    currency             LowCardinality(String) DEFAULT 'KRW' COMMENT 'KRW 고정',
+    basis                LowCardinality(String) DEFAULT '' COMMENT 'depreciation | lease | power-inclusive | tco | 빈 문자열(플레이스홀더) — basis_domain 검증',
+    note                 String DEFAULT ''                 COMMENT '출처·기준월 (예: TCO팀 2026-08 확정)'
+)
+ENGINE = ReplicatedMergeTree(
+    '/clickhouse/tables/{shard}/gpu_data/dim_token_gpu_tco_local',
+    '{replica}'
+)
+ORDER BY (gpu_type, effective_from)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS gpu_data.dim_token_gpu_tco_dist
+ON CLUSTER 'gpu-monitoring'
+(
+    gpu_type             String,
+    effective_from       Date,
+    tco_krw_per_gpu_hour Nullable(Float64),
+    currency             LowCardinality(String),
+    basis                LowCardinality(String),
+    note                 String
+)
+ENGINE = Distributed('gpu-monitoring', 'gpu_data', 'dim_token_gpu_tco_local', cityHash64(gpu_type));

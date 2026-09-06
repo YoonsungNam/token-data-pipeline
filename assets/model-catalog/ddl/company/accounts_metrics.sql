@@ -1,0 +1,14 @@
+-- =============================================================
+-- model-catalog 메트릭 기준정보 GRANT 추가분 (설계 2026-08-31 §4.2 GRANT 표 3행)
+-- 실행 주체: admin 수동. 계정은 공유 운영계정 mart — 이 파일은 사용자를 만들지 않는다.
+-- 쓰기 주체: 시드·생성 SQL은 admin 수동 (mart는 SELECT만).
+-- 기존 accounts.sql(dim_token_model SELECT) 무수정 — 파일명이 accounts.sql이 아니므로
+--   gen_verify_ddl.py의 격리 DB/계정 프리펜드는 붙지 않는다(격리 검증에서는 collectors accounts 미러가 먼저 실행돼 DB·계정이 존재).
+-- mart/token-metrics/ddl/company/accounts.sql의 dim 4종 SELECT와 중복 — 어느 쪽을 먼저 적용해도 no-op.
+-- =============================================================
+
+-- mart(공유 계정) — mart-metrics M1~M4 조인 읽기 (_dist만 — _local 우회 차단)
+GRANT ON CLUSTER 'gpu-monitoring' SELECT ON gpu_data.dim_token_model_alias_dist    TO mart;
+GRANT ON CLUSTER 'gpu-monitoring' SELECT ON gpu_data.dim_token_gpu_tco_dist        TO mart;
+GRANT ON CLUSTER 'gpu-monitoring' SELECT ON gpu_data.dim_token_gpu_allocation_dist TO mart;
+GRANT ON CLUSTER 'gpu-monitoring' SELECT ON gpu_data.dim_token_vendor_price_dist   TO mart;
