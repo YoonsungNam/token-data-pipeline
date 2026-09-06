@@ -1,0 +1,4 @@
+gpu_type,effective_from,tco_krw_per_gpu_hour,basis,note
+H100,2026-08-26,4300,tco,합성 — 실제 TCO 아님 (KRW/GPU-h 임의값)
+A100,2026-08-26,2100,tco,합성
+H200,,,,합성 — 단가 미확정(NULL → 비용 NULL 전파 경로); effective_from은 --effective-from

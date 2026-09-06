@@ -1,0 +1,4 @@
+service_group,gpu_type,effective_from,allocated_gpu_count,source,note
+Mock Group,H100,2026-08-26,8,quota-sheet,합성 — 장수(count)
+Mock Group,A100,2026-08-26,4,,합성 — source 빈 값 → manual
+Mock Group,H100,2026-09-01,0,quota-sheet,합성 — 철회는 0 행 append
