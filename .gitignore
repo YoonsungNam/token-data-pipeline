@@ -14,3 +14,17 @@ collectors/token-usage/tests/e2e/endpoints.e2e.yaml
 # Claude Code 로컬 전용 산출물 — 레포 반입 금지
 .claude/worktrees/
 .claude/settings.local.json
+
+# 설계 2026-08-31 §7.2 (Plan 6a): 메타데이터 시트·Layer C 실값·수기 CSV·생성 SQL·사내 endpoints 반입 금지
+*metadata*.xlsx
+*metadata*.csv
+*gpu_tco*.csv
+*gpu_allocation*.csv
+*vendor_price*.csv
+*manual_metrics*.csv
+endpoints-metrics.company.yaml
+dim_token_model_alias_insert*.sql
+dim_token_gpu_*_insert*.sql
+dim_token_vendor_price_insert*.sql
+alert_routing*.json
+assets/model-catalog/data/
