@@ -1,0 +1,16 @@
+# token_metrics_manual_v0_serving — 수기(manual-v0) 성능 메트릭 제출 템플릿 (설계 2026-08-31 §5.5 · 스펙 §3 serving 블록). long form: 1행 = 1일 × 1모델 × 1지표
+# '#'로 시작하는 줄은 주석 — 로더가 건너뜀. 첫 비주석 줄이 헤더(변경 금지)
+# date, service = gpu 템플릿과 동일 규칙. model = canonical (≤128) — gpu 템플릿에 category=serving 행이 있는 모델만 (사내 플랫폼 소비 모델·standby/test 전용 모델·그날 요청 0건 모델은 행 의무 없음)
+# metric = ttftMs | itlMs | outputTps | e2eMs | custom (스펙 §3 키 그대로 — 로더가 fact metric ttft_ms / itl_ms / output_tps / e2e_ms / custom 으로 변환)
+# name = metric=custom 일 때만 지표명 (≤64, 예 queueWaitMs) — 표준 지표 행은 빈 값. unit = custom 일 때만 필수 (≤32, 예 ms, requests) — 표준 지표 행은 빈 값 (ms 또는 tokens/s 자동)
+# p50,p90,p95,p99: ttftMs / itlMs / e2eMs 는 4개 모두 필수 (ms, ≥0). outputTps 는 p50 만 (tokens/s) — p90/p95/p99 빈 값. custom 은 4개 중 최소 1개
+# 스트리밍(케이스 A~D): ttftMs·itlMs·outputTps. 비스트리밍(케이스 F): e2eMs 필수 + custom 선택. 사외 AI API 전용(케이스 E)·플랫폼 소비 전용 서비스는 행 없음
+# 모델 단위가 정본 — 그 모델로 처리된 요청만의 분포 (모델 간 표본 혼합 금지). 레플리카가 여러 대면 로그·버킷을 모아 한 번에 percentile (레플리카별 p99 의 평균 ≠ 전체 p99)
+# 표본 단위: TTFT·outputTps = 요청당 1표본, ITL = 토큰 간격당 1표본. p50 ≤ p90 ≤ p95 ≤ p99 (역전 시 pct_non_monotone FAIL)
+# 아래 예시 행은 합성값 — 제출 전 삭제하고 실제 값으로 교체. 실제 파일은 *manual_metrics*.csv 로 저장 (레포 반입 금지 — .gitignore)
+date,service,model,metric,name,unit,p50,p90,p95,p99
+2026-08-26,Mock Service A,claude-sonnet-5,ttftMs,,,280,560,720,1200
+2026-08-26,Mock Service A,claude-sonnet-5,itlMs,,,24,38,47,80
+2026-08-26,Mock Service A,claude-sonnet-5,outputTps,,,41.0,,,
+2026-08-26,Mock Service B,claude-haiku-4-5,e2eMs,,,1400,2600,3300,5200
+2026-08-26,Mock Service B,claude-haiku-4-5,custom,queueWaitMs,ms,120,,,900
