@@ -1,7 +1,7 @@
 # token-data-pipeline — /v1/metrics(GPU Hour·성능 메트릭) 반입 설계 문서
 
-- 작성일: 2026-08-31 · **현재 버전 v0.5.1 (2026-09-04 사용자 승인 — 구현 계획 Plan 6a/6b/6c 단계)** — 개정 이력은 §0
-- 상태: 설계 제안 (브레인스토밍 산출물). 승인 후 writing-plans로 구현 계획(Plan 6a/6b/6c) 작성
+- 작성일: 2026-08-31 · **현재 버전 v0.5.2 (2026-09-06 — 구현 계획 Plan 6a/6b/6c 작성 완료, 실행 단계)** — 개정 이력은 §0
+- 상태: **승인됨(2026-09-04)** → 구현 계획 3종 작성 완료(2026-09-06): [Plan 6a 스키마·시드](../plans/2026-09-04-token-metrics-schema.md) · [Plan 6b 수집기](../plans/2026-09-04-token-metrics-collector.md) · [Plan 6c 마트](../plans/2026-09-04-token-metrics-mart.md). **일정의 정본은 Plan 6a §'일정 재기준 (2026-09-06 기준)'** — 본 문서 §10 표는 8/31 원안 보존
 - 참조: [마스터 설계 v1.13](2026-07-10-token-data-pipeline-design.md), **[비용 모델 정의서 Draft v0.1](../../cost-model-spec.md) — §6.4의 계산 규칙 정본**, [token-metric-api-spec](https://github.com/YoonsungNam/token-metric-api-spec) (`token-metric-api.yaml` v0.1.0 @6a552d2, `docs/METRICS_COLLECTION_SPEC.md`, `docs/internal/DECISIONS.md` #1~#24, `docs/internal/COLLECTOR_DESIGN.md`, `docs/METADATA_SHEET_TEMPLATE.xlsx`), [token-usage-api-spec](https://github.com/YoonsungNam/token-usage-api-spec) v1.1.0 @6c32650, [gpu-data-pipeline 분석](../../gpu-data-pipeline-analysis.md)
 - 관계: 마스터 설계의 **자매 스펙**. 마스터 §4.4(Layer C 확장 슬롯)·§5.9(적재 계약)·§9-12~15(미결)를 이 문서가 구체화한다. 마스터 스펙은 **v1.14**로 §0 개정 이력 1행 + 계약 개정 절(§8 목록)만 반영한다.
 - 산출 근거: 코드 리더 7종 + 데이터 인벤토리 → 독립 설계 3안 → 심사 2인(코드 대조) → 합성(v0.1) → 반박 검증 14건 + 완결성 비평(v0.2) → 사용자 회신 반영(v0.3) → 리뷰 25건 반영(v0.4) → 비용 모델 정의서 정렬(v0.5) → PR 전 정합 검증 23건 반영(v0.5.1).
@@ -16,6 +16,7 @@
 | v0.4 | 2026-08-31 | 리뷰 25건 반영: zero-diff 누락 3건(CA ConfigMap·`registry-pull-secret`·`release-images.yml`·batch_result 패널 → §7.5 명시) ② 뮤테이션 가드·`--chunk-days`·장부 재산정 ③ P0 DDL 매니페스트 표(§4.0) 단일화, view 파일 P1 제외 ④ 시드는 admin 실행, 사내 시드는 플레이스홀더만, stage 합성값은 생성기 밖 fixture ⑤ manual `reported_*`=레지스트리 값, `identity_drift`는 API만 ⑥ `since` → `api_since`/`coverage_since` 분리 ⑦ 슬롯 산식 `startingDeadlineSeconds 540` ⑧ 배부 모집단 = 토큰 레지스트리 전 서비스(소비 전용 포함), provider 판정·T=0·음수 share·다중 제공자 표현 확정, M2 `allocation_capacity_cost_krw` 개명 ⑨ 수기 적재는 k8s Job 경로(`tools/manual_load.py`) P0, 템플릿 3파일 ⑩ mart accounts에 `CREATE TEMPORARY TABLE`·`system.mutations` GRANT, 토큰 측 읽기 DB env 분리, CronJob `timeZone`/`startingDeadlineSeconds`, 읽기 계약 3테이블/13컬럼, P0-core 총비용 패널 fallback |
 | v0.5 | 2026-09-03 | **[비용 모델 정의서 Draft v0.1](../../cost-model-spec.md) 반입·정렬**: ① 모델 비용 C = **(serving+standby)만** × TCO — test·유휴는 **서비스 그룹 귀속**(배분 안 함, 정의서 3.2~3.4) → M1 개정, M2를 그룹 grain `agg_token_gpu_group_1d`로 개편(+`test_cost_krw`·`idle_cost_krw`·I2 항등식) ② 배분 키 = **가중 토큰 W(uncached 1 / cached 0.1 / output 4)**, uncached=input+cacheCreation(정의서 3.5~3.6) — v0.4의 단순 토큰 비율 대체 ③ W=0·C>0 → 호스팅 그룹 전액 + `token_not_reported`(정의서 I8) ④ 토큰 단가 p=C/W는 **파생 표시 전용**(기준월·가동률 병기, 정의서 3.7·D8) ⑤ **사외 API 비용(③)** = 벤더 KRW 단가표 신설 `dim_token_vendor_price`(P0-stretch; 처리등급 tier) — M4에 `external_api` 모드로 통합 ⑥ 할당표를 **serviceGroup 단위**로 재키(정의서 2.3) ⑦ 불변식 I1~I8 매핑 ⑧ 표시 규칙(측정/배분/추정 라벨·요청당 원가) §6.2 반영 ⑨ 미결에 정의서 §10 항목(가중치 TCO 확인·workloadType·처리등급·reasoningTokens·PTU·벤더 대사·D1 합의) 추가 ⑩ §10 일정 재기준 필요 주석(오늘 9/3) |
 | v0.5.1 | 2026-09-03 | **PR 전 정합 정정**(다중 렌즈 검증 23건): ① §4.0 `dim_token_gpu_allocation` 물리 키 `service`→`service_group`(v0.5 ⑥ 잔재) ② 미결 M4 '단순 비율·가중(1:4)' 문구 삭제(가중 W가 정본), M3 `over_prov_ratio`→`utilization`/`over_report`/`identity_gap_krw`, M6 gpu_data 5테이블 ③ §10 '12파일'→14파일·'dim DDL 3·시드 3'→4·4, §9 날짜에 재기준 주석 확장 ④ §1 (b) 사용자 확정 문구에 v0.5 대체 명시 ⑤ 정의서 정밀화: **③ 사외 API = input×p_in + cache_read×p_cache + cache_creation×p_write + output×p_out**(정의서 3.5 `uncached`=input+cacheCreation과 3.9 `uncached×p_in`의 명명 충돌 → cacheCreation 이중 계산 방지, 컬럼 `krw_per_mtok_input`으로 개명, 정의서 피드백 M21) · `provider(m)` = serving/standby 행 보유 서비스만(test 전용은 비호스팅) · `allocated_gpu_hours = allocated_gpu_count × 24` 명시 · 벤더 단가 부재 시 `external_api` 행 NULL + `vendor_price_missing` · W(m)=0 특례의 M4/§6.4 문구 통일 · p 파생식 표기 정정 ⑥ §2 #12 grain에 `provider_service`, §7.2 생성기 `\|vendor_price`, §9 M7·M13 결번 주석 |
+| v0.5.2 | 2026-09-06 | **구현 계획 반입**: Plan 6a(스키마·시드 11 Task)·6b(수집기 12 Task)·6c(마트 11 Task) 작성 + 4렌즈 검증·정정 완료. §10 일정은 Plan 6a §'일정 재기준 (2026-09-06 기준)'으로 이관(HARD 게이트 ① 9/8 오전 DDL 사인오프 ② 9/9 admin 슬롯+Harbor+수기 수치+M15 ③ 9/11 프리즈). 본문 설계 내용 변경 없음 |
 
 ## 1. 배경과 목적
 
@@ -414,7 +415,7 @@ CLI(모듈 내부): `python -m app.main --manual-gpu /manual/gpu.csv --manual-se
 
 ## 10. 구현 순서·일정 (2026-08-31 월 → 09-14 월)
 
-> **재기준 필요(2026-09-03 현재)**: 아래 표는 8/31 승인 가정의 원안이다. 8/31~9/2 칸(플랜 작성·DDL draft PR·사람 요청 발송·M15 확인)의 실제 진행 여부를 확인해 잔여 작업을 오늘(9/3)부터 재배치할 것 — 승인 시 writing-plans 단계에서 확정한다. 코드 총량(≈5~6 e-day)과 게이트 구조는 불변.
+> **재기준 완료(2026-09-06)**: 잔여 일정의 정본은 **[Plan 6a §'일정 재기준 (2026-09-06 기준)'](../plans/2026-09-04-token-metrics-schema.md#일정-재기준-2026-09-06-기준)**이다. 아래 표는 8/31 승인 가정의 원안(보존용). 8/31~9/2 칸(플랜 작성·DDL draft PR·사람 요청 발송·M15 확인)의 실제 진행 여부를 확인해 잔여 작업을 오늘(9/3)부터 재배치할 것 — 승인 시 writing-plans 단계에서 확정한다. 코드 총량(≈5~6 e-day)과 게이트 구조는 불변.
 
 | 일자 | 작업 | 게이트 |
 |---|---|---|
