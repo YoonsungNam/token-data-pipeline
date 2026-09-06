@@ -384,13 +384,19 @@ def main(argv=None) -> int:
 
     csv_path = Path(args.csv)
     try:
-        with csv_path.open(newline="", encoding="utf-8") as f:
+        with csv_path.open(newline="", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             header = reader.fieldnames or []
             raw_rows = list(reader)
     except OSError:
         parser.error(f"--csv 파일을 열 수 없음: {csv_path.name}")
         return 2  # pragma: no cover — parser.error already exits
+    except UnicodeDecodeError:
+        print(
+            f"검증 실패: --csv 파일이 UTF-8이 아님(Excel은 'CSV UTF-8'로 저장): {csv_path.name}",
+            file=sys.stderr,
+        )
+        return 1
 
     missing = [h for h in REQUIRED_HEADERS if h not in header]
     if missing:
@@ -409,7 +415,11 @@ def main(argv=None) -> int:
 
     sql_text = render_sql(rows, args.chunk_size, csv_path.name, args.effective_from, args.target_db)
     out_path = Path(args.out)
-    out_path.write_text(sql_text, encoding="utf-8")
+    try:
+        out_path.write_text(sql_text, encoding="utf-8")
+    except OSError:
+        print(f"검증 실패: --out 파일을 쓸 수 없음: {out_path.name}", file=sys.stderr)
+        return 1
 
     identity_count = sum(1 for r in rows if r.alias == r.canonical)
     num_chunks = (len(rows) + args.chunk_size - 1) // args.chunk_size if rows else 0

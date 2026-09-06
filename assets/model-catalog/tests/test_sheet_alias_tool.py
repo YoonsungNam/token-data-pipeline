@@ -309,3 +309,38 @@ def test_cli_missing_required_header(tmp_path):
     result = _run(csv_path=bad_csv, out_path=tmp_path / "o.sql")
     assert result.returncode == 1
     assert "필수 컬럼 없음" in result.stderr
+
+
+def test_cli_accepts_utf8_bom_csv(tmp_path):
+    bom_csv = tmp_path / "bom.csv"
+    bom_csv.write_bytes(b"\xef\xbb\xbf" + FIXTURE_CSV.read_bytes())
+    out_path = tmp_path / "out.sql"
+    result = _run("--effective-from", EF, csv_path=bom_csv, out_path=out_path)
+    assert result.returncode == 0, result.stderr
+    assert "출력 행수: 6 (identity 3, alias 3)" in result.stdout
+
+
+def test_cli_rejects_non_utf8_csv(tmp_path):
+    marker = "가나다"
+    text = FIXTURE_CSV.read_text(encoding="utf-8")
+    assert marker not in text
+    text = text.replace("—", "-")  # cp949로 인코딩 불가한 em dash 제거
+    text = text.replace("합성 - 날짜 접미 alias 2종", f"합성 - 날짜 접미 alias 2종 {marker}")
+    bad_csv = tmp_path / "bad_cp949.csv"
+    bad_csv.write_bytes(text.encode("cp949"))
+    out_path = tmp_path / "out.sql"
+    result = _run(csv_path=bad_csv, out_path=out_path)
+    assert result.returncode == 1
+    assert "UTF-8이 아님" in result.stderr
+    assert marker not in result.stderr
+    assert marker not in result.stdout
+    assert "claude-sonnet-5" not in result.stderr
+    assert not out_path.exists()
+
+
+def test_cli_unwritable_out_reports_cleanly(tmp_path):
+    out_path = tmp_path / "no_such_dir" / "x.sql"
+    result = _run("--effective-from", EF, out_path=out_path)
+    assert result.returncode == 1
+    assert "--out 파일을 쓸 수 없음" in result.stderr
+    assert "Traceback" not in result.stderr
