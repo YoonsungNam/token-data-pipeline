@@ -45,7 +45,7 @@
 1. admin: `company/accounts.sql`(GRANT) — 테이블 생성 전이어도 GRANT는 이름 기반이라 선적용 가능.
 2. `./install.sh company --context … --registry … --tag <sha7>` → `apply_sql` = `raw_token_metrics.sql`, `dim_token_metrics_service.sql`(IF NOT EXISTS, 재실행 안전).
 3. `mart/token-metrics/ddl/company/accounts.sql`(admin) → `mart/token-metrics` install.sh(6c).
-4. `assets/model-catalog/ddl/company/` dim 4·시드 4·`accounts_metrics.sql`(admin) — mart-metrics 첫 실행 전.
+4. `assets/model-catalog/ddl/company/` dim 4·시드 4·`accounts_metrics.sql`·실값 생성 SQL(admin) — mart-metrics 첫 실행 전. `seed_dim_token_model_alias.sql` 검증 6(`service_not_in_registry`)이 2단계의 `gpu_data.dim_token_metrics_service_dist`를 읽으므로 2보다 먼저 실행하지 않는다(`mart/token-metrics/ddl/README.md`도 이 번호를 따른다).
 
 ## 이 초안에 없는 것
 

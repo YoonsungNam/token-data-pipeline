@@ -36,8 +36,8 @@
 - rerun: 날짜당 ≤4, `MART_METRICS_MAX_MUTATIONS_PER_RUN=64`(4×16), `--chunk-days 7`. 첫 `_run_table` 전 날짜 전체 × 4테이블 `exists` 선조회 → 초과 시 `FAILURE reason=mutation_budget`.
 - 창: 10:50 KST 이후 + 활성 Job 0 확인(토큰 mart 04:00·메트릭 마지막 슬롯과 비중첩).
 
-## 적용 순서
+## 적용 순서 (정본 = `collectors/token-metrics/ddl/README.md` §적용 순서 1~4 — 번호는 그쪽 기준)
 
-1. `collectors/token-metrics/ddl/company/*.sql` + `assets/model-catalog/ddl/company/{dim_token_*.sql,seed_*.sql,accounts_metrics.sql}` 선적용 (읽기 대상).
-2. admin: `company/accounts.sql`.
-3. `mart/token-metrics/install.sh company …`(6c) → `apply_sql` = `mart_metrics_tables.sql`.
+1. (순서 1~2) `collectors/token-metrics/ddl/company/accounts.sql`(admin) → `collectors/token-metrics/install.sh company …`(6b) = fact 4 + 레지스트리 `gpu_data.dim_token_metrics_service`.
+2. (순서 3) admin: `company/accounts.sql` → `mart/token-metrics/install.sh company …`(6c) → `apply_sql` = `mart_metrics_tables.sql`. 프리플라이트가 확인하는 읽기 계약은 기존 토큰 mart 3테이블/13컬럼뿐 — 아래 dim은 요구하지 않는다.
+3. (순서 4) admin: `assets/model-catalog/ddl/company/` dim 4 → 시드 4 → `accounts_metrics.sql` → 실값 생성 SQL — **mart-metrics 첫 실행 전**. `seed_dim_token_model_alias.sql` 검증 6(`service_not_in_registry`)이 레지스트리 테이블을 읽으므로 반드시 1 이후.
