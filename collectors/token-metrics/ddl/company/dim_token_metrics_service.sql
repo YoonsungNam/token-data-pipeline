@@ -1,0 +1,52 @@
+-- =============================================================
+-- Company/Stage ClickHouse DDL — gpu_data.dim_token_metrics_service (설계 2026-08-31 §4.3)
+-- Target cluster: gpu-monitoring
+-- Writer: mart (공유 계정 — collectors/token-metrics 정기 실행에서만 동기화; rerun·manual 모드는 읽기만)
+-- 주의: gpu_data는 기존(동료 소유) DB — DB 생성문 없음. dim_token_* 접두사 규칙 적용.
+-- 기존 gpu_data.dim_token_service(토큰 레지스트리)와 무접촉 — 메트릭 싱크 전용 레지스트리
+--   (마스터 §5.9-6의 문서화된 예외: 토큰 coverage 게이트에 편입되지 않음).
+-- 동기화 (§4.3): endpoints.yaml을 원하는 집합으로 만들고 현재 행과 diff(비교 키 = updated_at 제외 전 컬럼)
+--   → 다를 때만 ALTER DELETE(전체) + INSERT (현재 집합이 비면 DELETE 생략 → 최초 배포 뮤테이션 0).
+-- M0 기대 집합 = enabled=1 AND coverage_since <= d AND (until IS NULL OR d <= until).
+-- =============================================================
+
+CREATE TABLE IF NOT EXISTS gpu_data.dim_token_metrics_service_local
+ON CLUSTER 'gpu-monitoring'
+(
+    service_group            LowCardinality(String)  COMMENT '정본 = collectors/token-metrics/endpoints.yaml — 토큰 레지스트리와 바이트 동일 (M0 WARN)',
+    service                  LowCardinality(String)  COMMENT '정본 = collectors/token-metrics/endpoints.yaml',
+    base_url                 String                  COMMENT '메트릭 base (기본 = usage와 동일 호스트)',
+    enabled                  UInt8                   COMMENT '0이면 모든 모드에서 SKIPPED reason=disabled',
+    api_since                Date                    COMMENT '정기 API 수집 게이트: target_date < api_since면 호출 안 함 (기본 2026-09-09)',
+    coverage_since           Date                    COMMENT 'M0 커버리지 기대 시작일 (기본 2026-08-26): 이후 앵커 없으면 metrics_missing',
+    until                    Nullable(Date)          COMMENT '마지막 데이터 날짜 (게이트·커버리지 공통) — NULL = 진행 중',
+    expect_gpu               UInt8 DEFAULT 1         COMMENT 'gpu:[]가 정상인 서비스는 0',
+    expect_serving           UInt8 DEFAULT 1         COMMENT 'serving:[]가 정상인 서비스는 0',
+    usage_includes_consumers UInt8 DEFAULT 0         COMMENT '플랫폼 제공자: 자기 /v1/usage가 소비자 호출분을 포함 보고하면 1 (§6.4 분모)',
+    note                     String DEFAULT ''       COMMENT '운영 메모 (자유 텍스트)',
+    updated_at               DateTime('Asia/Seoul')  COMMENT '동기화 시각 (diff 비교 키에서 제외)'
+)
+ENGINE = ReplicatedMergeTree(
+    '/clickhouse/tables/{shard}/gpu_data/dim_token_metrics_service_local',
+    '{replica}'
+)
+ORDER BY (service)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS gpu_data.dim_token_metrics_service_dist
+ON CLUSTER 'gpu-monitoring'
+(
+    service_group            LowCardinality(String),
+    service                  LowCardinality(String),
+    base_url                 String,
+    enabled                  UInt8,
+    api_since                Date,
+    coverage_since           Date,
+    until                    Nullable(Date),
+    expect_gpu               UInt8,
+    expect_serving           UInt8,
+    usage_includes_consumers UInt8,
+    note                     String,
+    updated_at               DateTime('Asia/Seoul')
+)
+ENGINE = Distributed('gpu-monitoring', 'gpu_data', 'dim_token_metrics_service_local', rand());
