@@ -694,3 +694,300 @@ def run_m3(gate, date: str, blocks: list[tuple[str, str]] | None = None) -> dict
         print(line, flush=True)
         warns.append(line)
     return {"rows_check": rows, "warns": warns}
+
+
+# ============================================================================
+# M4 agg_token_model_share_1d — 공유 모델 비용 배분 (설계 §6.1 M4, §6.4 (3)~(6); Plan 6c T6)
+#
+# grain: date × model(canon) × service × provider_service. 행 = (그날 그 모델에 토큰이 있는
+# usage_svc 서비스: wt) ∪ (제공자 후보 전부: prov_rows — 다중이면 후보별 행, share NULL).
+# 모델 단위 판정(mode CTE)은 설계 §6.4 (4) 순서로 고정:
+#   n_prov >= 2                       → provider_ambiguous (후보 행 is_provider=1, share·allocated NULL)
+#   n_prov = 0 AND gpu 행 있음(test뿐) → no_provider        (C=0, allocated 0, share는 정보용)
+#   n_prov = 0 AND gpu 행 전혀 없음    → external_api       (벤더 단가 ③ / 1e6, tier='standard')
+#   W(m) = 0 AND C > 0                → token_not_reported (제공자 행 share=1 전액, I8)
+#   usage_includes_consumers = 1      → provider_reported  (W(m)=W(p,m), 제공자 자기분 = max(W(p)−Σ_{s≠p}W(s), 0))
+#   기본                               → all_services       (W(m)=Σ_s W(s,m), 정의서 3.6)
+# C(m)은 같은 배치에서 선행 적재된 M1 제공자 행(has_gpu_rows=1)의 model_cost_krw를 읽는다
+# (설계 해석 — TCO 재계산 없음: 실행 순서 M1 → M3 → M4는 batch.RUNNERS가 보장).
+# quality_flag 우선순위: partial > no_tco > provider_ambiguous > vendor_price_missing
+#                       > token_not_reported > normal (partial/no_tco = M1 제공자 행 값 상속).
+# ============================================================================
+
+# wt — (service, model) 가중 토큰 + 토큰 4성분(외부 API 단가식용). 모집단 = usage_svc(_TOK_TAIL).
+_M4_WT = f"""SELECT u.service                     AS service,
+           any(u.service_group)          AS service_group,
+           {canon('u.model')}            AS model,
+           sum(u.input_tokens)           AS input_tokens,
+           sum(u.cache_read_tokens)      AS cache_read_tokens,
+           sum(u.cache_creation_tokens)  AS cache_creation_tokens,
+           sum(u.output_tokens)          AS output_tokens,
+           {_WTOK_EXPR}                  AS wtok
+    {_TOK_SRC}
+    {_TOK_TAIL}"""
+
+# wt_total — 모델별 Σ_s W(s,m) (all_services 분모)
+_M4_WT_TOTAL = f"""SELECT model, sum(wtok) AS w_all
+    FROM
+    (
+        {_M4_WT}
+    )
+    GROUP BY model"""
+
+# prov_rows — 제공자 후보 (model, service): 앵커 서비스의 FAIL 없는 serving/standby gpu 행 (C>0 성립 행)
+_M4_PROV_ROWS = f"""SELECT {canon('g.model')} AS model, g.service AS service
+    {_GPU_SRC}
+    WHERE g.date = {{d:Date}} AND g.service GLOBAL IN (SELECT service FROM {SUB_ANCHOR})
+      AND g.category IN ('serving', 'standby') AND NOT {FAIL_PRED}
+    GROUP BY g.service, {canon('g.model')}"""
+
+# prov — 모델별 후보 배열·수·단일 제공자(다중/0이면 '')
+_M4_PROV = f"""SELECT model,
+           arraySort(groupUniqArray(service))  AS providers,
+           length(providers)                   AS n_prov,
+           if(n_prov = 1, providers[1], '')    AS provider
+    FROM
+    (
+        {_M4_PROV_ROWS}
+    )
+    GROUP BY model"""
+
+# gpu_any — 그날 gpu 행이 하나라도 있는 모델(카테고리·FAIL 무관): no_provider vs external_api 판별
+_M4_GPU_ANY = f"""SELECT {canon('g.model')} AS model, 1 AS has_gpu
+    {_GPU_SRC}
+    WHERE g.date = {{d:Date}} AND g.service GLOBAL IN (SELECT service FROM {SUB_ANCHOR})
+    GROUP BY {canon('g.model')}"""
+
+# vendor — 모델별 벤더 단가 1행(provider 최소값으로 고정 — (provider, model) 다중 등록 시 fan-out 방지).
+# 단가 NULL은 -1 sentinel로 argMin을 통과시켜 NULL 그대로 돌려준다(SUB_EFF_* 규약과 동일).
+# 별칭은 `vendor`(≠ 소스 컬럼 provider) — `AS provider`로 두면 같은 SELECT의 argMin(…, provider)가
+# 컬럼 대신 집계 별칭을 가리켜(prefer_column_name_to_alias=0) 중첩 집계 오류가 난다.
+_M4_VENDOR = f"""(SELECT model,
+               min(provider)                                        AS vendor,
+               nullIf(argMin(ifNull(p_in, -1), provider), -1)       AS p_in,
+               nullIf(argMin(ifNull(p_cached, -1), provider), -1)   AS p_cached,
+               nullIf(argMin(ifNull(p_cc, -1), provider), -1)       AS p_cc,
+               nullIf(argMin(ifNull(p_out, -1), provider), -1)      AS p_out,
+               1                                                    AS has_price
+        FROM {SUB_EFF_PRICE} AS ep
+        GROUP BY model)"""
+
+# m1c — 같은 배치 M1 제공자 행: C(m)·품질 플래그 (has_gpu_rows=1 행만)
+_M4_M1C = f"""SELECT model, service, model_cost_krw, quality_flag, 1 AS has_m1
+    FROM {DB_MART}.{T_M1}_dist
+    WHERE date = {{d:Date}} AND has_gpu_rows = 1"""
+# 공통 CTE 블록 — SQL_M4와 EXPECTED_SQL_M4가 문자 단위로 공유(파생 오차 0). keys는 INSERT만 붙인다.
+_M4_CTES = f"""WITH
+    wt AS (
+        {_M4_WT}
+    ),
+    wt_total AS (
+        {_M4_WT_TOTAL}
+    ),
+    prov AS (
+        {_M4_PROV}
+    ),
+    gpu_any AS (
+        {_M4_GPU_ANY}
+    ),
+    m1c AS (
+        {_M4_M1C}
+    ),
+    models AS (
+        SELECT model FROM wt
+        UNION DISTINCT
+        SELECT model FROM prov
+    ),
+    mode AS (
+        -- 모델 단위 판정(모듈 상단 주석 순서). 미스 값: n_prov 0, has_gpu 0, w_all 0, uic 0, C NULL.
+        SELECT m.model                                   AS model,
+               p.n_prov                                  AS n_prov,
+               p.provider                                AS provider,
+               ga.has_gpu                                AS has_gpu,
+               mt.w_all                                  AS w_all,
+               wp.wtok                                   AS w_prov,
+               r.usage_includes_consumers                AS uic,
+               if(uic = 1, greatest(w_prov, w_all - w_prov), w_all)  AS w_m,
+               mc.model_cost_krw                         AS model_cost_krw,
+               v.vendor                                  AS vendor,
+               v.p_in                                    AS p_in,
+               v.p_cached                                AS p_cached,
+               v.p_cc                                    AS p_cc,
+               v.p_out                                   AS p_out,
+               multiIf(n_prov >= 2,                                 'provider_ambiguous',
+                       n_prov = 0 AND has_gpu = 1,                  'no_provider',
+                       n_prov = 0,                                  'external_api',
+                       w_m = 0 AND ifNull(model_cost_krw, 0) > 0,   'token_not_reported',
+                       uic = 1,                                     'provider_reported',
+                       'all_services')                   AS denominator_mode
+        FROM models AS m
+        GLOBAL LEFT JOIN prov AS p ON p.model = m.model
+        GLOBAL LEFT JOIN gpu_any AS ga ON ga.model = m.model
+        GLOBAL LEFT JOIN wt_total AS mt ON mt.model = m.model
+        GLOBAL LEFT JOIN wt AS wp ON wp.model = p.model AND wp.service = p.provider
+        GLOBAL LEFT JOIN {SUB_REG} AS r ON r.service = p.provider
+        GLOBAL LEFT JOIN m1c AS mc ON mc.model = p.model AND mc.service = p.provider
+        GLOBAL LEFT JOIN {_M4_VENDOR} AS v ON v.model = m.model
+    )"""
+
+# 키 조각 — SQL_M4 keys(UNION DISTINCT)와 EXPECTED_SQL_M4(UNION ALL + uniqExact) 공유.
+# wt 행의 provider_service: 단일 제공자면 p, external_api면 벤더 표기(없으면 ''), 그 외 ''.
+_M4_WT_KEYS = """SELECT w.model AS model, w.service AS service,
+           multiIf(md.n_prov = 1, md.provider,
+                   md.denominator_mode = 'external_api', md.vendor,
+                   '')                                          AS provider_service,
+           toUInt8(md.n_prov = 1 AND w.service = md.provider)   AS is_provider
+    FROM wt AS w
+    GLOBAL LEFT JOIN mode AS md ON md.model = w.model"""
+_M4_PROV_KEYS = f"""SELECT model, service, service AS provider_service, toUInt8(1) AS is_provider
+    FROM
+    (
+        {_M4_PROV_ROWS}
+    )"""
+
+SQL_M4 = f"""
+INSERT INTO {DB_MART}.{T_M4}_dist
+    (date, model, service, service_group, provider_service, is_provider, denominator_mode,
+     service_wtokens, model_total_wtokens, share, model_cost_krw, allocated_cost_krw,
+     quality_flag, created_by)
+{_M4_CTES},
+    keys AS (
+        {_M4_WT_KEYS}
+        UNION DISTINCT
+        {_M4_PROV_KEYS}
+    )
+SELECT
+    {{d:Date}}                                                        AS date,
+    k.model                                                           AS model,
+    k.service                                                         AS service,
+    multiIf(r.service_group != '', r.service_group,
+            an.service_group != '', an.service_group,
+            w.service_group)                                          AS service_group,
+    k.provider_service                                                AS provider_service,
+    k.is_provider                                                     AS is_provider,
+    md.denominator_mode                                               AS denominator_mode,
+    -- provider_reported 제공자 자기분 = max(W(p) − Σ 소비자 W(s), 0) = max(2·W(p) − W_all, 0)
+    if(k.is_provider = 1 AND md.denominator_mode = 'provider_reported',
+       greatest(w.wtok - (md.w_all - w.wtok), 0.0), w.wtok)           AS service_wtokens,
+    md.w_m                                                            AS model_total_wtokens,
+    multiIf(md.denominator_mode = 'provider_ambiguous', NULL,
+            md.denominator_mode = 'token_not_reported', if(k.is_provider = 1, 1.0, NULL),
+            md.w_m = 0, NULL,
+            service_wtokens / md.w_m)                                 AS share,
+    multiIf(md.denominator_mode = 'no_provider', toNullable(0.0),
+            mc.has_m1 = 1, mc.model_cost_krw,
+            NULL)                                                     AS model_cost_krw,
+    multiIf(md.denominator_mode = 'external_api',
+                (w.input_tokens * md.p_in + w.cache_read_tokens * md.p_cached
+                 + w.cache_creation_tokens * md.p_cc + w.output_tokens * md.p_out) / 1e6,
+            md.denominator_mode = 'provider_ambiguous', NULL,
+            md.denominator_mode = 'no_provider', toNullable(0.0),
+            md.denominator_mode = 'token_not_reported', if(k.is_provider = 1, model_cost_krw, NULL),
+            model_cost_krw * share)                                   AS allocated_cost_krw,
+    -- 우선순위 고정(설계 §6.1 M4): partial > no_tco > provider_ambiguous > vendor_price_missing
+    --                             > token_not_reported > normal
+    multiIf(
+        mc.quality_flag = 'partial',                                              'partial',
+        mc.quality_flag = 'no_tco',                                               'no_tco',
+        md.denominator_mode = 'provider_ambiguous',                               'provider_ambiguous',
+        md.denominator_mode = 'external_api' AND isNull(allocated_cost_krw),      'vendor_price_missing',
+        md.denominator_mode = 'token_not_reported',                               'token_not_reported',
+        'normal')                                                     AS quality_flag,
+    '{CREATED_BY}'                                                    AS created_by
+FROM keys AS k
+GLOBAL LEFT JOIN mode AS md ON md.model = k.model
+GLOBAL LEFT JOIN wt AS w ON w.model = k.model AND w.service = k.service
+GLOBAL LEFT JOIN m1c AS mc ON mc.model = k.model AND mc.service = k.provider_service
+GLOBAL LEFT JOIN {SUB_REG} AS r ON r.service = k.service
+GLOBAL LEFT JOIN {SUB_ANCHOR} AS an ON an.service = k.service
+"""
+
+EXPECTED_SQL_M4 = f"""
+{_M4_CTES}
+SELECT uniqExact((model, service, provider_service)) FROM (
+    {_M4_WT_KEYS}
+    UNION ALL
+    {_M4_PROV_KEYS}
+)
+"""
+# ↑ M4 행 그레인은 date×model×service×provider_service — keys(UNION DISTINCT)의 distinct 키 수.
+# 좌측 keys에 붙는 mode(GROUP BY model 유니크)·wt(GROUP BY service, model)·m1c(M1 그레인
+# date×service×model)·reg·anchor(service 유니크)는 전부 키 유니크라 fan-out이 없다.
+
+
+def run_m4(gate, date: str) -> dict:
+    """M4 — mart.agg_token_model_share_1d 1테이블. 반환 {"rows_share": actual, "warns": [...]}
+    (마커 rows_share의 소스). 토큰 mart 부재일(M0b token_mart_absent)은 batch가 이 러너를
+    건너뛰고 rows_share=0을 기록한다 — 여기서는 판단하지 않는다(설계 §6.1 M0b)."""
+    warns: list = []
+    rows = _run_table(gate, date, f"{DB_MART}.{T_M4}_dist", f"{DB_MART}.{T_M4}_local",
+                      SQL_M4, EXPECTED_SQL_M4, warns)
+    return {"rows_share": rows, "warns": warns}
+
+
+# ============================================================================
+# M3 stretch — share 경고 3블록 (설계 §6.1 M3 stretch, §6.4 (4)(6); Plan 6c T6)
+#   M4와 같은 조각(_M4_PROV/_M4_WT/_M4_WT_TOTAL/_M4_GPU_ANY/_M4_VENDOR)을 쓴다 — M4 판정과
+#   검사 검출이 문자 단위로 같은 집합을 본다. 3블록 모두 모델 단위(model 컬럼 채움, gpu_type '').
+# ============================================================================
+
+# --- 14) provider_ambiguous WARN — 제공자 후보 다중 모델(M4 후보별 행·share NULL·배부 보류)
+_M3_PROVIDER_AMBIGUOUS = _m3_select(
+    "provider_ambiguous", "WARN",
+    service_group="''", service="''", model="p.model",
+    observed="p.n_prov", threshold="1",
+    detail="concat('model=', p.model, ' providers=', toString(p.n_prov))",
+    body=f"""FROM
+(
+    {_M4_PROV}
+) AS p
+WHERE p.n_prov >= 2""")
+
+# --- 15) vendor_price_missing WARN — external_api 모델(gpu 행 전무·토큰 사용 있음) 중 유효 단가 부재/NULL
+#         no_provider(test 전용 gpu 행) 모델은 gpu_any에 잡혀 발화하지 않는다(설계 §6.4 (4)).
+_M3_VENDOR_PRICE_MISSING = _m3_select(
+    "vendor_price_missing", "WARN",
+    service_group="''", service="''", model="x.model",
+    observed="1", threshold="0", detail="concat('model=', x.model)",
+    body=f"""FROM
+(
+    SELECT {canon('u.model')} AS model
+    {_TOK_SRC}
+    WHERE u.date = {{d:Date}} AND u.service GLOBAL IN {SUB_USAGE_SVC}
+    GROUP BY {canon('u.model')}
+) AS x
+GLOBAL LEFT JOIN
+(
+    {_M4_GPU_ANY}
+) AS ga ON ga.model = x.model
+GLOBAL LEFT JOIN {_M4_VENDOR} AS v ON v.model = x.model
+WHERE ga.has_gpu = 0
+  AND (v.has_price = 0 OR isNull(v.p_in) OR isNull(v.p_cached) OR isNull(v.p_cc) OR isNull(v.p_out))""")
+
+# --- 16) consumer_tokens_exceed_provider WARN — provider_reported(usage_includes_consumers=1) 모델에서
+#         Σ_{s≠p} W(s,m) > W(p,m) (제공자 자기분 0 클램프 발생 — 설계 §6.4 (4) 분모 모드 보정)
+_M3_CONSUMER_TOKENS_EXCEED_PROVIDER = _m3_select(
+    "consumer_tokens_exceed_provider", "WARN",
+    service_group="r.service_group", service="p.provider", model="p.model",
+    observed="t.w_all - wp.wtok", threshold="wp.wtok",
+    detail="concat('model=', p.model)",
+    body=f"""FROM
+(
+    {_M4_PROV}
+) AS p
+GLOBAL LEFT JOIN {SUB_REG} AS r ON r.service = p.provider
+GLOBAL LEFT JOIN
+(
+    {_M4_WT_TOTAL}
+) AS t ON t.model = p.model
+GLOBAL LEFT JOIN
+(
+    {_M4_WT}
+) AS wp ON wp.model = p.model AND wp.service = p.provider
+WHERE p.n_prov = 1 AND r.usage_includes_consumers = 1 AND (t.w_all - wp.wtok) > wp.wtok""")
+
+M3_BLOCKS_STRETCH.extend([
+    ("provider_ambiguous", _M3_PROVIDER_AMBIGUOUS),
+    ("vendor_price_missing", _M3_VENDOR_PRICE_MISSING),
+    ("consumer_tokens_exceed_provider", _M3_CONSUMER_TOKENS_EXCEED_PROVIDER),
+])

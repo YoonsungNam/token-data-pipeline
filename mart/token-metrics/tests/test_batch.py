@@ -35,7 +35,7 @@ from app.ch import DB_DIM, DB_FACT, DB_MART, DB_TOKEN_DIM, DB_TOKEN_MART
 from app.config import Config
 from app.mart import Coverage, batch_line
 from app.preflight import READ_CONTRACT
-from app.steps import MART_TABLES, StepError
+from app.steps import MART_TABLES, StepError, run_m4
 
 DATE = "2026-09-03"
 DATE2 = "2026-09-04"
@@ -158,11 +158,6 @@ def test_sql_constants_bind_date_and_use_db_constants():
     assert f"{DB_TOKEN_MART}.agg_token_service_1d_dist" in batch.SQL_M0B_TOKEN_MART_ROWS
     assert "count()" in batch.SQL_M0B_TOKEN_MART_ROWS
     assert "token_usage_1d" not in batch.SQL_M0B_TOKEN_MART_ROWS
-
-
-def test_runners_order_m1_then_m3():
-    assert [k for k, _ in batch.RUNNERS] == ["rows_mart", "rows_check"]
-    assert batch.RUNNERS[0][1] is steps.run_m1 and batch.RUNNERS[1][1] is steps.run_m3
 
 
 # ============================================================================
@@ -599,3 +594,99 @@ def test_sigterm_handler_prints_cached_line_and_exits_143(capsys):
     out = capsys.readouterr().out.strip()
     assert out == cached + " note=sigterm"
     assert "reason=sigterm note=sigterm" in out
+
+
+# ============================================================================
+# T6 — M4 러너 연결: RUNNERS 3항·M0b token_mart_absent 시 M4 스킵(rows_share=0)·마커 rows_share
+# ============================================================================
+# D6/D7: Config·run_m4는 top-level import를 재사용(중복 import 없음) — 아래는 T6 전용 나머지.
+T6_DATE = "2026-09-03"
+
+
+class _T6Gate:
+    """M0/M0b 조회만 응답하는 최소 게이트(러너는 monkeypatch 스텁이라 테이블 접근 없음)."""
+
+    def __init__(self, expected=("Mock Service A", "Mock Service B"), anchors=None, token_rows=1):
+        self.expected = list(expected)
+        self.anchors = self.expected if anchors is None else list(anchors)
+        self.token_rows = token_rows
+        self.queries = []
+
+    def query(self, sql, params=None):
+        self.queries.append(sql)
+        if "GLOBAL NOT IN" in sql:
+            return []
+        if "raw_token_metrics_summary_1d_dist" in sql:
+            return [(s,) for s in self.anchors]
+        if "dim_token_metrics_service_dist" in sql:
+            return [(s,) for s in self.expected]
+        if "agg_token_service_1d_dist" in sql:
+            return [(self.token_rows,)]
+        raise AssertionError(f"unexpected query: {sql[:80]!r}")
+
+    def describe(self, table):
+        raise AssertionError("describe must not be called from run_batch")
+
+    def exists(self, table_dist, date):
+        raise AssertionError("exists must not be called (runners are stubbed)")
+
+    def delete_day(self, table_local, date, extra_pred=""):
+        raise AssertionError("delete_day must not be called (runners are stubbed)")
+
+
+def _stub_runners(monkeypatch, m4_rows=7):
+    calls = {"m1": [], "m3": [], "m4": []}
+
+    def m1(gate, date):
+        calls["m1"].append(date)
+        return {"rows_mart": 3, "warns": []}
+
+    def m3(gate, date):
+        calls["m3"].append(date)
+        return {"rows_check": 5, "warns": []}
+
+    def m4(gate, date):
+        calls["m4"].append(date)
+        return {"rows_share": m4_rows, "warns": []}
+
+    monkeypatch.setattr(batch, "RUNNERS", [("rows_mart", m1), ("rows_check", m3), ("rows_share", m4)])
+    return calls
+
+
+def test_runners_order_m1_m3_m4():
+    assert [k for k, _ in batch.RUNNERS] == ["rows_mart", "rows_check", "rows_share"]
+    assert batch.RUNNERS[2][1] is run_m4
+    assert [fn.__name__ for _, fn in batch.RUNNERS] == ["run_m1", "run_m3", "run_m4"]
+
+
+def test_token_mart_absent_skips_m4_rows_share_zero(monkeypatch):
+    calls = _stub_runners(monkeypatch, m4_rows=7)
+    out = batch.run_batch(Config(), T6_DATE, gate=_T6Gate(), token_mart_present=False)
+    assert calls["m1"] == [T6_DATE] and calls["m3"] == [T6_DATE]
+    assert calls["m4"] == []                       # M4 러너 호출 0회
+    assert out.skip_share is True
+    assert out.rows["rows_share"] == 0
+    assert "status=SUCCESS" in out.line
+    assert "rows_mart=3 rows_check=5 rows_share=0 warn=1" in out.line
+    assert out.exit_code == 0
+
+
+def test_marker_rows_share_filled(monkeypatch):
+    calls = _stub_runners(monkeypatch, m4_rows=7)
+    out = batch.run_batch(Config(), T6_DATE, gate=_T6Gate(), token_mart_present=True)
+    assert calls["m4"] == [T6_DATE]
+    assert out.skip_share is False
+    assert out.rows["rows_share"] == 7
+    assert "rows_mart=3 rows_check=5 rows_share=7 warn=0" in out.line
+    assert "status=SUCCESS" in out.line
+
+
+def test_m0b_query_decides_skip_share_when_flag_not_given(monkeypatch):
+    calls = _stub_runners(monkeypatch, m4_rows=2)
+    gate = _T6Gate(token_rows=0)
+    out = batch.run_batch(Config(), T6_DATE, gate=gate)
+    assert any("agg_token_service_1d_dist" in q for q in gate.queries)
+    assert out.skip_share is True and calls["m4"] == [] and "rows_share=0 warn=1" in out.line
+    gate2 = _T6Gate(token_rows=12)
+    out2 = batch.run_batch(Config(), T6_DATE, gate=gate2)
+    assert out2.skip_share is False and calls["m4"] == [T6_DATE] and "rows_share=2 warn=0" in out2.line

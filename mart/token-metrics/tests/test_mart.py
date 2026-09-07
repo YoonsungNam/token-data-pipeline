@@ -337,3 +337,21 @@ def test_quality_flag_m1_priority():
     assert quality_flag_m1(False, False, False, False, True, True) == "no_metrics"
     assert quality_flag_m1(False, False, False, False, False, True) == "consumer_only"
     assert quality_flag_m1(False, False, False, False, False, False) == "normal"
+
+
+# ============================================================================
+# T6 — allocate_shared ↔ M4 all_services 산식 일치(설계 §6.1 share = W(s)/ΣW, 비용 = C(m)×share)
+# ============================================================================
+def test_allocate_shared_matches_m4_all_services_semantics():
+    from app.mart import allocate_shared
+
+    wt = {"A": 76364, "B": 152727, "C": 10909}     # W 가중 토큰(1·in + 0.1·cache_read + 4·out 합)
+    total = 240000.0
+    out = allocate_shared(total, wt)
+    assert set(out) == set(wt)
+    assert abs(sum(out.values()) - total) < 0.01
+    w_sum = sum(wt.values())
+    for s, w in wt.items():
+        assert abs(out[s] - total * w / w_sum) < 0.01
+    assert allocate_shared(total, {"A": 240000.0}) == {"A": 240000.0}
+    assert allocate_shared(total, {}) == {}

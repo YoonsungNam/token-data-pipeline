@@ -458,7 +458,8 @@ def _m3_select_header_aliases(block_sql: str) -> list[str]:
 def test_m3_core_block_names_exact():
     assert [name for name, _ in steps.M3_BLOCKS_CORE] == M3_CORE_NAMES
     assert len(M3_CORE_NAMES) == 13
-    assert steps.M3_BLOCKS_STRETCH == []
+    assert [n for n, _ in steps.M3_BLOCKS_STRETCH][:3] == [
+        "provider_ambiguous", "vendor_price_missing", "consumer_tokens_exceed_provider"]
 
 
 def test_m3_every_block_has_twelve_columns_and_own_name():
@@ -823,3 +824,224 @@ def test_m3_select_rejects_quote_in_check_name_or_severity():
     with pytest.raises(ValueError):
         steps._m3_select("x'y", "WARN", service_group="''", service="''", observed="0",
                          threshold="0", detail="''", body="FROM system.one")
+
+
+# ============================================================================
+# M4 agg_token_model_share_1d — 분모 6모드·외부 API 단가·M1 산출 소비 (Plan 6c T6)
+# ============================================================================
+from app.mart import DENOMINATOR_MODES  # noqa: E402 — T6 import (T2 상수)
+
+M4_DATE = "2026-09-01"
+M4_STRETCH_NAMES = ["provider_ambiguous", "vendor_price_missing", "consumer_tokens_exceed_provider"]
+
+
+def test_m4_insert_column_list_matches_ddl_order():
+    cols = ddl_columns("agg_token_model_share_1d_local")
+    assert len(cols) == 14
+    assert cols == ["date", "model", "service", "service_group", "provider_service", "is_provider",
+                    "denominator_mode", "service_wtokens", "model_total_wtokens", "share",
+                    "model_cost_krw", "allocated_cost_krw", "quality_flag", "created_by"]
+    assert insert_columns(steps.SQL_M4) == cols
+    outer = steps.SQL_M4[steps.SQL_M4.rindex("\nSELECT\n"):steps.SQL_M4.index("\nFROM keys AS k")]
+    aliases = re.findall(r"\bAS (\w+)\s*,?\s*$", outer, re.M)
+    assert aliases == cols
+    assert re.search(r"'token-metrics-pipeline'\s+AS created_by", steps.SQL_M4)
+
+
+def test_m4_denominator_modes_all_six_literals_present():
+    assert DENOMINATOR_MODES == ("all_services", "provider_reported", "token_not_reported",
+                                 "no_provider", "provider_ambiguous", "external_api")
+    for m in DENOMINATOR_MODES:
+        assert f"'{m}'" in steps.SQL_M4, m
+    # 판정 multiIf(mode CTE) 분기 순서 = 설계 §6.4 (4): ambiguous > no_provider > external > tnr > reported > all
+    seg = steps.SQL_M4[steps.SQL_M4.index("AS uic"):steps.SQL_M4.index("AS denominator_mode")]
+    order = ["'provider_ambiguous'", "'no_provider'", "'external_api'", "'token_not_reported'",
+             "'provider_reported'", "'all_services'"]
+    positions = [seg.index(tok) for tok in order]
+    assert positions == sorted(positions)
+    assert "n_prov >= 2," in seg
+    assert "n_prov = 0 AND has_gpu = 1," in seg
+    assert "w_m = 0 AND ifNull(model_cost_krw, 0) > 0," in seg
+    assert "uic = 1," in seg
+    assert "if(uic = 1, greatest(w_prov, w_all - w_prov), w_all)" in seg  # C4: provider_reported 분모 보정
+
+
+def test_m4_provider_reported_denominator_uses_greatest_c4():
+    """컨트롤러 결정 C4 — provider_reported 분모는 w_p가 아니라 greatest(w_p, w_all - w_p)
+    (소비자 W 합이 제공자 자기보고를 초과해도 Sigma share = 1을 유지). numerator(제공자 자기분
+    greatest(w.wtok - (md.w_all - w.wtok), 0.0))는 그대로(test_m4_weight_expr_shared_with_m1)."""
+    snippet = "if(uic = 1, greatest(w_prov, w_all - w_prov), w_all)"
+    assert " ".join(snippet.split()) in " ".join(steps.SQL_M4.split())
+
+
+def test_m4_reads_m1_output_not_fact_for_cost():
+    assert f"{DB_MART}.agg_token_model_cost_1d_dist" in steps.SQL_M4
+    assert "has_gpu_rows = 1" in steps.SQL_M4
+    assert "tco_krw_per_gpu_hour" not in steps.SQL_M4
+    assert steps.SUB_EFF_TCO not in steps.SQL_M4
+    assert "dim_token_gpu_tco" not in steps.SQL_M4
+    # 제공자(candidate) 행 = FAIL 없는 serving/standby gpu 행(설계 §6.4 (4)) — test·FAIL 행은 후보가 아니다
+    assert "g.category IN ('serving', 'standby') AND NOT " + steps.FAIL_PRED in steps._M4_PROV_ROWS
+    assert steps._M4_PROV_ROWS in steps.SQL_M4
+
+
+def test_m4_external_api_formula_divides_by_1e6_and_tier_standard():
+    sql = steps.SQL_M4
+    assert "/ 1e6" in sql
+    assert "tier = 'standard'" in sql
+    assert steps.SUB_EFF_PRICE in sql
+    for p in ("p_in", "p_cached", "p_cc", "p_out"):
+        assert f"AS {p}" in sql, p
+    # D8: 공백 결합 없는 정규화 비교(간접 산식 배치는 자유)
+    formula = ("(w.input_tokens * md.p_in + w.cache_read_tokens * md.p_cached "
+               "+ w.cache_creation_tokens * md.p_cc + w.output_tokens * md.p_out) / 1e6")
+    assert " ".join(formula.split()) in " ".join(sql.split())
+    # 단가 행 부재/NULL → allocated NULL → vendor_price_missing (모델별 벤더 1행 — fan-out 방지)
+    assert "nullIf(argMin(ifNull(p_in, -1), provider), -1)" in steps._M4_VENDOR
+    # 집계 별칭이 소스 컬럼 provider를 가리면 argMin(…, provider)가 중첩 집계가 된다 — 별칭은 vendor
+    assert "min(provider) AS vendor" in re.sub(r"\s+", " ", steps._M4_VENDOR)
+    assert "AS provider" not in steps._M4_VENDOR
+    assert "v.vendor AS vendor" in re.sub(r"\s+", " ", steps.SQL_M4)
+    assert "md.denominator_mode = 'external_api' AND isNull(allocated_cost_krw)" in sql
+    # 사외 API 행의 provider_service = 벤더 표기(없으면 '')
+    assert "md.denominator_mode = 'external_api', md.vendor," in steps._M4_WT_KEYS
+
+
+def test_m4_weight_expr_shared_with_m1():
+    assert steps._WTOK_EXPR in steps.SQL_M1
+    assert steps._WTOK_EXPR in steps.SQL_M4
+    # D8: 공백 결합 없는 정규화 비교
+    assert " ".join((steps._WTOK_EXPR + " AS wtok").split()) in " ".join(steps._M4_WT.split())
+    assert (W_UNC, W_CACHE, W_OUT) == (1.0, 0.1, 4.0)
+    # provider_reported 제공자 자기분 = max(W(p) − Σ_{s≠p} W(s), 0) (설계 §6.4 (4) 분모 모드 보정)
+    assert "greatest(w.wtok - (md.w_all - w.wtok), 0.0)" in steps.SQL_M4
+    assert "k.is_provider = 1 AND md.denominator_mode = 'provider_reported'" in steps.SQL_M4
+
+
+def test_m4_quality_priority_order():
+    sql = steps.SQL_M4
+    order = ["'partial'", "'no_tco'", "'provider_ambiguous'", "'vendor_price_missing'",
+             "'token_not_reported'", "'normal'"]
+    qf = sql[sql.rindex("multiIf(", 0, sql.index("AS quality_flag")):sql.index("AS quality_flag")]
+    positions = [qf.index(tok) for tok in order]
+    assert positions == sorted(positions)
+    assert "mc.quality_flag = 'partial'" in qf and "mc.quality_flag = 'no_tco'" in qf
+    # share/allocated 특례(설계 §6.1 M4): ambiguous NULL, token_not_reported 제공자 행 1·전액, 분모 0 NULL
+    # D8: 공백 결합 없는 정규화 비교
+    share_formula = ("multiIf(md.denominator_mode = 'provider_ambiguous', NULL, "
+                     "md.denominator_mode = 'token_not_reported', if(k.is_provider = 1, 1.0, NULL), "
+                     "md.w_m = 0, NULL, "
+                     "service_wtokens / md.w_m)")
+    assert " ".join(share_formula.split()) in " ".join(sql.split())
+    assert "md.denominator_mode = 'token_not_reported', if(k.is_provider = 1, model_cost_krw, NULL)," in sql
+    assert "model_cost_krw * share)" in sql
+    assert "md.denominator_mode = 'no_provider', toNullable(0.0)," in sql
+
+
+def test_m4_expected_key_tuple():
+    assert "uniqExact((model, service, provider_service))" in steps.EXPECTED_SQL_M4
+    assert steps._M4_CTES in steps.SQL_M4 and steps._M4_CTES in steps.EXPECTED_SQL_M4
+    for frag in (steps._M4_WT_KEYS, steps._M4_PROV_KEYS):
+        assert frag in steps.SQL_M4
+        assert frag in steps.EXPECTED_SQL_M4
+    assert "UNION DISTINCT" in steps.SQL_M4
+    assert "\n    UNION ALL\n" in steps.EXPECTED_SQL_M4
+    assert "INSERT INTO" not in steps.EXPECTED_SQL_M4
+    for x in ("u.model", "g.model"):
+        assert steps.canon(x) in steps.SQL_M4 and steps.canon(x) in steps.EXPECTED_SQL_M4
+    # 서브쿼리 조각 재사용(설계 Consumes): 단가·레지스트리·앵커·usage_svc·alias
+    for name in ("SUB_EFF_PRICE", "SUB_REG", "SUB_ANCHOR", "SUB_USAGE_SVC", "SUB_EFF_ALIAS"):
+        assert getattr(steps, name) in steps.SQL_M4, name
+    assert "ARRAY JOIN" not in steps.SQL_M4 and "NOT IN (" not in steps.SQL_M4
+
+
+def test_run_m4_returns_rows_share_from_verify_actual_and_routes_to_m4():
+    g = FakeGate(expected_overrides={"m4": 9})
+    out = steps.run_m4(g, M4_DATE)
+    assert out == {"rows_share": 9, "warns": []}
+    # SQL_M4는 M1 테이블명도 포함(m1c) — FakeGate는 가장 긴 키(agg_token_model_share_1d)로 m4 라우팅
+    assert g.order == [("exists", "m4"), ("delete", "m4"), ("insert", "m4"), ("query", "m4"), ("verify", "m4")]
+    assert g.verify_calls == [("m4", M4_DATE, 9)]
+    assert g.written[0][1] is steps.SQL_M4
+    assert g.query_calls[0][1] is steps.EXPECTED_SQL_M4
+    assert g.delete_preds == [("m4", "")]
+
+
+def test_run_m4_dup_suspect_warn_and_step_error():
+    g = FakeGate(expected_overrides={"m4": 4}, verify_actual=5)
+    out = steps.run_m4(g, M4_DATE)
+    assert out["rows_share"] == 5
+    assert out["warns"] == [f"dup_suspect:{DB_MART}.agg_token_model_share_1d_dist"]
+    with pytest.raises(steps.StepError):
+        steps.run_m4(FakeGate(verify_ok=False), M4_DATE)
+
+
+# --- M3 stretch 3블록 (share 경고) ---------------------------------------------------
+
+def test_m3_stretch_names_after_t6():
+    assert [n for n, _ in steps.M3_BLOCKS_STRETCH][:3] == M4_STRETCH_NAMES
+    blocks = steps.M3_BLOCKS_CORE + steps.M3_BLOCKS_STRETCH
+    assert len(blocks) >= 16
+    sql = steps.build_m3_sql(blocks)
+    assert sql.count("\nUNION ALL\n") == len(blocks) - 1
+    assert len(set(n for n, _ in blocks)) == len(blocks)      # 이름 중복 없음(core와 겹치지 않음)
+    for name in M4_STRETCH_NAMES:
+        assert name not in M3_CORE_NAMES
+
+
+def test_m3_stretch_blocks_follow_core_discipline():
+    stretch = dict(steps.M3_BLOCKS_STRETCH)
+    for name in M4_STRETCH_NAMES:
+        sql = stretch[name]
+        assert sql.startswith("SELECT\n"), name
+        assert _m3_select_header_aliases(sql) == list(steps.M3_COLUMNS), name
+        assert f"'{name}' AS check_name" in sql, name
+        assert "'WARN' AS severity" in sql, name
+        assert "    {d:Date} AS date," in sql, name
+        assert "'token-metrics-pipeline' AS created_by" in sql, name
+        assert "\nUNION ALL\n" not in sql and "\nUNION DISTINCT\n" not in sql, name
+        assert "coalesce(" not in sql.lower() and "SELECT *" not in sql, name
+        assert "%(" not in sql, name
+        header = sql.split("\nFROM", 1)[0]
+        model_line = next(ln for ln in header.splitlines() if ln.endswith(" AS model,"))
+        assert "''" not in model_line, name                     # 모델 단위 검사 — model 컬럼 채움
+        gpu_line = next(ln for ln in header.splitlines() if ln.endswith(" AS gpu_type,"))
+        assert gpu_line.strip() == "'' AS gpu_type,", name
+        assert "concat('model=', " in sql, name
+        assert "reported_" not in sql.split("\nFROM", 1)[0], name   # detail에 응답 원문 없음(§5.6)
+
+
+def test_m3_provider_ambiguous_block_uses_m4_provider_rows():
+    sql = dict(steps.M3_BLOCKS_STRETCH)["provider_ambiguous"]
+    assert steps._M4_PROV in sql
+    assert "WHERE p.n_prov >= 2" in sql
+    assert "toNullable(toFloat64(p.n_prov)) AS observed" in sql
+    assert "toNullable(toFloat64(1)) AS threshold" in sql
+
+
+def test_m3_vendor_price_missing_block_external_api_only():
+    sql = dict(steps.M3_BLOCKS_STRETCH)["vendor_price_missing"]
+    assert steps._M4_GPU_ANY in sql              # gpu 행이 전혀 없는 모델만(no_provider 미발화)
+    assert steps._M4_VENDOR in sql
+    assert "WHERE ga.has_gpu = 0" in sql
+    assert ("(v.has_price = 0 OR isNull(v.p_in) OR isNull(v.p_cached)"
+            " OR isNull(v.p_cc) OR isNull(v.p_out))") in sql
+    assert f"u.service GLOBAL IN {steps.SUB_USAGE_SVC}" in sql
+
+
+def test_m3_consumer_tokens_exceed_provider_block_provider_reported_only():
+    sql = dict(steps.M3_BLOCKS_STRETCH)["consumer_tokens_exceed_provider"]
+    assert steps._M4_PROV in sql and steps._M4_WT in sql and steps._M4_WT_TOTAL in sql
+    assert "r.usage_includes_consumers = 1" in sql
+    assert "WHERE p.n_prov = 1" in sql
+    assert "(t.w_all - wp.wtok) > wp.wtok" in sql
+    assert "toNullable(toFloat64(t.w_all - wp.wtok)) AS observed" in sql
+    assert "toNullable(toFloat64(wp.wtok)) AS threshold" in sql
+
+
+def test_run_m3_default_includes_t6_stretch_blocks():
+    gate = M3Gate([], rows=1)
+    steps.run_m3(gate, M4_DATE)
+    inserted_sql = gate.inserted[0][0]
+    for name in M4_STRETCH_NAMES:
+        assert f"'{name}' AS check_name" in inserted_sql, name

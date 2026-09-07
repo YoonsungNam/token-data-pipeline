@@ -39,7 +39,7 @@ from app.ch import CHGate, DB_DIM, DB_FACT, DB_MART, DB_TOKEN_DIM, DB_TOKEN_MART
 from app.config import Config, load_config
 from app.mart import Coverage, batch_line, compute_coverage, mutation_budget_exceeded, target_dates
 from app.preflight import contract_tables, missing_columns
-from app.steps import MART_TABLES, StepError, SUB_REG, SUB_USAGE_SVC, run_m1, run_m3
+from app.steps import MART_TABLES, StepError, SUB_REG, SUB_USAGE_SVC, run_m1, run_m3, run_m4
 
 log = logging.getLogger("app.batch")
 
@@ -85,7 +85,7 @@ WHERE date = {{d:Date}}
 
 # 실행 순서 고정: M1 → M3. T6가 ("rows_share", run_m4), T7이 ("rows_group", run_m2)를 append.
 # 각 러너: fn(gate, date) -> {"<key>": int, "warns": list[str]}.
-RUNNERS: list[tuple[str, Callable]] = [("rows_mart", run_m1), ("rows_check", run_m3)]
+RUNNERS: list[tuple[str, Callable]] = [("rows_mart", run_m1), ("rows_check", run_m3), ("rows_share", run_m4)]
 
 # 마커 필드(Plan 6a H 고정) — rows_group(T7)은 마커에 싣지 않고 로그만
 _MARKER_ROW_KEYS = ("rows_mart", "rows_check", "rows_share")
@@ -260,6 +260,9 @@ def run_batch(cfg: Config, date: str, gate=None, *, token_mart_present: bool | N
             _status["line"] = _line("FAILURE", coverage, rows, warns, started, "sigterm")
 
         for key, fn in RUNNERS:
+            if key == "rows_share" and skip_share:
+                rows[key] = 0        # M0b token_mart_absent — M4 스킵(설계 §6.1), 마커 rows_share=0
+                continue
             result = fn(gate, date)
             rows[key] = int(result[key])
             for w in result["warns"]:
