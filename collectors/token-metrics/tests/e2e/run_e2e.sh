@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."     # collectors/token-metrics
 
-DATE_ARG="${1:-$(date -d "yesterday" +%F)}"    # 러너 로컬 TZ 의 어제 — 어느 TZ 에서도 mock 의 "과거" 조건 충족
+DATE_ARG="${1:-$(TZ=Asia/Seoul date -d "yesterday" +%F)}"  # KST 의 어제 (mock 게이트가 KST) — 러너 로컬 TZ 와 무관하게 고정
 NEXT_DAY=$(date -d "${DATE_ARG} +1 day" +%F)   # 정기 batch_time 의 날짜 (target_date = batch_time − 1일 = DATE_ARG)
 DATE2=$(date -d "${DATE_ARG} -1 day" +%F)      # 시나리오 C · manual 용 두 번째 날짜 (MOCK_METRICS_RETENTION_DAYS=14 안)
 SEED="e2e-seed-1"
@@ -17,7 +17,7 @@ MOCK_URL="http://127.0.0.1:18001"
 TMP=tests/e2e/.tmp                              # gitignore — sed 치환 CSV · verify 출력
 
 chq() {            # chq <sql> — CH HTTP 스칼라 질의 (TSV 1값, 개행은 $(...) 가 제거)
-  curl -sf "${CH_URL}" --data-binary "$1"
+  curl -s --fail-with-body "${CH_URL}" --data-binary "$1"
 }
 expect_eq() {      # expect_eq <what> <got> <want>
   if [ "$2" != "$3" ]; then echo "$1: expected $3, got $2"; exit 1; fi
@@ -32,12 +32,15 @@ need_line() {      # need_line <what> <fixed-string> — $OUT 에 문자열이 �
   grep -qF -- "$2" <<<"$OUT" || { echo "$1 missing"; echo "$OUT"; exit 1; }
 }
 scenario() {       # scenario '<json>' — mock 시나리오 키별 병합 (T1 set_scenario; 나머지 키는 유지)
-  curl -sf -X POST "${MOCK_URL}/__mock/scenario" -H 'content-type: application/json' -d "$1" >/dev/null
+  curl -s -f -X POST "${MOCK_URL}/__mock/scenario" -H 'content-type: application/json' -d "$1" >/dev/null
 }
 
 # (1) 컨테이너 — 기존 token-usage e2e 와 포트·컨테이너·네트워크 이름이 다르다 (병렬 실행 충돌 없음)
 docker network create tokenmetricse2e 2>/dev/null || true
 trap 'docker rm -f ch-e2e-metrics mock-e2e-metrics >/dev/null 2>&1 || true; docker network rm tokenmetricse2e >/dev/null 2>&1 || true' EXIT
+
+# 이전 실행이 SIGKILL 등으로 trap 을 못 타면 컨테이너 이름이 남는다 — 새로 띄우기 전에 정리
+docker rm -f ch-e2e-metrics mock-e2e-metrics >/dev/null 2>&1 || true
 
 # CLICKHOUSE_SKIP_USER_SETUP=1: 공식 이미지는 비밀번호 미설정 시 default 유저의
 # 네트워크 접근을 차단(localhost 전용) — published port 경유(브리지 IP) 쿼리가 403이 됨
@@ -50,12 +53,12 @@ docker run -d --rm --name mock-e2e-metrics --network tokenmetricse2e -p 18001:80
   token-mock-provider:e2e
 
 for _ in $(seq 1 60); do
-  curl -sf http://127.0.0.1:18125/ping >/dev/null && \
-  curl -sf "${MOCK_URL}/healthz" >/dev/null && break
+  curl -s -f http://127.0.0.1:18125/ping >/dev/null && \
+  curl -s -f "${MOCK_URL}/healthz" >/dev/null && break
   sleep 1
 done
-curl -sf http://127.0.0.1:18125/ping >/dev/null || { echo "clickhouse not healthy after 60s"; exit 1; }
-curl -sf "${MOCK_URL}/healthz" >/dev/null || { echo "mock-provider not healthy after 60s"; exit 1; }
+curl -s -f http://127.0.0.1:18125/ping >/dev/null || { echo "clickhouse not healthy after 60s"; exit 1; }
+curl -s -f "${MOCK_URL}/healthz" >/dev/null || { echo "mock-provider not healthy after 60s"; exit 1; }
 
 # (2) DDL: 6a 초안(company)을 단일노드용으로 변환 — ON CLUSTER 제거, Replicated → MergeTree,
 #     Distributed('gpu-monitoring', …) → Distributed('default', …, rand()); dist→local 뷰 없이.
@@ -65,7 +68,7 @@ import pathlib, re, urllib.error, urllib.request
 
 CH = "http://127.0.0.1:18125/"
 # 단일노드 E2E 는 admin 수동 절차(accounts.sql)가 없으므로 이 스크립트가 fact DB 를 대신 생성
-sql = "CREATE DATABASE IF NOT EXISTS fact;\n"
+sql = "CREATE DATABASE IF NOT EXISTS fact;\nCREATE DATABASE IF NOT EXISTS gpu_data;\n"
 sql += pathlib.Path("ddl/company/raw_token_metrics.sql").read_text(encoding="utf-8")
 sql += "\n" + pathlib.Path("ddl/company/dim_token_metrics_service.sql").read_text(encoding="utf-8")
 
@@ -129,9 +132,10 @@ services:
 EOF
 mkdir -p "${TMP}"
 
-# 기대치 — mock datagen 결정성 (같은 seed·date·models)
-read -r EXP <<<"$(python3 tests/e2e/ci_expectations.py "${DATE_ARG}" "${SEED}" \
-  "claude-opus-4-8,claude-sonnet-5,claude-haiku-4-5")"
+# 기대치 — mock datagen 결정성 (같은 seed·date·models); 일반 대입이라야 set -e 가 실패를 잡는다
+# (여기·서브셸 없는 <<< here-string 대입은 실패해도 무시된다)
+EXP=$(python3 tests/e2e/ci_expectations.py "${DATE_ARG}" "${SEED}" \
+  "claude-opus-4-8,claude-sonnet-5,claude-haiku-4-5")
 EXP_GPU_ROWS=$(sed -E 's/.*rows_gpu=([0-9]+).*/\1/' <<<"$EXP")
 EXP_SERVING_ROWS=$(sed -E 's/.*rows_serving=([0-9]+).*/\1/' <<<"$EXP")
 EXP_GPU_HOURS=$(sed -E 's/.*gpu_hours_sum=([0-9.]+).*/\1/' <<<"$EXP")
@@ -162,7 +166,8 @@ expect_eq "mutations after 2 regular runs (fact + gpu_data)" "$(chq "${MUT_Q}")"
 sed -e "s/{DATE}/${DATE_ARG}/g" -e "s/{SERVICE}/${SVC}/g" \
     -e "s/{EXP_GPU_ROWS}/${EXP_GPU_ROWS}/g" -e "s/{EXP_SERVING_ROWS}/${EXP_SERVING_ROWS}/g" \
     -e "s/{EXP_GPU_HOURS}/${EXP_GPU_HOURS}/g" tests/e2e/verify_expected_results.sql \
-  | curl -sf --data-binary @- "${CH_URL}?default_format=TSV" > "${TMP}/verify_out.tsv"
+  | curl -s --fail-with-body --data-binary @- "${CH_URL}?default_format=TSV" > "${TMP}/verify_out.tsv" \
+  || { echo "E2E VERIFY QUERY FAILED:"; cat "${TMP}/verify_out.tsv"; exit 1; }
 if [ -s "${TMP}/verify_out.tsv" ]; then
   echo "E2E VERIFY FAILED:"; cat "${TMP}/verify_out.tsv"; exit 1
 fi
