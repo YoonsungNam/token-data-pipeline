@@ -541,7 +541,8 @@ def test_m3_builder_with_subset_blocks():
 
 def test_m3_inner_union_all_never_at_column_zero():
     # 블록 내부 UNION ALL은 들여쓰기 — 최상위 조립 토큰 "\nUNION ALL\n"과 충돌하지 않는다
-    for name, sql in steps.M3_BLOCKS_CORE:
+    # fix1 SHOULD-2: stretch 블록(T6)도 core와 같은 규율을 지킨다 — CORE + STRETCH 전부 순회.
+    for name, sql in steps.M3_BLOCKS_CORE + steps.M3_BLOCKS_STRETCH:
         assert "\nUNION ALL\n" not in sql, name
         assert "\nUNION DISTINCT\n" not in sql, name
 
@@ -620,11 +621,12 @@ def test_m3_child_counts_shares_serving_count_expression_with_t3():
     assert "countIf(metric != 'custom')" in steps.SUB_SERVING_CNT
 
 
-def test_m3_blocks_core_dist_joins_and_in_are_global():
-    # nit(12): M3_BLOCKS_CORE 각 블록 안에서 _dist 테이블을 향한 JOIN/IN은 전부 GLOBAL
+def test_m3_blocks_dist_joins_and_in_are_global():
+    # nit(12): M3 블록 각각 안에서 _dist 테이블을 향한 JOIN/IN은 전부 GLOBAL
     # (§4.0 분산 조인 표준) — GLOBAL LEFT JOIN이 아닌 " JOIN "이 없고, GLOBAL(NOT) IN (SELECT가
     # 아닌 "IN (SELECT"가 없다.
-    for name, sql in steps.M3_BLOCKS_CORE:
+    # fix1 SHOULD-2: stretch 블록(T6)도 core와 같은 규율을 지킨다 — CORE + STRETCH 전부 순회.
+    for name, sql in steps.M3_BLOCKS_CORE + steps.M3_BLOCKS_STRETCH:
         assert " JOIN " not in sql.replace("GLOBAL LEFT JOIN", ""), name
         for m in re.finditer(r"\bIN\s*\(SELECT", sql):
             prefix = sql[:m.start()]
@@ -935,7 +937,9 @@ def test_m4_quality_priority_order():
     assert " ".join(share_formula.split()) in " ".join(sql.split())
     assert "md.denominator_mode = 'token_not_reported', if(k.is_provider = 1, model_cost_krw, NULL)," in sql
     assert "model_cost_krw * share)" in sql
-    assert "md.denominator_mode = 'no_provider', toNullable(0.0)," in sql
+    # fix1 SHOULD-4: 이 리터럴은 model_cost_krw·allocated_cost_krw 두 multiIf 분기에 각각
+    # 등장한다(twin-string) — 한쪽이 지워져도 in 단언은 살아남으므로 개수까지 고정한다.
+    assert sql.count("md.denominator_mode = 'no_provider', toNullable(0.0),") == 2
 
 
 def test_m4_expected_key_tuple():
@@ -974,6 +978,31 @@ def test_run_m4_dup_suspect_warn_and_step_error():
     assert out["warns"] == [f"dup_suspect:{DB_MART}.agg_token_model_share_1d_dist"]
     with pytest.raises(steps.StepError):
         steps.run_m4(FakeGate(verify_ok=False), M4_DATE)
+
+
+def test_run_m4_uses_dist_for_exists_verify_and_local_for_delete():
+    # fix1 SHOULD-3 — run_m1과 같은 M15 규율: run_m4가 dist/local을 뒤바꿔 넘기면 exists/verify가
+    # 로컬 테이블을 보거나 DELETE가 ON CLUSTER 분산 테이블을 때리게 된다.
+    g = FakeGate()
+    steps.run_m4(g, M4_DATE)
+    prefix = f"{DB_MART}.{steps.T_M4}"
+    exists_names = [name for op, name in g.full_names if op == "exists"]
+    delete_names = [name for op, name in g.full_names if op == "delete"]
+    verify_names = [name for op, name in g.full_names if op == "verify"]
+    assert exists_names == [f"{prefix}_dist"]
+    assert delete_names == [f"{prefix}_local"]
+    assert verify_names == [f"{prefix}_dist"]
+
+
+def test_m4_surviving_mutation_exact_strings():
+    """fix1 SHOULD-5 — 뮤테이션 테스트에서 살아남는 핵심 상수 문자열 4종을 개별 고정한다:
+    (1) model_total_wtokens 출력 = md.w_m, (2) 소비자 행도 제공자의 M1 비용을 읽는 outer m1c 조인,
+    (3) provider_service 키의 제공자 판별식, (4) _M4_M1C의 date 바인딩 술어(조각 자체에서 확인)."""
+    sql = steps.SQL_M4
+    assert "md.w_m                                                            AS model_total_wtokens," in sql
+    assert "GLOBAL LEFT JOIN m1c AS mc ON mc.model = k.model AND mc.service = k.provider_service" in sql
+    assert "toUInt8(md.n_prov = 1 AND w.service = md.provider)" in steps._M4_WT_KEYS
+    assert "WHERE date = {d:Date} AND has_gpu_rows = 1" in steps._M4_M1C
 
 
 # --- M3 stretch 3블록 (share 경고) ---------------------------------------------------

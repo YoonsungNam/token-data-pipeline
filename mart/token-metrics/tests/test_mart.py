@@ -355,3 +355,44 @@ def test_allocate_shared_matches_m4_all_services_semantics():
         assert abs(out[s] - total * w / w_sum) < 0.01
     assert allocate_shared(total, {"A": 240000.0}) == {"A": 240000.0}
     assert allocate_shared(total, {}) == {}
+
+
+# ============================================================================
+# fix1 MUST-1(c) — C4 provider_reported 분모: SQL_M4 mode CTE 산식 = 파이썬 참조 구현 고정
+# ============================================================================
+def test_c4_provider_reported_denominator_matches_sql_formula_and_python_reference():
+    """C4 — steps.py SQL_M4의 mode CTE 산식(D = max(W(p), Σ_{s≠p}W(s)); 제공자 자기분 share =
+    max(W(p)−Σc, 0)/D; 소비자 share = W(s)/D)을 파이썬으로 그대로 재현해 매 케이스
+    Σ share = 1·Σ 배분 = C를 확인하고, app.mart.provider_self_weight + allocate_shared
+    (기존 참조 구현)이 같은 입력에서 같은 share를 내는지 대조한다 — SQL 산식과 파이썬 참조
+    구현이 서로 고정(pinned)된다. w_p > Σc / w_p = Σc / w_p < Σc / w_p = 0(Σc > 0)/
+    소비자 없음 5가지 케이스를 순회한다."""
+    C = 12345.6
+    cases = [
+        (100.0, {"A": 30.0, "B": 20.0}),   # w_p(100) > Σc(50)
+        (100.0, {"A": 60.0, "B": 40.0}),   # w_p(100) == Σc(100)
+        (100.0, {"A": 90.0, "B": 60.0}),   # w_p(100) < Σc(150) — consumer_tokens_exceed_provider
+        (0.0, {"A": 30.0, "B": 20.0}),     # w_p == 0, Σc > 0
+        (100.0, {}),                        # 소비자 없음
+    ]
+    for w_p, consumers in cases:
+        sum_c = sum(consumers.values())
+
+        # --- SQL_M4 mode CTE의 세 식(D = max(w_p, Σc))을 파이썬으로 직접 재현 ---
+        d = max(w_p, sum_c)
+        assert d > 0, (w_p, consumers)   # 이 표의 케이스는 전부 provider_reported로 도달(D=0은 token_not_reported)
+        provider_share = max(w_p - sum_c, 0.0) / d
+        consumer_shares = {s: c / d for s, c in consumers.items()}
+        shares = [provider_share] + list(consumer_shares.values())
+        assert abs(sum(shares) - 1.0) < 1e-9, (w_p, consumers, shares)
+        allocated = [s * C for s in shares]
+        assert abs(sum(allocated) - C) < 1e-9, (w_p, consumers, allocated)
+
+        # --- 파이썬 참조 구현(app.mart) 대조 — provider_self_weight + UNCHANGED allocate_shared가
+        #     같은 입력에서 SQL과 같은 share를 내야 한다(총합 = D가 항상 성립하므로 자동으로 맞는다) ---
+        wtokens = {"provider": provider_self_weight(w_p, sum_c), **consumers}
+        alloc_ref = allocate_shared(C, wtokens)
+        assert alloc_ref["provider"] / C == pytest.approx(provider_share)
+        for s in consumers:
+            assert alloc_ref[s] / C == pytest.approx(consumer_shares[s])
+

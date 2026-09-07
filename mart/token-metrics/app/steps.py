@@ -706,8 +706,14 @@ def run_m3(gate, date: str, blocks: list[tuple[str, str]] | None = None) -> dict
 #   n_prov = 0 AND gpu 행 있음(test뿐) → no_provider        (C=0, allocated 0, share는 정보용)
 #   n_prov = 0 AND gpu 행 전혀 없음    → external_api       (벤더 단가 ③ / 1e6, tier='standard')
 #   W(m) = 0 AND C > 0                → token_not_reported (제공자 행 share=1 전액, I8)
-#   usage_includes_consumers = 1      → provider_reported  (W(m)=W(p,m), 제공자 자기분 = max(W(p)−Σ_{s≠p}W(s), 0))
+#   usage_includes_consumers = 1      → provider_reported  (C4: D = max(W(p), Σ_{s≠p}W(s));
+#                                        소비자 share = W(s)/D, 제공자 자기분 share =
+#                                        max(W(p)−Σ_{s≠p}W(s), 0)/D → Σ share = 1, Σ 배분 = C —
+#                                        이 모드에서 예외 없이 I3 성립)
 #   기본                               → all_services       (W(m)=Σ_s W(s,m), 정의서 3.6)
+# W(p)=0 이고 소비자 토큰 > 0이면 mode는 provider_reported로 남고(w_m = Σ 소비자 > 0) 소비자가 C
+# 전액을 자기 비중대로 가져간다 — 브리프 규칙 4의 'provider_reported·W(p)=0 특례(소비자 share NULL)'는
+# C4로 대체(설계 해석; M3 consumer_tokens_exceed_provider가 그 날을 표시).
 # C(m)은 같은 배치에서 선행 적재된 M1 제공자 행(has_gpu_rows=1)의 model_cost_krw를 읽는다
 # (설계 해석 — TCO 재계산 없음: 실행 순서 M1 → M3 → M4는 batch.RUNNERS가 보장).
 # quality_flag 우선순위: partial > no_tco > provider_ambiguous > vendor_price_missing
@@ -776,6 +782,7 @@ _M4_VENDOR = f"""(SELECT model,
 _M4_M1C = f"""SELECT model, service, model_cost_krw, quality_flag, 1 AS has_m1
     FROM {DB_MART}.{T_M1}_dist
     WHERE date = {{d:Date}} AND has_gpu_rows = 1"""
+
 # 공통 CTE 블록 — SQL_M4와 EXPECTED_SQL_M4가 문자 단위로 공유(파생 오차 0). keys는 INSERT만 붙인다.
 _M4_CTES = f"""WITH
     wt AS (
@@ -808,6 +815,7 @@ _M4_CTES = f"""WITH
                wp.wtok                                   AS w_prov,
                r.usage_includes_consumers                AS uic,
                if(uic = 1, greatest(w_prov, w_all - w_prov), w_all)  AS w_m,
+               -- C4: 비용 보존 분모 = max(W(p), Σ소비자)
                mc.model_cost_krw                         AS model_cost_krw,
                v.vendor                                  AS vendor,
                v.p_in                                    AS p_in,
