@@ -1,6 +1,6 @@
 # token-data-pipeline 설계 문서
 
-- 작성일: 2026-07-10 · **현재 버전 v1.13 (2026-07-14)** — 개정 이력은 §0
+- 작성일: 2026-07-10 · **현재 버전 v1.14 (2026-09-04)** — 개정 이력은 §0
 - 상태: 설계 확정 (사용자 승인) — 구현 진행 중 (Plan 1 mock-provider·Plan 2a collector core 머지)
 - 참조: [gpu-data-pipeline 분석](../../gpu-data-pipeline-analysis.md), [token-usage-api-spec](https://github.com/YoonsungNam/token-usage-api-spec) (`token-usage-api.yaml` v1.1.0, 로컬 클론 `/home/mini/github/token-usage-api-spec`)
 
@@ -29,6 +29,7 @@
 빈 문자열**(identified 실명 표기는 재식별·실명 노출 확대 우려로 별도 결정 — §9-1 보류 항목에
 추가, §4.2/§4.3 개정) |
 | v1.13 | 2026-07-14 | **company 검증 2단계 전략 실체화** (§7.2에 "company 검증 2단계 전략" 소절 신설): 1단계(격리) — `tools/gen_verify_ddl.py`가 `ddl/company/*.sql`에서 DB 한정자·ZK 복제 경로·Distributed 인자·GRANT 대상만 치환해 격리 DB 3종(기본안 `token_verify_fact`/`token_verify_dim`/`token_verify_mart`)·전용 계정(`token_verify`) 대상 `ddl/company-verify/*.sql`을 생성(커밋, `--check` CI 드리프트 가드) + k8s overlay `company-verify`(Secret/ConfigMap `-verify` 접미) + `install.sh <module> company-verify`(VM push 1단계 비활성) + `rerun.py --cronjob` 오버라이드. 절차 문서 `docs/operations/company-verify.md` 신설(리스크 표·설치 절차·성공 기준 체크리스트·카나리아 전환·철수). §9-19에 "격리 검증으로 해소 경로 확보" 갱신 |
+| v1.14 | 2026-09-04 | **메트릭 싱크 확장 — 자매 스펙 [/v1/metrics 반입 설계 2026-08-31](2026-08-31-token-metrics-ingest-design.md) 참조**: `/v1/metrics`(GPU Hour·성능 메트릭) 반입을 §5.9 클론 규칙의 첫 적용 사례로 추가 — 신규 모듈 2개(`collectors/token-metrics/`, `mart/token-metrics/`)·fact 4·gpu_data 5·mart 4 테이블(§4.0 표 확장), Layer C 스케치를 실제 테이블명·비용 모델 정의서로 확정(§4.4), 시간별 모듈 NOT_READY 번역·소프트 데드라인 예약 산식(§5.2), 마커 라벨 `module=token-metrics`(8줄/일, `slot=/final=`)·`module=mart-metrics`(§5.6/§7.3), 계약 2′·3′·6조 예외·9조 싱크별 데드라인(§5.9), 배포 원칙 zero-diff·독립 배포·`release-images` 분리(§7.2), 운영 도구 rerun 체인 표(§8.3), §9 #12·#13·#14 확정 + #21~#27 신규. **기존 모듈·테이블·마커는 무변경** — 본 개정은 전부 additive |
 
 ## 1. 배경과 목적
 
@@ -87,11 +88,15 @@ token-data-pipeline/
 │                               # k8s/(base+overlays), build.sh, install.sh, tools/rerun.py, tests/
 │   # (향후) collectors/token-usage-snapshot/ · token-usage-storage/ —
 │   #        적재 계약(§5.9) 준수하는 독립 모듈로 클론 생성, 소스 확정 시
+├── collectors/token-metrics/   # (v1.14) /v1/metrics 수집기 — §5.9 클론 규칙 적용 사례: app/, ddl/{stage,company}/,
+│                               # k8s/, build.sh, install.sh, tools/{rerun,manual_load}.py, tests/ (자매 스펙 §5)
 ├── assets/
 │   ├── user-org/               # csv_to_dim_user_org_insert.py (SQL 생성), ddl/, (2단계: sync CronJob)
 │   └── model-catalog/          # ddl/ + seed_dim_token_model.sql (멱등 시드)
 ├── mart/token-usage/           # batch.py, mart.py, ddl/, k8s/, build.sh, install.sh,
 │                               # tests/, tools/rerun.py, warning_messages.md
+├── mart/token-metrics/         # (v1.14) mart-metrics — §5.9 클론 규칙 적용 사례: app/{batch,mart}.py, ddl/, k8s/,
+│                               # build.sh, install.sh, tools/rerun.py, tests/ (자매 스펙 §6)
 ├── tools/
 │   ├── mock-provider/          # 스펙 구현 가짜 서비스 (FastAPI) + k8s + 시나리오 옵션
 │   └── delete_data.py          # (date범위[, service]) fact 삭제 + user_id 축 파기 모드 (§8.3)
@@ -138,6 +143,28 @@ token-data-pipeline/
 (dim 3종은 소용량이라 브로드캐스트 비용 무시 가능 — 동료 mart/aip에서 검증된 패턴.
 dim이 커지면 전 샤드 전량 적재 방식으로 전환을 검토). 이 표준은 ddl과 §7.1 mart SQL,
 stage RUNBOOK의 Distributed 검증 항목에 일관 반영한다.
+
+**v1.14 메트릭 싱크 확장** (자매 스펙 §4.0 — DDL 매니페스트·P1 항목은 자매 스펙) — 물리 표 신규 행:
+
+| 테이블 | PARTITION BY | ORDER BY | Distributed 샤딩키 | 비고 |
+|---|---|---|---|---|
+| `fact.raw_token_metrics_gpu_1d` | toYYYYMM(date) | `(date, service, model, gpu_type, category)` | `cityHash64(service)` | P0, TTL 25 MONTH |
+| `fact.raw_token_metrics_serving_1d` | toYYYYMM(date) | `(date, service, model, metric, name)` | `cityHash64(service)` | P0, long form |
+| `fact.raw_token_metrics_summary_1d` | toYYYYMM(date) | `(date, service)` | `cityHash64(service)` | P0, 앵커(응답당 1행) |
+| `fact.collect_audit_metrics_1d` | toYYYYMM(date) | `(date, service, replaced_at)` | `cityHash64(service)` | P0, append-only |
+| `gpu_data.dim_token_metrics_service` | (파티션 없음) | `(service)` | `rand()` | P0, 메트릭 레지스트리 |
+| `gpu_data.dim_token_model_alias` | (파티션 없음) | `(alias, effective_from)` | `cityHash64(alias)` | P0 |
+| `gpu_data.dim_token_gpu_tco` | (파티션 없음) | `(gpu_type, effective_from)` | `cityHash64(gpu_type)` | P0 |
+| `gpu_data.dim_token_gpu_allocation` | (파티션 없음) | `(service_group, gpu_type, effective_from)` | `cityHash64(service_group)` | P0-stretch |
+| `gpu_data.dim_token_vendor_price` | (파티션 없음) | `(provider, model, tier, effective_from)` | `cityHash64(model)` | P0-stretch |
+| `mart.agg_token_model_cost_1d` | toYYYYMM(date) | `(date, service, model)` | `cityHash64(service)` | P0 |
+| `mart.token_metrics_check_1d` | toYYYYMM(date) | `(date, service, check_name, model, gpu_type)` | `cityHash64(service)` | P0 |
+| `mart.agg_token_model_share_1d` | toYYYYMM(date) | `(date, model, service, provider_service)` | `cityHash64(model)` | P0-stretch |
+| `mart.agg_token_gpu_group_1d` | toYYYYMM(date) | `(date, service_group, gpu_type)` | `cityHash64(service_group)` | P0-stretch |
+
+- **`--replace` 2단계 IN 배칭**(rerun·manual): (A) 대상 날짜 전 서비스 fetch/CSV 파싱·normalize·가드 → (B) 테이블당 `_delete_day_in(table, date, services)` 앵커(summary) → gpu → serving → (C) 서비스별 INSERT(gpu → serving → summary 마지막). 정기 경로는 서비스별 순차·INSERT만(뮤테이션 0).
+- **모듈별 예산·가드**: 정기 시간별 실행(8슬롯) 뮤테이션 0 / `--replace` 날짜당 fact ≤3 / mart-metrics rerun 날짜당 ≤4(M1·M3·M4·M2). 일 총량 150 안에서 mart-only rerun D ≤ 20일, fact+mart rerun D ≤ 11일(격리 검증 병행 시 D ≤ 2). 실행당 가드 `METRICS_MAX_MUTATIONS_PER_RUN`(수집기, 기본 45 = 3×15)·`MART_METRICS_MAX_MUTATIONS_PER_RUN`(mart, 기본 64 = 4×16) — 첫 DELETE 전 존재확인 선조회로 합산, 초과 시 `FAILURE reason=mutation_budget`. 두 `rerun.py` 모두 **`--chunk-days`(기본 7)** 로 긴 범위를 순차 Job으로 분할. 재수집 창은 10:50 KST 이후(피크 02:00~03:00 회피).
+- **뮤테이션 장부**: 경로별 뮤테이션 수 표는 `collectors/token-metrics/ddl/README.md`(자매 스펙 §4.0 표와 동일)에 두고 경로·예산 변경 시 함께 갱신한다.
 
 ### 4.1 fact DB (수집 원본)
 
@@ -212,6 +239,8 @@ summary 행은 반드시 적재** — §5.2).
 - view table의 최종 컬럼 계약은 사내 대시보드 협의로 확정 (미결 §9-1 — org 롤업 기본 표시 깊이,
   anonymous 버킷 표시, 불완전 데이터 마커 포함). 확정 전에는 mart와 동일 스키마로 운영.
 
+**v1.14 P0 예외 — 메트릭 대시보드의 직접 조회** (자매 스펙 §6.2·§8): 메트릭 싱크의 대시보드는 `view_token_*` 복사본 없이 **mart/fact `_dist`를 공유 계정 `mart`로 직접 조회**한다(`mart.agg_token_model_cost_1d`, `mart.token_metrics_check_1d`, `fact.raw_token_metrics_*_1d`). `gpu_data.view_token_metrics_*` 복사본 4종은 P1(§9-1 잔여 항목). 토큰 측 view table 계약과 `created_by` 규칙은 무변경.
+
 ### 4.3 mart DB (1차 집계)
 
 | 테이블 | grain | 내용 |
@@ -277,6 +306,8 @@ GPU 타입 인스턴스에 분리 서빙). 사내 서빙 모델의 "원가"는 �
   분석 용도로만(차지백 아님).
 - **소유권**: 이 확장은 본 레포 소관 — 동료 레포(RESPONSIBILITIES 기준)에는 서빙 메타에 해당하는
   계층이 없고 소비자가 이쪽이다. 동료 테이블은 같은 ClickHouse에서 **읽기 전용 입력**으로만 조인.
+
+**v1.14 Layer C 확정** (자매 스펙 §4·§6.4 — **비용 모델 = [비용 모델 정의서](../../cost-model-spec.md)**, 충돌 시 정의서 우선): 위 스케치 명은 실제 테이블명으로 대체된다 — `fact.model_gpu_usage_1d` → `fact.raw_token_metrics_gpu_1d`(date × service × model × gpu_type × category(serving|standby|test); `gpu_hours`가 비용의 유일한 근거, phase 없음), `gpu_data.dim_gpu_cost` → `gpu_data.dim_token_gpu_tco`(gpu_type × effective_from, `tco_krw_per_gpu_hour` KRW), `gpu_data.dim_model_serving_map` → `gpu_data.dim_token_model_alias`(alias → canonical, effective_from 이력), `mart.model_cost_1d` → `mart.agg_token_model_cost_1d`. **조인 키 = `(date, service, canonical)`** — 토큰 `model`과 메트릭 `model`을 모두 `dim_token_model_alias`로 canonical 정규화한 뒤 결합한다((date, model)만의 결합은 폐기). 비용 모델: C = (serving + standby) × TCO, test·유휴는 서비스 그룹 귀속, 사내 플랫폼 제공 모델의 원가는 소비 서비스에 가중 W(input 1 / cached 0.1 / output 4) 토큰 배분, 사외 API 모델은 벤더 KRW 단가(`dim_token_vendor_price`) — 매핑 세부는 자매 스펙 §6.4. "차지백에 사용하지 않는다" 원칙은 유지.
 
 ## 5. collectors/token-usage
 
@@ -362,6 +393,8 @@ FAILURE로 마킹하고 **정상 경로로 종료**해 최종 BATCH_RESULT 출�
 | 200 + 빈 records | 사용량 실제 0 | 서비스 status=NODATA (성공) — **summary 행은 적재** |
 | 페이지 상한 도달 | 규모 초과/무한 루프 | 부분 적재 금지, FAILURE (리뷰 #6) |
 
+**v1.14 시간별 모듈의 번역** (자매 스펙 §5.2 — §5.9 계약 4조 적용 사례): `collectors/token-metrics`는 하루 8슬롯(`schedule "5 2-9"`, 02:05~09:05 KST)으로 돌며 409를 **비최종 슬롯 `SKIPPED reason=not_ready`(다음 슬롯 재시도) / 최종 슬롯(batch_time KST hour ≥ `FINAL_HOUR_KST`=9) `FAILURE reason=not_ready_at_0900`**으로 번역한다 — 위 표의 "서비스당 누적 대기" 대신 슬롯 재방문이 대기 역할(큐 끝 1회 재방문 min(Retry-After, 300s)은 유지). 소프트 데드라인 안 적재 예약 산식: `SOFT_DEADLINE_MINUTES=40`(2400s = 신규 착수·409 재방문 창 20분 + 예약 적재 예산 `LOAD_BUDGET_S=1200`), 적재 착수 전 `deadline − now < LOAD_BUDGET_S`면 미착수 FAILURE; 불변식 `SOFT×60 > LOAD_BUDGET`은 `test_config.py`로 고정. 슬롯 산식 `startingDeadlineSeconds 540 + activeDeadlineSeconds 3000 + grace 30 = 3570s < 3600s`(`concurrencyPolicy: Forbid`가 다음 슬롯을 건너뛰지 않음). `api_since`/`until` 게이트와 최종 슬롯 판정은 정기 실행에만 적용, `--from/--to`·manual 모드의 409는 `FAILURE reason=not_ready`.
+
 ### 5.3 페이지네이션 불변성 검사 (리뷰 #3 — HIGH)
 
 - 매 페이지의 `(serviceGroup, service, date, generatedAt)`이 **첫 페이지와 다르면** 해당 서비스의
@@ -418,6 +451,8 @@ FAILURE로 마킹하고 **정상 경로로 종료**해 최종 BATCH_RESULT 출�
 - **mart BATCH_RESULT 필드 규약 (v1.10)**: mart BATCH_RESULT의 `missing_services` 값은
   쌍따옴표로 감싼다(서비스명 공백 보호) — `coverage=N/M`·`rows_mart`·`rows_view` 필드는
   mart 전용(§7.1, collectors BATCH_RESULT에는 없음).
+
+- **v1.14 마커 라벨 추가** (자매 스펙 §5.2·§7.5): `module=token-metrics` — BATCH_RESULT는 **하루 8줄**(슬롯당 1줄, 필드 `slot=HH final=0|1` 추가; 일 상태 = `final=1` 줄, `final=1` 부재 = FAILURE; CronJob `backoffLimit: 0`이라 Job당 시도 1회 = 줄 1개), SERVICE_RESULT에 `source_type=metrics-api-v1|manual-v0`. `module=mart-metrics` — BATCH_RESULT 1줄/실행. 기존 `token-usage`·`mart-token` 마커 문법·필드는 무변경(§7.3 패널 규칙 참조).
 
 ### 5.7 파일 구성·환경변수
 
@@ -506,6 +541,13 @@ raw 메트릭이 object storage로 제공, (케이스 2) 스펙의 정보를 모
     매핑 불가 형식·코드는 PERMANENT_ERROR.
   - **응답 크기 상한 + 스트리밍 파싱**(MAX_PAGES의 등가물) — 단건 대용량 응답의 OOM 방지
     (동료 #133 교훈).
+
+**v1.14 메트릭 싱크의 계약 적용** (자매 스펙 §4.3·§5.2·§5.4 — 클론 규칙의 첫 적용 사례):
+
+- **2′ 멱등성**: 교체 시 **DELETE 순서 summary(앵커) → gpu → serving, INSERT 순서 gpu → serving → summary 마지막**(`insert_distributed_sync=1`, `insert_deduplicate=0`) — 앵커 존재 = 적재 완료. 앵커 없이 자식 행만 남은 부분 적재는 다음 슬롯(date=오늘−1) 또는 운영자 `--from/--to` rerun이 복구하고, mart-metrics는 **앵커가 있는 (date, service)의 자식 행만** 읽는다(잔여물은 M3 `partial_load`).
+- **3′ 앵커 행**: `fact.raw_token_metrics_summary_1d`가 summary 행의 역할 — 응답당 정확히 1행, NODATA(rows==0)도 기록, `is_derived` 없음(소스가 항상 응답 단위 확정 데이터).
+- **6조 예외**: 메트릭 싱크는 `dim_token_service`에 등록하지 않는다 — **자기 레지스트리 `gpu_data.dim_token_metrics_service`**(`api_since`/`coverage_since`/`until`, 자기 source_type 범위 원자 교체)를 가지며 **토큰 coverage 게이트(mart STEP 0)에 편입되지 않는다**. 메트릭 커버리지 판정은 mart-metrics M3 `metrics_missing`(FAIL).
+- **9조 싱크별 데드라인**: 토큰 싱크 T+1 03:30(불변) / 메트릭 싱크 **T+1 10:04**(최종 슬롯 시작 ≤09:14 + `activeDeadlineSeconds` 3000s) → **mart-metrics 10:20**. 토큰 mart(04:00)와 mart-metrics는 독립 스케줄이며 같은 구간 backfill은 토큰 mart 재수행 후 mart-metrics.
 
 ## 6. assets
 
@@ -688,6 +730,8 @@ API 거동을, production DB(`fact`/`gpu_data`/`mart`)를 오염시키지 않고
 - **철수**: 검증 실패 또는 전환 완료 후 `DROP DATABASE` 격리 DB 3종 + `DROP USER
   token_verify` + 1단계 CronJob 삭제 (`docs/operations/company-verify.md` 커맨드 포함).
 
+**v1.14 배포 원칙 — "새 코드만 새로 배포"** (자매 스펙 §7.5): 사내 분기본이 존재하는 상태에서 신규 모듈을 반입할 때 (1) **기존 모듈 zero-diff** — `collectors/token-usage/**`, `mart/token-usage/**`, `assets/user-org/**`, `assets/model-catalog/`의 기존 파일, `tools/verify/invariants.sql`, `docs/operations/{company-verify,stage-runbook,rerun}.md`, `docs/monitoring/grafana_dashboard_token_usage.json`, `.github/workflows/{release-images,test-collector,test-mart}.yml`, 사내 리소스(`token-usage-ch-secret`, `token-usage-endpoints`, `token-usage-ca-bundle`, `token-usage-collector`, `token-mart-daily`, `token-mart-ch-secret`); (2) **신규 모듈 독립 배포** — 이미지 `token-metrics-collector`·`token-mart-metrics` 2개, 각자 `build.sh company --registry <harbor> --tag <sha7>`/`install.sh company`가 자기 리소스만 생성·갱신, Harbor 반입은 sha7 태그 신규 이미지 2개만, 공유 `registry-pull-secret`은 없을 때만 생성; (3) **`release-images` 분리** — `release-images-metrics.yml` 신규(paths·matrix = 신규 모듈 2개), 기존 `release-images.yml` 무수정(기존 이미지 재빌드 유발 금지). 공유 도구는 additive 등록만(`tools/gen_stage_ddl.py` SOURCES·`tools/gen_verify_ddl.py` MODULES·`run_invariants.py --sql`·`test-assets.yml` paths). 격리 검증(company-verify)은 선택 — 신규 모듈은 기존 테이블에 쓰지 않는다. 롤백 = CronJob 2개 suspend + 신규 테이블 DROP(기존 파이프라인 영향 0).
+
 ### 7.3 모니터링
 
 - **BATCH_RESULT(1줄/실행) → 기존 Grafana batch_result 대시보드 무수정 편입** (module 2종:
@@ -699,6 +743,8 @@ API 거동을, production DB(`fact`/`gpu_data`/`mart`)를 오염시키지 않고
   serviceGroup 단위 sum() 금지** 주의를 Grafana 가이드에 명시.
 - 홈랩 테스터 대시보드: `docs/monitoring/grafana_dashboard_token_usage.json` —
   `gpu_data.view_*` 조회 패널 + coverage/품질 패널.
+
+- **v1.14 batch_result 패널 규칙 1건** (자매 스펙 §7.5): `module=token-metrics`는 하루 8줄이며 **일 상태 = `final=1` 줄, `final=1` 부재 = FAILURE**; `module=mart-metrics`는 1줄(일배치 누락 평가창 25h 동일). 사내 batch_result 대시보드의 유일한 변경(레포 밖, 모니터링 소유자 작업 — §9-23); 미확정 시 fallback = mart-metrics M3 `metrics_missing` 패널 + 임시 LogsQL `module=token-metrics final=1 status=FAILURE`. 메트릭 대시보드 안내는 `docs/monitoring/README.md` 신규 절(기존 절 무수정), 대시보드 JSON은 `mart/token-metrics/` 안.
 
 ## 8. mock-provider · 테스트 · 운영
 
@@ -737,6 +783,17 @@ API 거동을, production DB(`fact`/`gpu_data`/`mart`)를 오염시키지 않고
   (25개월치 mart rerun 우회는 비현실적), 절차는 rerun.md에 "파기 요청 처리"로 명시.
   기존 두 계정의 ALTER DELETE GRANT로 충족되는지, 전용 운영 계정을 둘지는 accounts.sql 설계에서 확정.
 - `ddl/*/validation.sql`: 날짜 커버리지, dim 키·구간 중복, created_by 이상, raw 중복 등 상비 검증 쿼리.
+
+- **v1.14 메트릭 싱크 운영 도구** (자매 스펙 §5.5·§5.6·§6.3·§7.1) — rerun 체인 표:
+
+| 도구 | CronJob | command | 옵션 | 창 |
+|---|---|---|---|---|
+| `collectors/token-metrics/tools/rerun.py` | `token-metrics-collector` | `python -m app.main --from --to [--service] [--replace]` | `--chunk-days`(기본 7) · `--chain-mart`(→ 아래 mart-metrics rerun, 동일 날짜 그대로 전파) | 10:50 KST 이후 + 활성 `token-mart-metrics` Job 0 |
+| `mart/token-metrics/tools/rerun.py` | `token-mart-metrics` | `app.batch` | `--chunk-days`(기본 7) | 10:50 이후; 토큰 mart와 같은 구간 backfill은 토큰 mart 재수행 후 |
+| `collectors/token-metrics/tools/manual_load.py` | `token-metrics-collector`(Job 1회) | `python -m app.main --manual-gpu … --manual-serving … [--manual-engine …] --from --to [--replace] [--generated-at]` | `--gpu --serving [--engine] [--replace] [--context --namespace]` — CSV → ConfigMap `token-metrics-manual-<ts>` → Job → 완료 후 ConfigMap 삭제; 템플릿 `docs/templates/token_metrics_manual_v0_{gpu,serving,engine}.csv` | go-live 이전 구간(날짜 제약 없음) |
+| `tools/verify/run_invariants.py --sql tools/verify/invariants_metrics.sql` | — | — | additive `--sql`(기본값 = 기존 `invariants.sql`, 무변경) | 배포·rerun 후 |
+
+`--replace`는 rerun·manual 공통 — 기존 앵커(API·manual 불문)가 있으면 `--replace` 없이는 `already_loaded` 스킵(안전 기본값). 뮤테이션 예산·`--chunk-days` 분할은 §4.0 v1.14 항목.
 
 ### 8.4 정정(restatement) 프로토콜 (v1.4)
 
@@ -785,15 +842,22 @@ ClickHouse가 유일 사본, 25개월 보존·차지백 근거). 동료 레포�
 | 9 | **서비스 개명 시 과거 데이터 이관 정책**(이관/삭제/별도 시리즈 보존) | enabled=0 유지 + 신규 이름으로 신규 시리즈 | 첫 개명 사례 전 결정 |
 | 10 | **object storage 소스 계약** — manifest 스키마·경로 규약·파일 포맷·보존창·기준정보 A의 형식/이력 제공 여부·**데이터 확정 시각(readiness SLO, §5.9 계약 9조)** | 케이스 발생 시 모듈 신설 | 해당 소스 제공팀과 협의 |
 | 11 | **스냅샷 API 소스 계약** — readiness/finality 신호, 응답 크기 상한, **데이터 확정 시각(readiness SLO)** (§5.9) | 케이스 발생 시 모듈 신설 | 해당 서비스팀과 협의 (표준 usage-api-v1 구현 유도가 1순위) |
-| 12 | **서빙 플랫폼 메타 소스** — model→GPU 할당 이력(gpu_type, phase, 시간) 제공 가능 여부 (§4.4 Layer C 전제) | Layer C 보류 | 서빙 플랫폼(kserve/vLLM) 운영팀 협의 |
-| 13 | **모델명 매핑 정본** — token-usage-api `model` ↔ 서빙 식별자 (dim_model_serving_map) | Layer C 보류 | §9-12와 함께 협의 |
-| 14 | **GPU 시간당 원가 소스** — 산정 정책(감가·전력·상면), 동료 `dimension.gpu_model_quota_info`와의 관계 | Layer C 보류 | 재무/인프라 정책 확인 |
+| 12 | **서빙 플랫폼 메타 소스** — model→GPU 할당 이력(gpu_type, phase, 시간) 제공 가능 여부 (§4.4 Layer C 전제) | **확정(자매 스펙)** — 서비스 자기신고 `/v1/metrics` gpu 블록(model × gpuType × category, gpuHours; phase 없음), go-live 이전 구간은 manual-v0 | 자매 스펙 §4.1·§5.5 (v1.14) |
+| 13 | **모델명 매핑 정본** — token-usage-api `model` ↔ 서빙 식별자 (dim_model_serving_map) | **확정(자매 스펙)** — 메타데이터 시트 `모델` 탭 → `gpu_data.dim_token_model_alias`(alias → canonical, effective_from 이력; 생성기 `assets/model-catalog/sheet_to_dim_token_model_alias_insert.py`) | 자매 스펙 §4.2·§7.2 (v1.14) |
+| 14 | **GPU 시간당 원가 소스** — 산정 정책(감가·전력·상면), 동료 `dimension.gpu_model_quota_info`와의 관계 | **확정(자매 스펙)** — `gpu_data.dim_token_gpu_tco`(gpu_type × effective_from, KRW/GPU·h, basis ∈ depreciation\|lease\|power-inclusive\|tco; 값은 NULL 플레이스홀더 → 비용 NULL 전파, 실값은 admin 시드·생성기 `csv_to_layer_c_dim_insert.py`) | 자매 스펙 §4.2·M1 (v1.14) |
 | 15 | **유휴·공유 GPU 정책** — 시분할 다중 모델 공유의 gpu_hours 안분, 통합 배포의 input/output 원가 가중치 | 범위 외 선언 | Layer C 설계 확정 시 |
 | 16 | **보존창 밖 수동 정정 절차** — fact 수동 INSERT 규약·차지백 소비자 공지 (§8.4-3) | RESTATEMENT 감지·감사 이력은 설계 반영됨 | 운영 문서 작성 시 확정 |
 | 17 | **백업 방식·주기·보관처·소유/비용** (§8.5 — 유일 사본 한정) | 백업 없이 시작 금지(사내 반입 전 확정) | 클러스터 소유자(동료)와 합의 |
 | 18 | **DB 소유권 — 확정**: fact 공유(2026-07-13)·gpu_data `*_token_*` 접두사. 잔여: mart DB 공유/전용(Plan 3 DDL에서), 뮤테이션 예산 수치(일 150/피크 80 제안)의 소유자 최종 확인 | 반영 완료(PR #3, 수집기 코드) | mart는 Plan 3 DDL 초안 리뷰에서 |
 | 19 | **stage 레플리카 증설 여부** — 전-레플리카 검증 항목(§7.2 환경 전제)을 stage에서 할지 company로 이관할지. **v1.13: company 격리 검증(company-verify)으로 해소 경로 확보** — 실제 company 2s×2r 클러스터 위에서 production DB를 건드리지 않고 mutations_sync=2 다중 레플리카 대기·clusterAllReplicas 폴링·복제 lag count 재시도를 실데이터로 검증할 수 있다(`docs/operations/company-verify.md`) | 레플리카 1 유지 + company 이관(격리 검증으로 이관 경로 구체화, v1.13) | stage 런북 작성 전 결정 — 격리 검증 통과를 회신 조건으로 사용 가능 |
 | 20 | **홈랩 VictoriaLogs 설치 여부** — BATCH_RESULT/SERVICE_RESULT 패널의 stage 검증 가능성 | 미설치 — company 단계 검증 | stage 대시보드 작업 전 결정 |
+| 21 | **(v1.14) GPU 할당 수치 출처** — `dim_token_gpu_allocation`(service_group × gpu_type × effective_from)의 소스·동료 매핑·`utilization`/`over_report` 허용 오차 | 수기 시드(P0-stretch), 오차 ±1원 | GPU 대시보드 소유자 (자매 스펙 M3) |
+| 22 | **(v1.14) 메타데이터 시트 반입** — 시트·CSV 실파일 보관 경로(레포 밖 + gitignore), owner 회신 반영 절차, 시트 v2 컬럼(`workloadType`·사외 API tier) | 생성기 2종(alias·Layer C)으로 admin INSERT, tier='standard' 고정 | 운영 문서 작성 시 (자매 스펙 M12·M18) |
+| 23 | **(v1.14) 알림 채널·수신자** — 메트릭 체크(`mart.token_metrics_check_1d`) 위반·`final=1` 부재의 통보 경로 + 사내 batch_result 패널 규칙 ack | 체크 테이블 패널 + 수동 통보; 패널 미확정 시 §7.3 fallback | 모니터링 소유자·온보딩 안내 시 (자매 스펙 M5·M8) |
+| 24 | **(v1.14) 환율/마진** — 벤더 KRW 단가표 값(provider × model × tier)·환율 기준·토큰 단가 p 표시 기준(기준월·가동률 병기)·가중 W(1/0.1/4)의 TCO 팀 승인 | 플레이스홀더 NULL, 상수 1/0.1/4, '추정' 라벨 유지 | 운영자/재무·정의서 소유자·TCO 팀 (자매 스펙 M2·M17·M21·M22) |
+| 25 | **(v1.14) 스크랩 교차검증 임계값** — 엔진 `/metrics` 스크랩 값과 자기신고 serving 값의 허용 편차 | P2(미구현) | 케이스 A~C 팀과 협의 (자매 스펙 M10) |
+| 26 | **(v1.14) `/v1/usage` 소비자 필드** — 플랫폼 제공자 usage 응답에 소비 서비스 귀속 필드를 추가해 배부 정밀화(자매 스펙 §6.4·§7.4 P2); 현재는 레지스트리 `usage_includes_consumers` 플래그 + 가중 W 배분 | P2 — `usageIncludesConsumers` 기본 0(Σ 전 서비스), 다중 제공자는 보류(`provider_ambiguous`) | 플랫폼 제공 팀 확인 + usage 스펙 개정 시 (자매 스펙 M4) |
+| 27 | **(v1.14) 사내 분기본 ↔ GitHub 동기화** — P1 토큰 mart canonical 등 기존 모듈 변경분의 사내 반영 계획 | 이번 범위 밖(§7.2 v1.14 zero-diff 원칙) | 별도 협의 (자매 스펙 M16) |
 
 ## 10. 구현 순서 (권장)
 

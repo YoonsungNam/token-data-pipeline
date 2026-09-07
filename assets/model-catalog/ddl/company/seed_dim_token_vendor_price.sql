@@ -1,0 +1,52 @@
+-- =============================================================
+-- gpu_data.dim_token_vendor_price 시드 (설계 2026-08-31 §4.2 — dim_holiday 3요소 패턴)
+-- (a) 출처·기준일: 플레이스홀더만 — (provider='unknown', model='unknown', tier='standard', 단가 NULL, 2026-01-01).
+--     실값(벤더 공표가 × 환율, KRW/MTok)은 assets/model-catalog/csv_to_layer_c_dim_insert.py --table vendor_price
+--     생성 SQL(gitignore: dim_token_vendor_price_insert*.sql)을 admin이 append 적용.
+-- (b) NOT IN 멱등 가드 — 재실행 안전.
+-- (c) 말미 검증 SELECT — 결과가 비어야 정상.
+-- 실행 주체: admin 수동. mart는 SELECT만. stage 합성값은 fixtures/stage_seed_dim_token_vendor_price.sql.
+-- =============================================================
+
+INSERT INTO gpu_data.dim_token_vendor_price_dist
+    (provider, model, tier, effective_from, krw_per_mtok_input, krw_per_mtok_cached,
+     krw_per_mtok_cache_creation, krw_per_mtok_output, note)
+SELECT *
+FROM (
+    SELECT 'unknown' AS provider, 'unknown' AS model, 'standard' AS tier, toDate('2026-01-01') AS effective_from,
+           CAST(NULL AS Nullable(Float64)) AS krw_per_mtok_input,
+           CAST(NULL AS Nullable(Float64)) AS krw_per_mtok_cached,
+           CAST(NULL AS Nullable(Float64)) AS krw_per_mtok_cache_creation,
+           CAST(NULL AS Nullable(Float64)) AS krw_per_mtok_output,
+           '계약 표준 값 — 벤더 단가 미확정 플레이스홀더' AS note
+)
+WHERE (provider, model, tier, effective_from) NOT IN (
+    SELECT provider, model, tier, effective_from FROM gpu_data.dim_token_vendor_price_dist
+)
+SETTINGS insert_distributed_sync = 1;
+
+-- 검증: 결과가 비어야 정상 ------------------------------------------------
+-- 1) (provider, model, tier, effective_from) 키 중복 없음
+SELECT 'dup_key' AS check_name, concat(provider, '/', model, '/', tier) AS key, effective_from, count() AS cnt
+FROM gpu_data.dim_token_vendor_price_dist
+GROUP BY provider, model, tier, effective_from
+HAVING count() > 1
+
+UNION ALL
+
+-- 2) unknown 행 존재 + 단가 전부 NULL
+SELECT 'unknown_row_state', 'unknown', toDate('2026-01-01'),
+       countIf(krw_per_mtok_input IS NOT NULL OR krw_per_mtok_cached IS NOT NULL
+               OR krw_per_mtok_cache_creation IS NOT NULL OR krw_per_mtok_output IS NOT NULL)
+FROM gpu_data.dim_token_vendor_price_dist
+WHERE provider = 'unknown' AND model = 'unknown'
+HAVING count() = 0
+    OR countIf(krw_per_mtok_input IS NOT NULL OR krw_per_mtok_cached IS NOT NULL
+               OR krw_per_mtok_cache_creation IS NOT NULL OR krw_per_mtok_output IS NOT NULL) > 0
+
+UNION ALL
+
+-- 3) tier 도메인
+SELECT 'tier_domain', concat(provider, '/', model, '/', tier), effective_from, toUInt64(1)
+FROM gpu_data.dim_token_vendor_price_dist
+WHERE tier NOT IN ('standard', 'batch', 'flex', 'priority');

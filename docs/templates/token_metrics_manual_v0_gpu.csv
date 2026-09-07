@@ -1,0 +1,14 @@
+# token_metrics_manual_v0_gpu — go-live 이전 구간 수기(manual-v0) GPU Hour 제출 템플릿 (설계 2026-08-31 §5.5 · /v1/metrics 스펙 §3 gpu 블록)
+# '#'로 시작하는 줄은 주석 — 로더(collectors/token-metrics manual 모드)가 건너뜀. 첫 비주석 줄이 헤더(변경 금지). 1행 = 1일 × 1모델 × 1기종 × 1용도
+# date = YYYY-MM-DD (제출 대상일, KST). service = 메타데이터 시트·토큰 API와 바이트 동일한 공식 표기 (endpoints 레지스트리 등록·enabled 필수)
+# model = canonical 표기 (≤128). gpuType = 단순 기종 표기 (≤64, 운영자 단가표 dim_token_gpu_tco 의 키 — 예 H100, A100, H200, L40S)
+# category = serving | standby | test. model "unknown" 은 category=test 에서만 허용 (serving/standby 의 "unknown" 은 거부)
+# gpuCount = 그날 최대 장수 (>0, 표시·검증용 — 비용 계산에 쓰지 않음). gpuHours = 장수 × 매핑·할당 시간의 적분 (GPU·hour, ≥0) — 비용의 유일한 근거
+# 검증: 행별 gpuHours ≤ gpuCount × 24. 하루 중 장수 증감은 gpuHours 에 반영, 기종 변경·시간 분할(주간/야간 모델)은 행을 나눔. 유휴는 제출하지 않음 (할당 − Σ제공 으로 산출)
+# 사내 플랫폼 사용분은 행을 쓰지 않음 (GPU 는 플랫폼이 제공 — 이중 계상 방지). 사용·가동이 실제 0인 날은 그 날의 행이 없음 (빈 gpu 배열과 동일)
+# 아래 예시 행은 합성값 — 제출 전 삭제하고 실제 값으로 교체. 실제 파일은 *manual_metrics*.csv 로 저장 (레포 반입 금지 — .gitignore)
+date,service,model,gpuType,category,gpuCount,gpuHours
+2026-08-26,Mock Service A,claude-sonnet-5,H100,serving,4,96.0
+2026-08-26,Mock Service A,claude-sonnet-5,H100,standby,1,24.0
+2026-08-26,Mock Service B,claude-haiku-4-5,A100,serving,1,24.0
+2026-08-26,Mock Service B,unknown,A100,test,1,2.0

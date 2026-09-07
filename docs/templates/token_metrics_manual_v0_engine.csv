@@ -1,0 +1,8 @@
+# token_metrics_manual_v0_engine — 수기(manual-v0) 추론 엔진 자기신고 템플릿 (선택 파일 — 설계 2026-08-31 §5.5 · 스펙 §3 Engine)
+# '#'로 시작하는 줄은 주석 — 로더가 건너뜀. 첫 비주석 줄이 헤더(변경 금지). 1행 = 1서비스 (제출 범위 --from/--to 의 모든 날짜에 동일 적용)
+# service = gpu 템플릿과 동일 규칙 (endpoints 레지스트리 등록 필수). engine_type = 엔진 종류 (필수, ≤64, 예 vllm, sglang, custom). engine_version = 버전 원문 (선택, ≤64 — 없으면 빈 값 → '')
+# 메타데이터 시트 `서비스` 탭의 engineType 과 불일치하면 운영자가 담당자에게 알림 (스펙 §3). 이 파일을 제출하지 않으면 engine_type = '' 로 적재
+# 아래 예시 행은 합성값 — 제출 전 삭제하고 실제 값으로 교체. 실제 파일은 *manual_metrics*.csv 로 저장 (레포 반입 금지 — .gitignore)
+service,engine_type,engine_version
+Mock Service A,vllm,0.8.4
+Mock Service B,custom,

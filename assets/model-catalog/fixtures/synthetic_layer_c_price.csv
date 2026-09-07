@@ -1,0 +1,3 @@
+provider,model,tier,effective_from,krw_per_mtok_input,krw_per_mtok_cached,krw_per_mtok_cache_creation,krw_per_mtok_output,note
+anthropic,claude-sonnet-5,,2026-08-26,4050,405,5062.5,20250,합성 — seed_dim_token_model USD 3/0.3/3.75/15 × 1350
+anthropic,claude-haiku-4-5,batch,2026-08-26,675,,,3375,합성 — cached/cache_creation 미확정(NULL)

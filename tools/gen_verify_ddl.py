@@ -76,7 +76,20 @@ MODULES = [
         "label": "assets/model-catalog",
         "src_dir": REPO_ROOT / "assets/model-catalog/ddl/company",
         "out_dir": REPO_ROOT / "assets/model-catalog/ddl/company-verify",
-        "files": None,  # glob *.sql
+        "files": None,  # glob *.sql  (Plan 6a: dim_token_{model_alias,gpu_tco,gpu_allocation,vendor_price}·seed 4·accounts_metrics.sql 포함)
+    },
+    # Plan 6a (설계 2026-08-31 §4.0) — 신규 모듈 2종. accounts.sql은 이름 규칙(⑤)대로 격리 DB·계정 프리펜드가 붙는다.
+    {
+        "label": "collectors/token-metrics",
+        "src_dir": REPO_ROOT / "collectors/token-metrics/ddl/company",
+        "out_dir": REPO_ROOT / "collectors/token-metrics/ddl/company-verify",
+        "files": ["raw_token_metrics.sql", "dim_token_metrics_service.sql", "accounts.sql"],
+    },
+    {
+        "label": "mart/token-metrics",
+        "src_dir": REPO_ROOT / "mart/token-metrics/ddl/company",
+        "out_dir": REPO_ROOT / "mart/token-metrics/ddl/company-verify",
+        "files": ["mart_metrics_tables.sql", "accounts.sql"],
     },
 ]
 
