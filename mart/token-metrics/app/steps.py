@@ -333,3 +333,356 @@ def run_m1(gate, date: str) -> dict:
     rows = _run_table(gate, date, f"{DB_MART}.{T_M1}_dist", f"{DB_MART}.{T_M1}_local",
                       SQL_M1, EXPECTED_SQL_M1, warns)
     return {"rows_mart": rows, "warns": warns}
+
+
+# ============================================================================
+# M3 token_metrics_check_1d — 데이터 품질 검사 (설계 §6.1 M3, §4.3, §5.3-3, §5.4; Plan 6c T4)
+#
+# 각 검사 = 독립 SELECT 블록 (check_name, select_sql). build_m3_sql()이 블록을
+# "\nUNION ALL\n"으로 이어 INSERT를 만들고, build_m3_expected()가 **같은 블록 문자열**의
+# count()를 EXPECTED로 쓴다(파생 오차 0 — tools/verify/invariants.sql의 블록 리스트 방식).
+# 12컬럼 순서는 DDL 선언 순서(Plan 6a mart_metrics_tables.sql token_metrics_check_1d_local)로
+# 고정 — _m3_select()만이 헤더를 만든다. 블록 내부 UNION ALL은 반드시 들여쓰기(4칸 이상)해서
+# 최상위 조립 토큰 "\nUNION ALL\n"과 구분한다.
+#
+# detail 규약(마스터 §5.6 로그·검사 표 비노출): 수·이름(model/gpu_type/카운트)만 —
+# 응답 원문(reported_*)·user_id·페이로드는 싣지 않는다.
+# 메트릭 측 소스는 앵커가 있는 (date, service)만 읽는다(§6.1) — partial_load만 예외
+# (앵커 없는 잔여물 자체가 검출 대상).
+# ============================================================================
+
+M3_COLUMNS = ("date", "service_group", "service", "check_name", "model", "gpu_type",
+              "severity", "observed", "threshold", "detail", "source_type", "created_by")
+
+# 앵커가 있는 서비스 집합 — 팩트 블록의 GLOBAL IN 우변
+_M3_ANCHORED = f"(SELECT service FROM {SUB_ANCHOR})"
+
+# 앵커 vs 자식 행수(partial_load) — serving은 표준 지표 행(metric != 'custom')만
+# (Plan 6b NormalizeResult.n_serving과 동일 정의; custom_rows는 비교하지 않는다 — 설계 해석)
+_M3_CHILD_COUNTS = f"""(
+    SELECT service, any(service_group) AS service_group,
+           sum(gpu_n) AS actual_gpu, sum(serving_n) AS actual_serving
+    FROM
+    (
+        SELECT service, any(service_group) AS service_group, count() AS gpu_n, 0 AS serving_n
+        FROM {DB_FACT}.raw_token_metrics_gpu_1d_dist
+        WHERE date = {{d:Date}}
+        GROUP BY service
+        UNION ALL
+        SELECT service, any(service_group) AS service_group, 0 AS gpu_n,
+               countIf(metric != 'custom') AS serving_n
+        FROM {DB_FACT}.raw_token_metrics_serving_1d_dist
+        WHERE date = {{d:Date}}
+        GROUP BY service
+    )
+    GROUP BY service
+)"""
+
+
+def _m3_select(check_name: str, severity: str, *, service_group: str, service: str,
+               observed: str, threshold: str, detail: str, body: str,
+               model: str = "''", gpu_type: str = "''", source_type: str = "''") -> str:
+    """12컬럼(DDL 순서) SELECT 헤더 + FROM 본문. 값 인자는 SQL 식 문자열이다."""
+    if severity not in ("FAIL", "WARN", "INFO"):
+        raise ValueError(f"M3 severity must be FAIL|WARN|INFO: {check_name}={severity}")
+    return (
+        "SELECT\n"
+        "    {d:Date} AS date,\n"
+        f"    {service_group} AS service_group,\n"
+        f"    {service} AS service,\n"
+        f"    '{check_name}' AS check_name,\n"
+        f"    {model} AS model,\n"
+        f"    {gpu_type} AS gpu_type,\n"
+        f"    '{severity}' AS severity,\n"
+        f"    toNullable(toFloat64({observed})) AS observed,\n"
+        f"    toNullable(toFloat64({threshold})) AS threshold,\n"
+        f"    {detail} AS detail,\n"
+        f"    {source_type} AS source_type,\n"
+        f"    '{CREATED_BY}' AS created_by\n"
+        f"{body}"
+    )
+
+
+# --- 1) metrics_missing FAIL — reg 기대(enabled·coverage 유효)인데 앵커 부재 (§4.3 M0 기대 집합)
+_M3_METRICS_MISSING = _m3_select(
+    "metrics_missing", "FAIL",
+    service_group="r.service_group", service="r.service",
+    observed="0", threshold="1", detail="'no summary row'",
+    body=f"""FROM {SUB_REG} AS r
+GLOBAL LEFT JOIN {SUB_ANCHOR} AS an ON an.service = r.service
+WHERE r.enabled = 1
+  AND r.coverage_since <= {{d:Date}}
+  AND (isNull(r.until) OR {{d:Date}} <= r.until)
+  AND an.service = ''""")
+
+# --- 2) partial_load FAIL — (a) 자식 행은 있으나 앵커 부재, (b) 앵커 카운트 ≠ 실제 자식 행수 (§5.4)
+_M3_PARTIAL_LOAD = _m3_select(
+    "partial_load", "FAIL",
+    service_group="if(an.service != '', an.service_group, c.service_group)", service="k.service",
+    observed="c.actual_gpu + c.actual_serving", threshold="an.gpu_rows + an.serving_rows",
+    detail=("concat('gpu=', toString(c.actual_gpu), '/', toString(an.gpu_rows), "
+            "' serving=', toString(c.actual_serving), '/', toString(an.serving_rows))"),
+    source_type="an.source_type",
+    body=f"""FROM
+(
+    SELECT service FROM {_M3_CHILD_COUNTS} AS cc
+    UNION DISTINCT
+    SELECT service FROM {SUB_ANCHOR} AS aa
+) AS k
+GLOBAL LEFT JOIN {_M3_CHILD_COUNTS} AS c ON c.service = k.service
+GLOBAL LEFT JOIN {SUB_ANCHOR} AS an ON an.service = k.service
+WHERE an.service = ''
+   OR an.gpu_rows != c.actual_gpu
+   OR an.serving_rows != c.actual_serving""")
+
+# --- 3) rows_rejected WARN — 앵커 rejected_rows > 0 (§5.3-1 구조 거부 카운트)
+_M3_ROWS_REJECTED = _m3_select(
+    "rows_rejected", "WARN",
+    service_group="an.service_group", service="an.service",
+    observed="an.rejected_rows", threshold="0", detail="'rejected rows in summary'",
+    source_type="an.source_type",
+    body=f"""FROM {SUB_ANCHOR} AS an
+WHERE an.rejected_rows > 0""")
+
+# --- 4) unregistered_model WARN — gpu 팩트 모델이 alias 표에 없음(canon = 원문) (§4.2 alias 시드 규칙)
+_M3_UNREGISTERED_MODEL = _m3_select(
+    "unregistered_model", "WARN",
+    service_group="x.service_group", service="x.service", model="x.canon_model",
+    observed="x.n", threshold="0", detail="''", source_type="x.source_type",
+    body=f"""FROM
+(
+    SELECT g.service, any(g.service_group) AS service_group,
+           {canon('g.model')} AS canon_model, count() AS n, any(g.source_type) AS source_type
+    FROM {DB_FACT}.raw_token_metrics_gpu_1d_dist AS g
+    GLOBAL LEFT JOIN {SUB_EFF_ALIAS} AS a ON a.alias = g.model
+    WHERE g.date = {{d:Date}} AND g.service GLOBAL IN {_M3_ANCHORED} AND a.canonical = ''
+    GROUP BY g.service, {canon('g.model')}
+) AS x""")
+
+# --- 5) hours_over_count FAIL — 행 플래그(§5.3-2, gpuHours > gpuCount×24) 집계 (service, canon, gpu_type)
+_M3_HOURS_OVER_COUNT = _m3_select(
+    "hours_over_count", "FAIL",
+    service_group="x.service_group", service="x.service", model="x.canon_model", gpu_type="x.gpu_type",
+    observed="x.hours", threshold="x.hours_cap",
+    detail="concat('model=', x.canon_model, ' gpu_type=', x.gpu_type)", source_type="x.source_type",
+    body=f"""FROM
+(
+    SELECT g.service, any(g.service_group) AS service_group,
+           {canon('g.model')} AS canon_model, g.gpu_type,
+           sum(g.gpu_hours) AS hours, sum(g.gpu_count) * 24 AS hours_cap,
+           any(g.source_type) AS source_type
+    FROM {DB_FACT}.raw_token_metrics_gpu_1d_dist AS g
+    GLOBAL LEFT JOIN {SUB_EFF_ALIAS} AS a ON a.alias = g.model
+    WHERE g.date = {{d:Date}} AND g.service GLOBAL IN {_M3_ANCHORED}
+      AND hasAny(g.flags, ['hours_over_count'])
+    GROUP BY g.service, {canon('g.model')}, g.gpu_type
+) AS x""")
+
+# --- 6) unknown_violation FAIL — 정규화가 플래그한 미지 항목(§5.3-2): gpu·serving 팩트 양쪽, 모델 원문 그대로
+_M3_UNKNOWN_VIOLATION = _m3_select(
+    "unknown_violation", "FAIL",
+    service_group="x.service_group", service="x.service", model="x.model", gpu_type="x.gpu_type",
+    observed="x.n", threshold="0", detail="concat('part=', x.part)", source_type="x.source_type",
+    body=f"""FROM
+(
+    SELECT service, any(service_group) AS service_group, model, gpu_type, part,
+           count() AS n, any(source_type) AS source_type
+    FROM
+    (
+        SELECT g.service, g.service_group, g.model, g.gpu_type, 'gpu' AS part, g.source_type
+        FROM {DB_FACT}.raw_token_metrics_gpu_1d_dist AS g
+        WHERE g.date = {{d:Date}} AND g.service GLOBAL IN {_M3_ANCHORED}
+          AND hasAny(g.flags, ['unknown_violation'])
+        UNION ALL
+        SELECT s.service, s.service_group, s.model, '' AS gpu_type, 'serving' AS part, s.source_type
+        FROM {DB_FACT}.raw_token_metrics_serving_1d_dist AS s
+        WHERE s.date = {{d:Date}} AND s.service GLOBAL IN {_M3_ANCHORED}
+          AND hasAny(s.flags, ['unknown_violation'])
+    )
+    GROUP BY service, model, gpu_type, part
+) AS x""")
+
+# --- 7) pct_non_monotone FAIL — serving 행 플래그(§4.1 158 FAIL 플래그, p50>p90>... §5.3-2) 집계 (service, canon)
+_M3_PCT_NON_MONOTONE = _m3_select(
+    "pct_non_monotone", "FAIL",
+    service_group="x.service_group", service="x.service", model="x.canon_model",
+    observed="x.n", threshold="0", detail="concat('metrics=', x.metrics)", source_type="x.source_type",
+    body=f"""FROM
+(
+    SELECT s.service, any(s.service_group) AS service_group,
+           {canon('s.model')} AS canon_model, count() AS n,
+           arrayStringConcat(arraySort(groupUniqArray(toString(s.metric))), ',') AS metrics,
+           any(s.source_type) AS source_type
+    FROM {DB_FACT}.raw_token_metrics_serving_1d_dist AS s
+    GLOBAL LEFT JOIN {SUB_EFF_ALIAS} AS a ON a.alias = s.model
+    WHERE s.date = {{d:Date}} AND s.service GLOBAL IN {_M3_ANCHORED}
+      AND hasAny(s.flags, ['pct_non_monotone'])
+    GROUP BY s.service, {canon('s.model')}
+) AS x""")
+
+# --- 8) gpu_type_no_tco WARN — 비용 계산 대상(serving/standby, FAIL 제외) gpu_type에 유효 TCO 없음 (§4.2 M1 cost NULL 사유)
+_M3_GPU_TYPE_NO_TCO = _m3_select(
+    "gpu_type_no_tco", "WARN",
+    service_group="x.service_group", service="x.service", gpu_type="x.gpu_type",
+    observed="x.hours", threshold="0", detail="'no effective tco'", source_type="x.source_type",
+    body=f"""FROM
+(
+    SELECT g.service, any(g.service_group) AS service_group, g.gpu_type,
+           sum(g.gpu_hours) AS hours, any(g.source_type) AS source_type
+    FROM {DB_FACT}.raw_token_metrics_gpu_1d_dist AS g
+    GLOBAL LEFT JOIN {SUB_EFF_TCO} AS t ON t.gpu_type = g.gpu_type
+    WHERE g.date = {{d:Date}} AND g.service GLOBAL IN {_M3_ANCHORED}
+      AND g.category IN ('serving', 'standby') AND NOT {FAIL_PRED} AND isNull(t.tco)
+    GROUP BY g.service, g.gpu_type
+) AS x""")
+
+# --- 9) serving_missing_for_gpu_model WARN — gpu serving 행이 있는 (service, canon)에 serving 지표 행이 없고
+#        token_usage_1d 요청은 있음 (§6.1 M4 share 분모 결손 사전 경고)
+_M3_SERVING_MISSING_FOR_GPU_MODEL = _m3_select(
+    "serving_missing_for_gpu_model", "WARN",
+    service_group="gk.service_group", service="gk.service", model="gk.canon_model",
+    observed="tk.requests", threshold="0", detail="'gpu serving row without serving metrics'",
+    source_type="gk.source_type",
+    body=f"""FROM
+(
+    SELECT g.service, any(g.service_group) AS service_group, {canon('g.model')} AS canon_model,
+           any(g.source_type) AS source_type
+    FROM {DB_FACT}.raw_token_metrics_gpu_1d_dist AS g
+    GLOBAL LEFT JOIN {SUB_EFF_ALIAS} AS a ON a.alias = g.model
+    WHERE g.date = {{d:Date}} AND g.service GLOBAL IN {_M3_ANCHORED} AND g.category = 'serving'
+    GROUP BY g.service, {canon('g.model')}
+) AS gk
+GLOBAL LEFT JOIN
+(
+    SELECT s.service, {canon('s.model')} AS canon_model, 1 AS has_rows
+    FROM {DB_FACT}.raw_token_metrics_serving_1d_dist AS s
+    GLOBAL LEFT JOIN {SUB_EFF_ALIAS} AS a ON a.alias = s.model
+    WHERE s.date = {{d:Date}} AND s.metric != 'custom'
+    GROUP BY s.service, {canon('s.model')}
+) AS sk ON sk.service = gk.service AND sk.canon_model = gk.canon_model
+GLOBAL LEFT JOIN
+(
+    SELECT u.service, {canon('u.model')} AS canon_model, sum(u.requests) AS requests
+    {_TOK_SRC}
+    {_TOK_TAIL}
+) AS tk ON tk.service = gk.service AND tk.canon_model = gk.canon_model
+WHERE sk.has_rows = 0 AND tk.requests > 0""")
+
+# --- 10) serving_without_gpu_serving_row WARN — serving 지표 행은 있으나 gpu serving 행 없음 (reg expect_gpu=1인 서비스만)
+_M3_SERVING_WITHOUT_GPU_SERVING_ROW = _m3_select(
+    "serving_without_gpu_serving_row", "WARN",
+    service_group="sk.service_group", service="sk.service", model="sk.canon_model",
+    observed="1", threshold="0", detail="'serving metrics without gpu serving row'",
+    source_type="sk.source_type",
+    body=f"""FROM
+(
+    SELECT s.service, any(s.service_group) AS service_group, {canon('s.model')} AS canon_model,
+           any(s.source_type) AS source_type
+    FROM {DB_FACT}.raw_token_metrics_serving_1d_dist AS s
+    GLOBAL LEFT JOIN {SUB_EFF_ALIAS} AS a ON a.alias = s.model
+    WHERE s.date = {{d:Date}} AND s.service GLOBAL IN {_M3_ANCHORED} AND s.metric != 'custom'
+    GROUP BY s.service, {canon('s.model')}
+) AS sk
+GLOBAL LEFT JOIN
+(
+    SELECT g.service, {canon('g.model')} AS canon_model, 1 AS has_rows
+    FROM {DB_FACT}.raw_token_metrics_gpu_1d_dist AS g
+    GLOBAL LEFT JOIN {SUB_EFF_ALIAS} AS a ON a.alias = g.model
+    WHERE g.date = {{d:Date}} AND g.category = 'serving'
+    GROUP BY g.service, {canon('g.model')}
+) AS gk ON gk.service = sk.service AND gk.canon_model = sk.canon_model
+GLOBAL LEFT JOIN {SUB_REG} AS r ON r.service = sk.service
+WHERE gk.has_rows = 0 AND r.expect_gpu = 1""")
+
+# --- 11) identity_drift WARN — API 응답 자기신고(reported_*)가 헤더/레지스트리와 다름 (§5.3-3)
+#         detail은 불일치 여부(0/1)만 — reported_* 원문은 싣지 않는다 (마스터 §5.6)
+_M3_IDENTITY_DRIFT = _m3_select(
+    "identity_drift", "WARN",
+    service_group="r.service_group", service="an.service",
+    observed="toUInt8(an.reported_service != an.service) + toUInt8(an.reported_service_group != r.service_group)",
+    threshold="0",
+    detail=("concat('svc_diff=', toString(toUInt8(an.reported_service != an.service)), "
+            "' group_diff=', toString(toUInt8(an.reported_service_group != r.service_group)))"),
+    source_type="an.source_type",
+    body=f"""FROM {SUB_ANCHOR} AS an
+GLOBAL LEFT JOIN {SUB_REG} AS r ON r.service = an.service
+WHERE an.source_type = 'metrics-api-v1'
+  AND (an.reported_service != an.service OR an.reported_service_group != r.service_group)""")
+
+# --- 12) service_not_in_usage_registry WARN — 메트릭 레지스트리 서비스가 token_usage 레지스트리에 없음 (§4.3 조인 키 전제)
+_M3_SERVICE_NOT_IN_USAGE_REGISTRY = _m3_select(
+    "service_not_in_usage_registry", "WARN",
+    service_group="r.service_group", service="r.service",
+    observed="1", threshold="0", detail="'not in dim_token_service'",
+    body=f"""FROM {SUB_REG} AS r
+WHERE r.enabled = 1 AND r.service GLOBAL NOT IN {SUB_USAGE_SVC}""")
+
+# --- 13) manual_source INFO — 앵커 source_type = 'manual-v0' (§5.2 수동 반입 표기, 정보성)
+_M3_MANUAL_SOURCE = _m3_select(
+    "manual_source", "INFO",
+    service_group="an.service_group", service="an.service",
+    observed="1", threshold="0", detail="'manual-v0'", source_type="an.source_type",
+    body=f"""FROM {SUB_ANCHOR} AS an
+WHERE an.source_type = 'manual-v0'""")
+
+# 핵심 13블록 — 순서는 설계 §6.1 M3 표 순서 (T5 batch·문서가 이 순서를 인용)
+M3_BLOCKS_CORE: list[tuple[str, str]] = [
+    ("metrics_missing", _M3_METRICS_MISSING),
+    ("partial_load", _M3_PARTIAL_LOAD),
+    ("rows_rejected", _M3_ROWS_REJECTED),
+    ("unregistered_model", _M3_UNREGISTERED_MODEL),
+    ("hours_over_count", _M3_HOURS_OVER_COUNT),
+    ("unknown_violation", _M3_UNKNOWN_VIOLATION),
+    ("pct_non_monotone", _M3_PCT_NON_MONOTONE),
+    ("gpu_type_no_tco", _M3_GPU_TYPE_NO_TCO),
+    ("serving_missing_for_gpu_model", _M3_SERVING_MISSING_FOR_GPU_MODEL),
+    ("serving_without_gpu_serving_row", _M3_SERVING_WITHOUT_GPU_SERVING_ROW),
+    ("identity_drift", _M3_IDENTITY_DRIFT),
+    ("service_not_in_usage_registry", _M3_SERVICE_NOT_IN_USAGE_REGISTRY),
+    ("manual_source", _M3_MANUAL_SOURCE),
+]
+
+# 확장 블록 — T4 시점 비어 있음. T6(share 경고)·T7(gpu 그룹 경고)이 append한다.
+M3_BLOCKS_STRETCH: list[tuple[str, str]] = []
+
+M3_INSERT_COLUMNS = ", ".join(M3_COLUMNS)
+
+
+def _m3_union(blocks: list[tuple[str, str]]) -> str:
+    if not blocks:
+        raise ValueError("build_m3: blocks must not be empty")
+    return "\nUNION ALL\n".join(sql for _, sql in blocks)
+
+
+def build_m3_sql(blocks: list[tuple[str, str]]) -> str:
+    """블록 리스트 → INSERT INTO {DB_MART}.token_metrics_check_1d_dist (12컬럼) + UNION ALL 본문."""
+    return f"INSERT INTO {DB_MART}.{T_M3}_dist ({M3_INSERT_COLUMNS})\n" + _m3_union(blocks)
+
+
+def build_m3_expected(blocks: list[tuple[str, str]]) -> str:
+    """같은 블록 문자열의 count() — INSERT 본문과 문자 단위로 동일한 UNION을 감싼다."""
+    return "SELECT count() FROM (\n" + _m3_union(blocks) + "\n)"
+
+
+SQL_M3_SUMMARY = f"""SELECT check_name, severity, count() AS n
+FROM {DB_MART}.{T_M3}_dist
+WHERE date = {{d:Date}}
+GROUP BY check_name, severity
+ORDER BY check_name, severity"""
+
+
+def run_m3(gate, date: str, blocks: list[tuple[str, str]] | None = None) -> dict:
+    """M3: 검사 블록 UNION ALL 적재 → 검사별 건수를 'CHECK WARN|INFO <check_name> severity=<sev> count=<n>'
+    로 출력·warns에 추가. 검사 행이 있어도 STEP은 성공이다(FAIL은 severity 값일 뿐 — 실패 처리는
+    _run_table의 verify 불일치·예외만). T5 batch는 'CHECK WARN ' 접두 라인 수를 warn= 마커에 센다."""
+    if blocks is None:
+        blocks = M3_BLOCKS_CORE + M3_BLOCKS_STRETCH
+    warns: list[str] = []
+    rows = _run_table(gate, date, f"{DB_MART}.{T_M3}_dist", f"{DB_MART}.{T_M3}_local",
+                      build_m3_sql(blocks), build_m3_expected(blocks), warns)
+    for check_name, severity, n in gate.query(SQL_M3_SUMMARY, {"d": date}):
+        level = "INFO" if severity == "INFO" else "WARN"
+        line = f"CHECK {level} {check_name} severity={severity} count={int(n)}"
+        print(line, flush=True)
+        warns.append(line)
+    return {"rows_check": rows, "warns": warns}

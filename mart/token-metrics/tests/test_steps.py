@@ -404,3 +404,301 @@ def test_run_m1_returns_rows_mart_from_verify_actual():
     assert out == {"rows_mart": 11, "warns": []}
     assert g.verify_calls == [("m1", "2026-09-01", 11)]
     assert g.written[0][1] is steps.SQL_M1
+
+
+# ============================================================================
+# M3 token_metrics_check_1d — 핵심 13블록·빌더 계약 (Plan 6c T4)
+# ============================================================================
+
+M3_CORE_NAMES = [
+    "metrics_missing", "partial_load", "rows_rejected", "unregistered_model",
+    "hours_over_count", "unknown_violation", "pct_non_monotone", "gpu_type_no_tco",
+    "serving_missing_for_gpu_model", "serving_without_gpu_serving_row", "identity_drift",
+    "service_not_in_usage_registry", "manual_source",
+]
+
+M3_SEVERITY = {
+    "metrics_missing": "FAIL", "partial_load": "FAIL", "rows_rejected": "WARN",
+    "unregistered_model": "WARN", "hours_over_count": "FAIL", "unknown_violation": "FAIL",
+    "pct_non_monotone": "FAIL", "gpu_type_no_tco": "WARN", "serving_missing_for_gpu_model": "WARN",
+    "serving_without_gpu_serving_row": "WARN", "identity_drift": "WARN",
+    "service_not_in_usage_registry": "WARN", "manual_source": "INFO",
+}
+
+# 블록이 model / gpu_type 컬럼을 실제 값으로 채워야 하는 검사 (키 단위가 model/gpu_type인 것)
+M3_KEYED_MODEL = {"unregistered_model", "hours_over_count", "unknown_violation", "pct_non_monotone",
+                  "serving_missing_for_gpu_model", "serving_without_gpu_serving_row"}
+M3_KEYED_GPU_TYPE = {"hours_over_count", "unknown_violation", "gpu_type_no_tco"}
+
+
+def _m3_select_header_aliases(block_sql: str) -> list[str]:
+    """블록 SELECT 헤더(FROM 직전까지)의 'AS <alias>' 목록 — 12컬럼 순서 확인용."""
+    header = block_sql.split("\nFROM", 1)[0]
+    return [ln.strip().rstrip(",").rsplit(" AS ", 1)[1] for ln in header.splitlines()[1:]]
+
+
+def test_m3_core_block_names_exact():
+    assert [name for name, _ in steps.M3_BLOCKS_CORE] == M3_CORE_NAMES
+    assert len(M3_CORE_NAMES) == 13
+    assert steps.M3_BLOCKS_STRETCH == []
+
+
+def test_m3_every_block_has_twelve_columns_and_own_name():
+    for name, sql in steps.M3_BLOCKS_CORE:
+        assert sql.startswith("SELECT\n"), name
+        assert _m3_select_header_aliases(sql) == list(steps.M3_COLUMNS), name
+        assert f"'{name}' AS check_name" in sql, name
+        assert "'token-metrics-pipeline' AS created_by" in sql, name
+        assert "    {d:Date} AS date," in sql, name
+
+
+def test_m3_insert_column_list_matches_ddl_order():
+    sql = steps.build_m3_sql(steps.M3_BLOCKS_CORE)
+    assert sql.startswith(f"INSERT INTO {DB_MART}.token_metrics_check_1d_dist (")
+    cols = insert_columns(sql)
+    assert cols == ddl_columns("token_metrics_check_1d_local")
+    assert len(cols) == 12
+    assert cols == list(steps.M3_COLUMNS)
+
+
+def test_m3_model_and_gpu_type_columns_populated_where_keyed():
+    for name, sql in steps.M3_BLOCKS_CORE:
+        header = sql.split("\nFROM", 1)[0]
+        model_line = next(ln for ln in header.splitlines() if ln.endswith(" AS model,"))
+        gpu_line = next(ln for ln in header.splitlines() if ln.endswith(" AS gpu_type,"))
+        if name in M3_KEYED_MODEL:
+            assert "''" not in model_line, name
+        else:
+            assert model_line.strip() == "'' AS model,", name
+        if name in M3_KEYED_GPU_TYPE:
+            assert "''" not in gpu_line, name
+        else:
+            assert gpu_line.strip() == "'' AS gpu_type,", name
+
+
+def test_m3_severity_map():
+    for name, sql in steps.M3_BLOCKS_CORE:
+        assert f"'{M3_SEVERITY[name]}' AS severity" in sql, name
+    assert sorted(set(M3_SEVERITY.values())) == ["FAIL", "INFO", "WARN"]
+    with pytest.raises(ValueError):
+        steps._m3_select("x", "ERROR", service_group="''", service="''", observed="0",
+                         threshold="0", detail="''", body="FROM system.one")
+
+
+def test_m3_expected_is_count_of_same_union():
+    sql = steps.build_m3_sql(steps.M3_BLOCKS_CORE)
+    expected = steps.build_m3_expected(steps.M3_BLOCKS_CORE)
+    body = sql.split("\n", 1)[1]
+    assert expected.startswith("SELECT count() FROM (\n")
+    assert expected.endswith("\n)")
+    assert body in expected
+
+
+def test_m3_identity_drift_detail_has_no_reported_values():
+    sql = dict(steps.M3_BLOCKS_CORE)["identity_drift"]
+    detail_line = next(ln for ln in sql.splitlines() if ln.endswith(" AS detail,"))
+    # detail은 불일치 여부(toString(toUInt8(비교식)))만 — reported_* 원문을 문자열로 싣지 않는다
+    assert "toString(an.reported_service)" not in detail_line
+    assert "toString(an.reported_service_group)" not in detail_line
+    assert re.search(r"concat\(.*'svc_diff=', toString\(toUInt8\(an\.reported_service != an\.service\)\)", detail_line)
+    assert "' group_diff=', toString(toUInt8(an.reported_service_group != r.service_group))" in detail_line
+    assert "an.source_type = 'metrics-api-v1'" in sql
+    assert "'identity_drift' AS check_name" in sql
+
+
+def test_m3_builder_with_subset_blocks():
+    two = steps.build_m3_sql(steps.M3_BLOCKS_CORE[:2])
+    assert two.count("\nUNION ALL\n") == 1
+    assert "'metrics_missing' AS check_name" in two and "'partial_load' AS check_name" in two
+    assert "'rows_rejected' AS check_name" not in two
+    full = steps.build_m3_sql(steps.M3_BLOCKS_CORE)
+    assert full.count("\nUNION ALL\n") == 12
+    assert steps.build_m3_expected(steps.M3_BLOCKS_CORE[:2]).count("\nUNION ALL\n") == 1
+    with pytest.raises(ValueError):
+        steps.build_m3_sql([])
+    with pytest.raises(ValueError):
+        steps.build_m3_expected([])
+
+
+def test_m3_inner_union_all_never_at_column_zero():
+    # 블록 내부 UNION ALL은 들여쓰기 — 최상위 조립 토큰 "\nUNION ALL\n"과 충돌하지 않는다
+    for name, sql in steps.M3_BLOCKS_CORE:
+        assert "\nUNION ALL\n" not in sql, name
+        assert "\nUNION DISTINCT\n" not in sql, name
+
+
+def test_m3_sql_contract_date_binding_no_percent_no_coalesce_no_star():
+    for s in (steps.build_m3_sql(steps.M3_BLOCKS_CORE), steps.build_m3_expected(steps.M3_BLOCKS_CORE),
+              steps.SQL_M3_SUMMARY):
+        assert "{d:Date}" in s
+        assert "%(" not in s
+        assert "coalesce(" not in s.lower()
+        assert "SELECT *" not in s
+    for name, sql in steps.M3_BLOCKS_CORE:
+        assert "{d:Date}" in sql, name
+
+
+def test_m3_fact_blocks_anchored_and_partial_load_unanchored():
+    anchored = {"unregistered_model", "hours_over_count", "unknown_violation", "pct_non_monotone",
+                "gpu_type_no_tco", "serving_missing_for_gpu_model", "serving_without_gpu_serving_row"}
+    for name, sql in steps.M3_BLOCKS_CORE:
+        if name in anchored:
+            assert f"GLOBAL IN {steps._M3_ANCHORED}" in sql, name
+    partial = dict(steps.M3_BLOCKS_CORE)["partial_load"]
+    assert "GLOBAL IN" not in partial
+    assert "countIf(metric != 'custom') AS serving_n" in partial
+    assert "custom_rows" not in partial
+    assert "an.gpu_rows != c.actual_gpu" in partial and "an.serving_rows != c.actual_serving" in partial
+    assert "UNION DISTINCT" in partial
+
+
+def test_m3_token_side_columns_within_read_contract():
+    sql = steps.build_m3_sql(steps.M3_BLOCKS_CORE)
+    assert f"{DB_TOKEN_MART}.token_usage_1d_dist AS u" in sql
+    used = set(re.findall(r"\bu\.(\w+)", sql))
+    assert used <= set(READ_CONTRACT[f"{DB_TOKEN_MART}.token_usage_1d"])
+    assert "agg_token_service_1d" not in sql
+
+
+def test_m3_reg_expectation_predicate_matches_m0():
+    missing = dict(steps.M3_BLOCKS_CORE)["metrics_missing"]
+    assert "r.enabled = 1" in missing
+    assert "r.coverage_since <= {d:Date}" in missing
+    assert "(isNull(r.until) OR {d:Date} <= r.until)" in missing
+    assert "an.service = ''" in missing
+    reg_gap = dict(steps.M3_BLOCKS_CORE)["service_not_in_usage_registry"]
+    assert f"r.service GLOBAL NOT IN {steps.SUB_USAGE_SVC}" in reg_gap
+
+
+def test_m3_gpu_type_no_tco_excludes_fail_rows_and_uses_cost_categories():
+    sql = dict(steps.M3_BLOCKS_CORE)["gpu_type_no_tco"]
+    assert f"NOT {steps.FAIL_PRED}" in sql
+    assert "g.category IN ('serving', 'standby')" in sql
+    assert "isNull(t.tco)" in sql
+    assert steps.SUB_EFF_TCO in sql
+
+
+def test_m3_canon_used_for_model_keys():
+    for name in ("unregistered_model", "hours_over_count", "pct_non_monotone",
+                 "serving_missing_for_gpu_model", "serving_without_gpu_serving_row"):
+        sql = dict(steps.M3_BLOCKS_CORE)[name]
+        assert steps.SUB_EFF_ALIAS in sql, name
+        assert "AS canon_model" in sql, name
+    unknown = dict(steps.M3_BLOCKS_CORE)["unknown_violation"]
+    assert steps.SUB_EFF_ALIAS not in unknown  # 미지 항목은 원문 모델명 그대로 (검출 대상 식별)
+    # 9) 토큰 측(tk)도 canon으로 키를 맞춘다 — 원문 alias(u.model)와 gpu canon을 직접 비교하면 alias 모델이 전부 미스
+    smissing = dict(steps.M3_BLOCKS_CORE)["serving_missing_for_gpu_model"]
+    assert steps._TOK_SRC in smissing and steps._TOK_TAIL in smissing
+    assert f"{steps.canon('u.model')} AS canon_model" in smissing
+    assert "tk.canon_model = gk.canon_model" in smissing
+    assert "tk.model = gk.canon_model" not in smissing
+
+
+def test_m3_child_counts_shares_serving_count_expression_with_t3():
+    # 컨트롤러 D1: _M3_CHILD_COUNTS가 T3 SUB_SERVING_CNT(Plan 6b n_serving 정의)와
+    # 동일한 집계식을 쓴다는 것을 고정 — 중복 자체는 설계상 허용(D1), 표현 불일치만 방지.
+    assert "countIf(metric != 'custom')" in steps._M3_CHILD_COUNTS
+    assert "countIf(metric != 'custom')" in steps.SUB_SERVING_CNT
+
+
+def test_m3_blocks_core_dist_joins_and_in_are_global():
+    # nit(12): M3_BLOCKS_CORE 각 블록 안에서 _dist 테이블을 향한 JOIN/IN은 전부 GLOBAL
+    # (§4.0 분산 조인 표준) — GLOBAL LEFT JOIN이 아닌 " JOIN "이 없고, GLOBAL(NOT) IN (SELECT가
+    # 아닌 "IN (SELECT"가 없다.
+    for name, sql in steps.M3_BLOCKS_CORE:
+        assert " JOIN " not in sql.replace("GLOBAL LEFT JOIN", ""), name
+        for m in re.finditer(r"\bIN\s*\(SELECT", sql):
+            prefix = sql[:m.start()]
+            assert prefix.endswith("GLOBAL ") or prefix.endswith("GLOBAL NOT "), \
+                (name, sql[max(0, m.start() - 40):m.end()])
+
+
+# --- run_m3: _run_table 시퀀스 + 검사 요약 라인 ------------------------------------
+class M3Gate(FakeGate):
+    """FakeGate + M3 요약(GROUP BY check_name, severity) 조회 응답·적재 행수 고정."""
+
+    def __init__(self, summary_rows, rows=3, **kw):
+        super().__init__(**kw)
+        self.summary_rows = summary_rows
+        self.rows = rows
+        self.deleted = []
+        self.inserted = []
+
+    def delete_day(self, table_local, date, extra_pred=""):
+        self.deleted.append((table_local, date, extra_pred))
+        super().delete_day(table_local, date, extra_pred)
+
+    def insert_select(self, sql, params=None):
+        self.inserted.append((sql, params))
+        return self.rows
+
+    def verify_count(self, table_dist, date, expected):
+        self.verify_calls.append((table_dist, expected))
+        return True, self.rows
+
+    def query(self, sql, params=None):
+        self.query_calls.append((sql, params))
+        if "GROUP BY check_name, severity" in sql:
+            return list(self.summary_rows)
+        if sql.startswith("SELECT count() FROM ("):
+            return [(self.rows,)]
+        return super().query(sql, params)
+
+
+def test_run_m3_appends_check_warn_lines(capsys):
+    gate = M3Gate([("rows_rejected", "WARN", 2)], rows=2)
+    out = steps.run_m3(gate, DATE)
+    assert out["warns"] == ["CHECK WARN rows_rejected severity=WARN count=2"]
+    assert out["rows_check"] == 2
+    assert "CHECK WARN rows_rejected severity=WARN count=2" in capsys.readouterr().out
+
+
+def test_run_m3_fail_is_warn_line_and_info_is_info_line():
+    gate = M3Gate([("hours_over_count", "FAIL", 1), ("manual_source", "INFO", 4)], rows=5)
+    out = steps.run_m3(gate, DATE)
+    assert out["warns"] == [
+        "CHECK WARN hours_over_count severity=FAIL count=1",
+        "CHECK INFO manual_source severity=INFO count=4",
+    ]
+    assert len([w for w in out["warns"] if w.startswith("CHECK WARN ")]) == 1
+
+
+def test_run_m3_sequence_delete_insert_expected_verify_summary():
+    gate = M3Gate([], rows=7)
+    out = steps.run_m3(gate, DATE)
+    assert out == {"rows_check": 7, "warns": []}
+    # FakeGate.order는 (op, short) 튜플 — M3Gate가 insert/query/verify를 덮어써 exists·delete만 기록된다
+    assert gate.order == [("exists", "m3"), ("delete", "m3")]
+    assert gate.deleted == [(f"{DB_MART}.token_metrics_check_1d_local", DATE, "")]
+    assert len(gate.inserted) == 1
+    sql, params = gate.inserted[0]
+    assert sql.startswith(f"INSERT INTO {DB_MART}.token_metrics_check_1d_dist (")
+    assert params == {"d": DATE}
+    assert gate.verify_calls == [(f"{DB_MART}.token_metrics_check_1d_dist", 7)]
+    # blocks=None 기본은 CORE + STRETCH — T6/T7이 STRETCH를 extend한 뒤에도 성립
+    assert gate.query_calls[0][0] == steps.build_m3_expected(steps.M3_BLOCKS_CORE + steps.M3_BLOCKS_STRETCH)
+    assert gate.query_calls[-1] == (steps.SQL_M3_SUMMARY, {"d": DATE})
+
+
+def test_run_m3_blocks_default_is_core_plus_stretch(monkeypatch):
+    extra = ("stretch_probe", steps._m3_select(
+        "stretch_probe", "INFO", service_group="''", service="''", observed="0",
+        threshold="0", detail="''", body="FROM system.one WHERE 0 AND {d:Date} = {d:Date}"))
+    monkeypatch.setattr(steps, "M3_BLOCKS_STRETCH", [extra])
+    gate = M3Gate([], rows=0)
+    steps.run_m3(gate, DATE)
+    sql = gate.inserted[0][0]
+    assert sql.count("\nUNION ALL\n") == 13
+    assert "'stretch_probe' AS check_name" in sql
+    gate2 = M3Gate([], rows=0)
+    steps.run_m3(gate2, DATE, blocks=steps.M3_BLOCKS_CORE[:1])
+    assert "UNION ALL" not in gate2.inserted[0][0]
+
+
+def test_run_m3_raises_step_error_when_verify_fails():
+    class Failing(M3Gate):
+        def verify_count(self, table_dist, date, expected):
+            return False, 0
+
+    with pytest.raises(steps.StepError):
+        steps.run_m3(Failing([], rows=3), DATE)
