@@ -193,6 +193,10 @@ else
     echo "[ERROR] 기존 Secret '${SECRET_NAME}'에 CH_USER가 없습니다 — 갱신(y)으로 다시 만드세요."
     exit 1
   fi
+  if [[ -z "${ch_pass}" ]]; then
+    echo "[ERROR] 기존 Secret '${SECRET_NAME}'에 CH_PASSWORD가 없습니다 — 갱신(y)으로 다시 만드세요."
+    exit 1
+  fi
 fi
 
 # ── [3/7] endpoints ConfigMap (endpoints.yaml 분리 원칙 — 이미지에 굽지 않음) ────
@@ -221,15 +225,23 @@ ch_query() {
   # 파드 안의 clickhouse-client(로컬 접속)로 단일 쿼리 — 접속 계정은 컨테이너가 쓸 앱 계정(CH_USER/CH_PASSWORD).
   # default 계정으로 돌리면 GRANT 누락을 잡지 못하므로(accounts.sql의 GRANT SELECT ON dim_token_service_dist TO mart)
   # 앱 계정으로 같은 SELECT 를 실행해 "DB 존재 + 앱 계정이 실제로 읽을 수 있음"을 함께 확인한다 (§5.6).
-  # (system.databases 는 계정에 권한이 있는 DB만 보여 준다 — 행 수 2 미만이면 DB 부재이거나 GRANT 누락)
-  ${KUBECTL} exec -n "${CH_NAMESPACE}" "${ch_pod}" -- \
-    clickhouse-client --user "${ch_user}" --password "${ch_pass}" --query "$1"
+  # (system.databases 는 계정에 권한이 있는 DB만 보여 준다 — 행 수가 기대치 미만이면 DB 부재이거나 GRANT 누락)
+  # 비밀번호는 --password argv로 넘기지 않는다 — kubectl exec의 argv는 API 서버 감사 이벤트 커맨드에 그대로
+  # 남으므로, here-string으로 파드 stdin에 실어 clickhouse-client가 표준입력에서 읽게 한다
+  # (버전 무관 형태; -i가 있어야 here-string이 파드 stdin까지 전달된다).
+  ${KUBECTL} exec -i -n "${CH_NAMESPACE}" "${ch_pod}" -- \
+    sh -c 'clickhouse-client --user "$0" --password "$(cat)" --query "$1"' "${ch_user}" "$1" <<<"${ch_pass}"
 }
-db_rows="$(ch_query "SELECT name FROM system.databases WHERE name IN ('${DB_FACT}','${DB_DIM}')" || true)"
-db_count="$(printf '%s\n' "${db_rows}" | grep -c . || true)"
-if [[ "${db_count}" != "2" ]]; then
+# 기대 DB 개수 — company-verify 프롬프트에서 CH_DB_FACT==CH_DB_DIM으로 입력하면 대상 집합이 1개로 줄어든다.
+expected_db_count=2
+[[ "${DB_FACT}" == "${DB_DIM}" ]] && expected_db_count=1
+if ! db_rows="$(ch_query "SELECT count() FROM system.databases WHERE name IN ('${DB_FACT}','${DB_DIM}')")"; then
+  echo "[ERROR] 프리플라이트 실패: ClickHouse 접속 불가 (계정 ${ch_user})" >&2
+  exit 1
+fi
+if [[ "${db_rows}" != "${expected_db_count}" ]]; then
   echo "[ERROR] 프리플라이트 실패: DB 부재 또는 GRANT 누락 — admin이 ${HERE}/${DDL_DIR}/accounts.sql 실행 필요"
-  echo "        계정 ${ch_user} 기준 필요: ${DB_FACT}, ${DB_DIM} / 발견: ${db_rows:-<없음>}"
+  echo "        계정 ${ch_user} 기준 필요: ${DB_FACT}, ${DB_DIM} (기대 ${expected_db_count}개) / 발견 ${db_rows}개"
   exit 1
 fi
 echo "  DB OK (as ${ch_user}): ${DB_FACT}, ${DB_DIM}"

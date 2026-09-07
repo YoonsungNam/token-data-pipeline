@@ -211,9 +211,10 @@ def test_install_sh_contract():
         "이미 존재합니다 — 네임스페이스 공유 Secret이므로 갱신하지 않습니다",
         "system.databases",
         "프리플라이트 실패: DB 부재",
+        "프리플라이트 실패: ClickHouse 접속 불가",                                       # 접속/인증 실패는 DB 부재와 별개 메시지(fix1 #2)
         "dim_token_service_dist",
         "프리플라이트 실패: 토큰 레지스트리 SELECT 불가",
-        'clickhouse-client --user "${ch_user}" --password "${ch_pass}" --query "$1"',   # 프리플라이트는 앱 계정으로(GRANT 검증)
+        'clickhouse-client --user "$0" --password "$(cat)" --query "$1"',              # 프리플라이트는 앱 계정으로(GRANT 검증), 비밀번호는 stdin(fix1 #1)
         "jsonpath='{.data.CH_USER}'",                                                   # [2/7] 건너뛴 재설치도 앱 계정을 읽는다
         'apply_sql "${HERE}/${DDL_DIR}/raw_token_metrics.sql"',
         'apply_sql "${HERE}/${DDL_DIR}/dim_token_metrics_service.sql"',
@@ -224,6 +225,9 @@ def test_install_sh_contract():
         "harbor.example.internal",
     ):
         assert needle in text, needle
+    assert '--password "${ch_pass}"' not in text  # kubectl exec argv에 비밀번호 평문 금지(fix1 #1)
+    assert not re.search(r'(echo|printf)[^\n]*\$\{?(ch_pass|reg_pass)', text)          # 비밀 echo/printf 금지(fix1 #3)
+    assert "set -x" not in text                                                        # 트레이스로 비밀 노출 금지(fix1 #3)
     assert re.search(r'apply_sql\s+"[^"]*accounts\.sql"', text) is None  # accounts.sql은 admin 수동
     assert text.count('apply_sql "${HERE}/${DDL_DIR}/') == 2
     assert "[1/6]" not in text and "[8/7]" not in text
