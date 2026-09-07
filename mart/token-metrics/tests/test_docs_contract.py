@@ -19,6 +19,9 @@ RERUN_PY = REPO / "mart" / "token-metrics" / "tools" / "rerun.py"
 RUN_INV = REPO / "tools" / "verify" / "run_invariants.py"
 CONFIG_PY = REPO / "mart" / "token-metrics" / "app" / "config.py"
 CH_PY = REPO / "mart" / "token-metrics" / "app" / "ch.py"
+CRONJOB_YAML = REPO / "mart" / "token-metrics" / "k8s" / "base" / "cronjob.yaml"
+BATCH_PY = REPO / "mart" / "token-metrics" / "app" / "batch.py"
+MART_PY = REPO / "mart" / "token-metrics" / "app" / "mart.py"
 
 TIME_MACRO = "date BETWEEN toDate($__fromTime) AND toDate($__toTime)"
 DS_CH = {"type": "grafana-clickhouse-datasource", "uid": "${DS_CLICKHOUSE}"}
@@ -82,15 +85,21 @@ GRIDPOS = {
 # 템플릿 변수 사용 패널 — service_group: 커버리지(15) 제외 전부; service: p 파생(5, 모델 단위 C÷W 라 서비스 필터 무의미)·M2(11·12, service 컬럼 없음)·커버리지(15) 제외
 GROUP_FILTER_PANELS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}
 SERVICE_FILTER_PANELS = {1, 2, 3, 4, 6, 7, 8, 9, 10, 13, 14}
-# 모듈 README 환경변수 표 — app/config.py 또는 app/ch.py 에 문자열로 존재해야 한다 (EXPECTED_LATE_SERVICES 없음)
-ENV_VARS = [
-    "CH_HOST", "CH_PORT", "CH_USER", "CH_PASSWORD", "CH_CLUSTER",
-    "RETRY_COUNT", "RETRY_INTERVAL_S", "MUTATION_POLL_S", "MUTATION_TIMEOUT_S", "INSERT_QUORUM",
-    "MART_METRICS_MAX_MUTATIONS_PER_RUN",
-]
-DB_ENV_VARS = ["CH_DB_FACT", "CH_DB_DIM", "CH_DB_MART", "CH_DB_TOKEN_MART", "CH_DB_TOKEN_DIM"]
 MARKER_FIELDS = ["status=", "module=mart-metrics", "metrics_coverage=", "missing_services=",
                  "rows_mart=", "rows_check=", "rows_share=", "warn=", "elapsed="]
+
+# 문서(runbook) 문자열이 실제 코드에도 있는지 — (doc_needle, source_path, source_needle) 튜플
+# (T11 fix1 Important 1/3 — 거부 문구·PREFLIGHT·BATCH_RESULT·라벨·스케줄·TTL을 소스에 고정)
+SOURCE_STRING_PINS = [
+    ("RERUN REFUSED window", RERUN_PY, "RERUN REFUSED window"),
+    ("RERUN REFUSED active_jobs=", RERUN_PY, "RERUN REFUSED active_jobs="),
+    ("PREFLIGHT FAIL read_contract missing=", INSTALL_SH, "PREFLIGHT FAIL read_contract missing="),
+    ("PREFLIGHT OK read_contract", INSTALL_SH, "PREFLIGHT OK read_contract"),
+    ("BATCH_RESULT status=", MART_PY, "BATCH_RESULT status="),
+    ("ttlSecondsAfterFinished", RERUN_PY, "ttlSecondsAfterFinished"),
+    ("-l app=token-mart-metrics", CRONJOB_YAML, "app: token-mart-metrics"),
+    ('"20 10 * * *"', CRONJOB_YAML, 'schedule: "20 10 * * *"'),
+]
 
 
 def load_dash() -> dict:
@@ -124,9 +133,20 @@ def ddl_columns(table_local: str) -> set[str]:
 
 
 def argparse_flags(path: Path) -> set[str]:
-    """스크립트 원문에서 `--flag`/`-n` 형태 옵션 정의 문자열을 모은다 (bash·python 공통)."""
+    """스크립트에 실제 정의된 옵션만 모은다 (T11 fix1 Minor — 전체 텍스트 스캔은 docstring 안의
+    부정문("--x 는 없다")까지 플래그로 오인하므로, 진짜 정의 지점만 본다):
+    - `.py`: `add_argument(...)` 호출 괄호 안의 따옴표 플래그 문자열 전부(같은 호출의 짧은 별칭 포함).
+    - 그 외(예: install.sh): bash `case` 브랜치 라벨(`--flag)`, `-n|--namespace)`)만 — 산문·주석은 제외.
+    """
     text = path.read_text(encoding="utf-8")
-    return set(re.findall(r"(?<![\w-])(--?[a-z][a-z0-9-]*)\b", text))
+    flags: set[str] = set()
+    if path.suffix == ".py":
+        for m in re.finditer(r"add_argument\(([^)]*)\)", text, re.S):
+            flags.update(re.findall(r'"(-{1,2}[a-z][a-z0-9-]*)"', m.group(1)))
+        return flags
+    for m in re.finditer(r"^\s*((?:-{1,2}[a-z][a-z0-9-]*\|)*-{1,2}[a-z][a-z0-9-]*)\)", text, re.M):
+        flags.update(m.group(1).split("|"))
+    return flags
 
 
 def cli_flags_in_doc(text: str, script: str) -> set[str]:
@@ -262,6 +282,7 @@ def test_text_panel_marker_note():
     for f in MARKER_FIELDS:
         assert f in content, f
     assert "측정" in content and "배분" in content and "추정" in content
+    assert "elapsed=<s.s>" in content   # T11 fix1 Minor — README/runbook과 형식 일치(app/mart.py 의 %.1f)
 
 
 def test_design_required_panels():
@@ -285,13 +306,16 @@ def test_design_required_panels():
     # 11) 그룹 행 = ΣC + 실험 + 유휴 + 미귀속 — 네 항 모두 표시
     for col in ("model_cost_sum_krw", "test_cost_krw", "idle_cost_krw", "unattributed_cost_krw"):
         assert col in sql[11], col
-    # 13) TTFT/ITL — 표준 지표 2종만, source_type 병기
+    # 13) TTFT/ITL — 표준 지표 2종만, source_type 병기; mart 는 `name` 으로 필터하지 않는다(metric != 'custom' 이 실제 필터 — app/steps.py:141,564)
     assert "metric IN ('ttft_ms', 'itl_ms')" in sql[13] and "source_type" in sql[13]
+    assert "name = ''" not in sql[13]
     # 14) 출처 — source_type 별 서비스 수
     assert "GROUP BY time, source_type" in sql[14]
-    # 15) 커버리지 분모 = 마커 metrics_coverage 분모와 같은 술어(T5 M0: enabled=1 AND coverage_since <= d AND (until IS NULL OR d <= until))
+    # 15) 커버리지 분모 = 마커 metrics_coverage 분모와 같은 술어(T5 M0: enabled=1 AND coverage_since <= d AND (until IS NULL OR d <= until)),
+    #     레지스트리는 steps.SUB_REG 처럼 LIMIT 1 BY service 로 중복 제거해야 분모가 마커의 M(enabled 수)과 같아진다(app/steps.py:118-122)
     assert "r.enabled = 1 AND r.coverage_since <= d.date AND (isNull(r.until) OR d.date <= r.until)" in sql[15]
     assert "AS expected_services" in sql[15] and "registered_services" not in sql[15]
+    assert "LIMIT 1 BY service" in sql[15]
     # 비용 라벨 컬럼이 있는 패널은 정의서 §7 의 네 라벨(+ 파생) 밖의 값을 쓰지 않는다
     for pid in (2, 3, 5, 9, 10, 11):
         assert "AS cost_label" in sql[pid], pid
@@ -336,6 +360,7 @@ def test_deploy_doc_sections_and_placeholders():
     for needle in [
         "BATCH_RESULT status=SUCCESS module=mart-metrics",
         "PREFLIGHT FAIL read_contract missing=",
+        "PREFLIGHT OK read_contract",
         "ALL INVARIANTS PASS",
         "RERUN REFUSED window (>=10:50 KST)",
         "token-mart-metrics-ch-secret-verify",
@@ -343,6 +368,7 @@ def test_deploy_doc_sections_and_placeholders():
         "reason=read_contract", "reason=mutation_budget", "token_mart_absent", "metrics_missing", "no_tco",
         "stage_seed_dim_token_",
         "manual_load.py",
+        "ttlSecondsAfterFinished",
     ]:
         assert needle in text, needle
 
@@ -361,12 +387,39 @@ def test_deploy_doc_cli_flags_exist():
         assert not missing, (script, missing)
 
 
+def test_deploy_doc_strings_pinned_to_source():
+    """T11 fix1 Important 1/3 — 거부 문구·PREFLIGHT 성공/실패 줄·BATCH_RESULT·라벨 셀렉터·스케줄·
+    청크 Job TTL 이 런북 문서와 실제 소스 양쪽에 모두 있는지(문서가 소스에서 드리프트하지 않게)."""
+    text = DEPLOY_DOC.read_text(encoding="utf-8")
+    for doc_needle, source_path, source_needle in SOURCE_STRING_PINS:
+        assert doc_needle in text, doc_needle
+        assert source_needle in source_path.read_text(encoding="utf-8"), (doc_needle, source_path)
+
+
+def test_warn_line_shape_matches_emitter():
+    """T11 fix1 Important 2 — 실제 emitter(app/steps.py 의 run_m3)는
+    'CHECK WARN <check_name> severity=<sev> count=<n>' 만 찍는다(서비스별 변형 없음).
+    문서에 남아있던 잘못된 'service_not_in_usage_registry service=<s>' 모양을 고정 검사."""
+    batch_text = BATCH_PY.read_text(encoding="utf-8")
+    for text in (MOD_README.read_text(encoding="utf-8"), DEPLOY_DOC.read_text(encoding="utf-8")):
+        assert "service_not_in_usage_registry service=" not in text
+        assert "service_not_in_usage_registry severity=WARN count=" in text
+        assert "CHECK WARN <check_name> severity=<FAIL|WARN> count=<n>" in text
+    # warn= 카운터가 'CHECK WARN ' 접두 줄만 세고 'CHECK INFO'는 뺀다는 설명의 근거(app/batch.py:_warn_count)
+    assert "CHECK WARN" in batch_text and "CHECK INFO" in batch_text
+
+
 def test_module_readme_env_and_marker():
     text = MOD_README.read_text(encoding="utf-8")
     code = CONFIG_PY.read_text(encoding="utf-8") + CH_PY.read_text(encoding="utf-8")
+    # env 목록은 하드코딩하지 않고 소스에서 파생한다 — config.py 는 일부 키를 `_int_env(name, default)`
+    # 로 감싸므로(내부적으로 os.getenv(name, "")를 변수로 호출) 두 형태 모두 리터럴 첫 인자를 잡는다.
+    expected = set(re.findall(r'(?:os\.getenv|_int_env)\(\s*"([A-Z_0-9]+)"', code))
+    assert len(expected) == 16, expected
     rows = [ln for ln in text.splitlines() if re.match(r"^\| `[A-Z_]+` \|", ln)]
     names = [re.match(r"^\| `([A-Z_]+)` \|", ln).group(1) for ln in rows]
-    assert names == ENV_VARS + DB_ENV_VARS, names
+    assert len(names) == 16, names
+    assert set(names) == expected, (sorted(set(names) - expected), sorted(expected - set(names)))
     for n in names:
         assert f'"{n}"' in code, n
     assert "| `EXPECTED_LATE_SERVICES` |" not in text

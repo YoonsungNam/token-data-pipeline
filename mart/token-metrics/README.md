@@ -70,9 +70,12 @@ BATCH_RESULT status=SUCCESS|FAILURE module=mart-metrics metrics_coverage=<presen
 | WARN 코드(로그 `CHECK WARN …`) | 의미 | 상태 |
 |---|---|---|
 | `metrics_coverage missing=<n>` | enabled 서비스 중 앵커(summary) 없는 수 — 같은 서비스는 M3 `metrics_missing` FAIL 행 | SUCCESS 유지 |
-| `service_not_in_usage_registry service=<s>` | 메트릭 레지스트리에만 있는 서비스(토큰 레지스트리 `dim_token_service` 부재) | SUCCESS 유지 |
+| `service_not_in_usage_registry severity=WARN count=<n>` | 메트릭 레지스트리에만 있는 서비스 수(토큰 레지스트리 `dim_token_service` 부재) | SUCCESS 유지 |
 | `token_mart_absent date=<d>` | 그 날짜 토큰 mart 0행 — M4 스킵(`rows_share=0`), M1 은 GPU-only 행 | SUCCESS 유지 |
 | `dup_suspect:<table>` | 적재 후 키 중복 의심(재조회 uniqExact < count) | SUCCESS 유지 — `invariants_metrics` 로 확인 |
+
+그 밖에 M3 검사마다 결과 행이 있으면 `CHECK WARN <check_name> severity=<FAIL|WARN> count=<n>` 1줄이 나오며, 마커의
+`warn=` 은 그 줄 전부를 센다(`CHECK INFO` 제외).
 
 ## 실행 순서
 

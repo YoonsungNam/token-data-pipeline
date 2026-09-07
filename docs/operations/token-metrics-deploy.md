@@ -109,8 +109,14 @@ TCO 가 NULL 인 기종이 남아 있으면 그 기종을 쓰는 (service, model
 | `[2/6]` | Secret `token-mart-metrics-ch-secret`(격리 overlay 는 `-verify` 접미) — 키 11개 `CH_HOST CH_PORT CH_USER CH_PASSWORD CH_CLUSTER CH_DB_FACT CH_DB_DIM CH_DB_MART CH_DB_TOKEN_MART CH_DB_TOKEN_DIM MART_METRICS_MAX_MUTATIONS_PER_RUN`(company/-verify 는 `INSERT_QUORUM=auto` 추가) |
 | `[3/6]` | 읽기 계약 DESCRIBE 프리플라이트 — `${CH_DB_TOKEN_MART}.token_usage_1d_dist` 9컬럼, `${CH_DB_TOKEN_MART}.agg_token_service_1d_dist` 2컬럼, `${CH_DB_TOKEN_DIM}.dim_token_service_dist` 2컬럼(=13). **앱 계정(`CH_USER`/`CH_PASSWORD`)으로 here-string 실행**해 GRANT 누락도 함께 잡는다(admin 계정이 아님 — 비밀번호는 argv 에 오르지 않는다). 누락 시 `PREFLIGHT FAIL read_contract missing=<db.table.column,…>` 출력 후 `exit 3` — 테이블은 만들지 않는다 |
 | `[4/6]` | `mart/token-metrics/ddl/<overlay>/mart_metrics_tables.sql` 적용(4테이블 `_local`/`_dist`; `accounts.sql` 은 admin 수동) |
-| `[5/6]` | `kubectl apply -k mart/token-metrics/k8s/overlays/<overlay>` — CronJob `token-mart-metrics`(`20 10 * * *` KST, `activeDeadlineSeconds 1800`) |
+| `[5/6]` | `kubectl apply -k mart/token-metrics/k8s/overlays/<overlay>` — CronJob `token-mart-metrics`(`"20 10 * * *"` KST, `activeDeadlineSeconds 1800`) |
 | `[6/6]` | 이미지 주소 주입(`kubectl set image cronjob/token-mart-metrics token-mart-metrics=<registry>/token-mart-metrics:<tag>`) + 수동 실행 커맨드 안내 — `CH_HOST` 는 [2/6] Secret 의 키(envFrom)이지 이 단계가 넣는 정적 env 가 아니다 |
+
+`[3/6]` 이 통과하면 DDL 적용 전에 아래 성공 줄이 보인다(install.sh:241 그대로):
+
+```
+PREFLIGHT OK read_contract tables=3 columns=13
+```
 
 ```bash
 # admin — GRANT (mart 계정: mart 4테이블 INSERT/SELECT + _local ALTER DELETE, 읽기 dim 6·fact 3·토큰 mart 2)
@@ -133,7 +139,7 @@ Secret 값: `CH_HOST` 는 클러스터 내부 서비스 주소(사내: `chi-<clu
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n monitoring get cronjob token-mart-metrics -o jsonpath='{.spec.schedule}{"\n"}'   # 20 10 * * *
-kubectl --context "$KUBE_CONTEXT" -n monitoring get secret token-mart-metrics-ch-secret -o jsonpath='{.data}' | python3 -c "import json,sys;print(sorted(json.load(sys.stdin)))"   # 키 11개
+kubectl --context "$KUBE_CONTEXT" -n monitoring get secret token-mart-metrics-ch-secret -o jsonpath='{.data}' | python3 -c "import json,sys;print(sorted(json.load(sys.stdin)))"   # 키 11개(company/company-verify 는 INSERT_QUORUM 포함 12개)
 kubectl --context "$KUBE_CONTEXT" -n "$CH_NS" exec "$CH_POD" -- clickhouse-client -q "SHOW TABLES FROM mart LIKE '%token_%'"   # agg_token_model_cost_1d_*, token_metrics_check_1d_*, agg_token_model_share_1d_*, agg_token_gpu_group_1d_* (+ 기존 token_usage_1d_*)
 ```
 
@@ -146,7 +152,11 @@ JOB="token-mart-metrics-manual-$(TZ=Asia/Seoul date +%Y%m%d)"
 kubectl --context "$KUBE_CONTEXT" -n monitoring create job --from=cronjob/token-mart-metrics "$JOB"
 kubectl --context "$KUBE_CONTEXT" -n monitoring wait --for=condition=complete --timeout=1800s "job/$JOB"
 kubectl --context "$KUBE_CONTEXT" -n monitoring logs "job/$JOB" | grep -E "PREFLIGHT|CHECK WARN|BATCH_RESULT"
+kubectl --context "$KUBE_CONTEXT" -n monitoring delete job "$JOB"
 ```
+
+`rerun.py` 가 만드는 청크 Job 은 `ttlSecondsAfterFinished=86400` 으로 24h 후 자동 삭제되지만(§7), 이 수동 Job 은
+ownerRef·TTL 이 없어 자동 GC 되지 않으므로 위처럼 직접 지운다.
 
 성공 마커(한 줄, 값은 예시):
 
@@ -161,8 +171,11 @@ BATCH_RESULT status=SUCCESS module=mart-metrics metrics_coverage=3/3 missing_ser
 | `metrics_coverage=<present>/<enabled>` | 레지스트리 `enabled=1` 서비스 중 그날 앵커(`raw_token_metrics_summary_1d`)가 있는 수 |
 | `missing_services="a,b"` | 앵커 없는 enabled 서비스 + 사용량 레지스트리에 없는 메트릭 레지스트리 서비스(합집합, 없으면 `"-"`) — `user_id`·payload 는 절대 마커에 싣지 않는다(마스터 §5.6) |
 | `rows_mart` / `rows_check` / `rows_share` | M1 / M3 / M4 적재 행수(M2 는 `rows_mart` 에 포함되지 않음 — 로그 `M2 rows_group=<n>` 줄) |
-| `warn` | `CHECK WARN` 건수 — `metrics_coverage missing=<n>`, `service_not_in_usage_registry service=<s>`, `token_mart_absent date=<d>`, `dup_suspect:<table>` |
+| `warn` | `CHECK WARN` 건수 — `metrics_coverage missing=<n>`, `service_not_in_usage_registry severity=WARN count=<n>`, `token_mart_absent date=<d>`, `dup_suspect:<table>` |
 | `reason` | `read_contract` / `mutation_budget` / `verify_count` / `sigterm` / `exception` (§9) |
+
+그 밖에 M3 검사마다 결과 행이 있으면 `CHECK WARN <check_name> severity=<FAIL|WARN> count=<n>` 1줄이 나오며, 마커의
+`warn=` 은 그 줄 전부를 센다(`CHECK INFO` 제외).
 
 `status=SUCCESS warn>0` 은 정상 종료다(적재됨) — WARN 코드를 §9 표로 해석한다. 첫 실행이 `FAILURE reason=read_contract` 면
 §3 프리플라이트가 통과했더라도 런타임에 토큰 mart 컬럼이 바뀐 것이므로 `mart/token-metrics/app/preflight.py` 의
@@ -172,8 +185,9 @@ BATCH_RESULT status=SUCCESS module=mart-metrics metrics_coverage=3/3 missing_ser
 
 GitHub 체크아웃의 `tools/verify/run_invariants.py` 는 `--sql` 옵션(Plan 6c T9 additive)으로 `invariants_metrics.sql`
 을 실행한다 — **사내 분기본의 `run_invariants.py` 에는 `--sql` 이 없으므로** 반드시 이 체크아웃에서 실행한다.
-8블록: `metrics_anchor_missing, metrics_gpu_dup_key, metrics_serving_dup_key, metrics_cost_sum_mismatch,
-created_by_wrong_metrics, share_sum_mismatch, group_identity_gap, idle_negative`.
+8종(UNION 11 블록 — `created_by_wrong_metrics` 가 테이블별 4블록): `metrics_anchor_missing, metrics_gpu_dup_key,
+metrics_serving_dup_key, metrics_cost_sum_mismatch, created_by_wrong_metrics, share_sum_mismatch, group_identity_gap,
+idle_negative`.
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n "$CH_NS" port-forward "$CH_POD" 18123:8123 >/dev/null 2>&1 &
@@ -197,6 +211,9 @@ kill $PF
 → 패널 1·2·3(비용 NULL 은 `no_tco` — §1 TCO 갱신) → 패널 11(`identity_gap_krw` ≈ 0) → 패널 13(TTFT/ITL 값이 있으면 6b serving
 블록 적재 정상). `BATCH_RESULT` 마커 패널은 VictoriaLogs 가 있는 company 단계에서
 기존 `batch_result` 대시보드에 module `mart-metrics` 로 편입한다(패널 16 텍스트).
+
+전체 미보고일(그 날짜의 앵커 fact 행이 하나도 없는 날)에는 패널 15 에 행이 아예 없다(날짜를 fact 에서 뽑으므로) —
+그런 날은 대시보드 대신 마커의 `metrics_coverage=` 로 커버리지를 확인한다.
 
 ## 7. 재실행(rerun --chunk-days 7)
 
@@ -262,7 +279,7 @@ kubectl --context "$KUBE_CONTEXT" -n monitoring get jobs -l app=token-mart-metri
 | `CHECK WARN metrics_coverage missing=<n>` / M3 `metrics_missing` FAIL | enabled 서비스의 앵커(summary) 없음 — 6b 수집 실패·API 미응답·수기 미제출 | 6b 수집 로그(`token-metrics-collector` Job) 확인 → 수집 재실행(`--chain-mart`) 또는 `manual_load.py` 수기 적재 후 §7 |
 | `quality_flag=no_tco` / 비용 NULL | `dim_token_gpu_tco` 에 그 기종·날짜 유효 TCO 없음 | §1 생성기로 TCO dim 갱신(`--effective-from` 은 실제 적용일) 후 해당 범위 §7 재실행 |
 | `quality_flag=flagged` / `flagged_gpu_hours>0` | 6b 정규화 FAIL 플래그(`hours_over_count`·`unknown_violation`) 행 — C 에서 제외, 그룹 `unattributed` 로 | 서비스 제공 데이터 교정 요청 → `manual_load.py --replace` 또는 재수집 후 §7 |
-| `CHECK WARN service_not_in_usage_registry service=<s>` | 메트릭 레지스트리에만 있고 토큰 레지스트리(`dim_token_service`)에 없는 서비스 | 토큰 파이프라인 endpoints 등록 여부 확인(정상일 수 있음 — GPU 만 보고하는 서비스) |
+| `CHECK WARN service_not_in_usage_registry severity=WARN count=<n>` | 메트릭 레지스트리에만 있고 토큰 레지스트리(`dim_token_service`)에 없는 서비스 수 | 토큰 파이프라인 endpoints 등록 여부 확인(정상일 수 있음 — GPU 만 보고하는 서비스) |
 | 패널 11 `over_report=1` / 불변식 `idle_negative` | 보고 GPU 시간 > 배정 × 24 | `dim_token_gpu_allocation` 갱신 또는 서비스 보고값 교정 후 §7 |
 | 대시보드 변수 `service_group` 비어 있음 | M1 0행(첫 배치 전) 또는 데이터소스 계정 GRANT 누락 | §4 첫 배치, `accounts.sql` 적용 확인 |
 
@@ -271,7 +288,7 @@ kubectl --context "$KUBE_CONTEXT" -n monitoring get jobs -l app=token-mart-metri
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n monitoring patch cronjob token-mart-metrics -p '{"spec":{"suspend":true}}'
 kubectl --context "$KUBE_CONTEXT" -n monitoring patch cronjob token-metrics-collector -p '{"spec":{"suspend":true}}'
-# 필요 시 테이블 제거 (admin — mart 4 + fact 4 + dim 5; ON CLUSTER 는 DDL 파일의 클러스터명과 동일)
+# 필요 시 테이블 제거 (admin — mart 4 + fact 4 + dim 5; ON CLUSTER 는 DDL 파일의 클러스터명과 동일; stage 는 ON CLUSTER 절 없이 실행 — ddl/stage 참조)
 kubectl --context "$KUBE_CONTEXT" -n "$CH_NS" exec "$CH_POD" -- clickhouse-client --multiquery -q "
 DROP TABLE IF EXISTS mart.agg_token_model_cost_1d_dist ON CLUSTER 'gpu-monitoring';  DROP TABLE IF EXISTS mart.agg_token_model_cost_1d_local ON CLUSTER 'gpu-monitoring';
 DROP TABLE IF EXISTS mart.token_metrics_check_1d_dist ON CLUSTER 'gpu-monitoring';   DROP TABLE IF EXISTS mart.token_metrics_check_1d_local ON CLUSTER 'gpu-monitoring';
