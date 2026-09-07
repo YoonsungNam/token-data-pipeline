@@ -223,6 +223,37 @@ def test_body_at_max_bytes_is_accepted():
     assert payload.reported_service == SERVICE      # 경계값(== max)은 통과 — 초과(>)만 거부
 
 
+class ContentLengthOnlyResponse:
+    """C: Content-Length 선검사 테스트 전용 — `.content` 접근 시 AssertionError(선검사가 막았어야 한다)."""
+
+    def __init__(self, status_code, headers):
+        self.status_code = status_code
+        self.headers = headers
+
+    @property
+    def content(self):
+        raise AssertionError(".content 접근됨 — Content-Length 선검사가 막았어야 한다")
+
+    def json(self):
+        raise AssertionError("json() 접근됨 — Content-Length 선검사가 막았어야 한다")
+
+
+def test_content_length_precheck_rejects_without_touching_body(sl):
+    small_cfg = Config(max_response_bytes=10)
+    s = FakeSession([(METRICS_PATH, ContentLengthOnlyResponse(200, headers={"Content-Length": "11"}))])
+    with pytest.raises(CollectError) as ei:
+        fetch_metrics(ENTRY, DATE, small_cfg, s)
+    assert ei.value.event is Event.PERMANENT_ERROR
+    assert ei.value.message == "body too large: 11 > 10"          # 사후 검사와 같은 사유 문구
+    assert sl.call_count == 0
+
+
+def test_content_length_non_numeric_falls_through_to_post_hoc_check():
+    s = FakeSession([(METRICS_PATH, FakeResponse(200, REPORT, headers={"Content-Length": "abc"}))])
+    payload = fetch_metrics(ENTRY, DATE, CFG, s)
+    assert payload.reported_service == SERVICE                    # 비숫자 헤더는 무시 — 본문 검사로 통과
+
+
 def test_malformed_json_permanent(sl):
     s = FakeSession([(METRICS_PATH, BadJsonResponse(200, {}))])
     with pytest.raises(CollectError) as ei:

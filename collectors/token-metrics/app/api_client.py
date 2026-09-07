@@ -77,6 +77,14 @@ def _get_with_retry(session, url: str, params: dict, max_bytes: int) -> object:
                 time.sleep(BACKOFF_S[attempt])
             continue
         if resp.status_code == 200:
+            cl_header = resp.headers.get("Content-Length")           # 있으면 .content 를 건드리기 전에 먼저 판단
+            if cl_header is not None:
+                try:
+                    cl = int(cl_header)
+                except ValueError:
+                    cl = None                                        # 비숫자 — 사후 검사로 폴백
+                if cl is not None and cl > max_bytes:
+                    raise CollectError(Event.PERMANENT_ERROR, f"body too large: {cl} > {max_bytes}")
             n = len(resp.content)
             if n > max_bytes:
                 raise CollectError(Event.PERMANENT_ERROR, f"body too large: {n} > {max_bytes}")

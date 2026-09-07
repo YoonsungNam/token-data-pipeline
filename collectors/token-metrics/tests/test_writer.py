@@ -1,5 +1,6 @@
 """writer(§5.4 적재 시퀀스 · §4.0 뮤테이션 장부 · §4.3 레지스트리 diff-sync) 테스트 — FakeCH, 실제 CH 없음.
 공통 fixture 상수는 Plan 6b 전 태스크 공통(Mock Group / Mock Service A / 2026-09-10)."""
+import os
 import subprocess
 import sys
 from datetime import date as date_t, datetime
@@ -41,13 +42,14 @@ class FakeCH:
     dim_rows: 레지스트리 현재 행(updated_at 제외 11컬럼 튜플) 목록."""
 
     def __init__(self, existing=None, prev_summary=None, gpu_agg=(0, None), serving_count=0,
-                 dim_rows=None):
+                 dim_rows=None, insert_fails=False):
         existing = existing or {}
         self.existing = {t: set(existing.get(t, ())) for t in ALL_TABLES}
         self.prev_summary = prev_summary
         self.gpu_agg = gpu_agg
         self.serving_count = serving_count
         self.dim_rows = [tuple(r) for r in (dim_rows or [])]
+        self.insert_fails = insert_fails    # registry_sync_failed(B) 테스트용 — INSERT 만 실패시킨다
         self.events = []        # ("command", 정규화 sql) | ("insert", table) — 호출 순서
         self.queries = []       # (정규화 sql, parameters)
         self.commands = []      # (정규화 sql, parameters, settings)
@@ -84,6 +86,8 @@ class FakeCH:
         self.events.append(("command", norm))
 
     def insert(self, table, data, column_names=None):
+        if self.insert_fails:
+            raise RuntimeError("insert boom")
         self.inserts.append((table, len(data), tuple(column_names or ())))
         self.insert_rows.append((table, data))
         self.events.append(("insert", table))
@@ -259,7 +263,7 @@ def test_db_names_default():
 def test_db_names_env_override():
     """모듈 로드 시 1회 결정(CronJob env 주입 전제) — 이미 import된 프로세스에서 os.environ을 바꿔도
     재평가되지 않으므로 자식 프로세스를 띄워 import 시점 반영을 검증한다(기존 모듈 D6.2 관용구)."""
-    env = {"PATH": subprocess.os.environ.get("PATH", ""),
+    env = {"PATH": os.environ.get("PATH", ""),
            "CH_DB_FACT": "token_verify_fact", "CH_DB_DIM": "token_verify_dim"}
     res = subprocess.run(
         [sys.executable, "-c", "from app.writer import DB_FACT, DB_DIM; print(DB_FACT); print(DB_DIM)"],
@@ -513,3 +517,29 @@ def test_sync_registry_removed_service_triggers_replace():
     assert len(ch.commands) == 1 and "ON CLUSTER" not in ch.commands[0][0]
     assert ch.inserts[0][1] == 2
     assert w.mutations_done == 1
+
+
+def test_sync_registry_budget_guard_before_delete():
+    """B(1): sync_registry 도 per-date 경로와 같은 뮤테이션 가드를 DELETE 전에 적용 — DELETE·INSERT 모두 안 나간다."""
+    changed = [ENTRIES[0], entry("Mock Service B", base_url="http://mock-b/", expect_gpu=True), ENTRIES[2]]
+    ch = FakeCH(dim_rows=[e.dim_key() for e in changed])           # 현재 ≠ desired → DELETE 대상
+    w = writer(ch, max_mutations_per_run=0)
+    with pytest.raises(MutationBudgetExceeded) as ei:
+        w.sync_registry(ENTRIES)
+    assert (ei.value.planned, ei.value.done, ei.value.limit) == (1, 0, 0)
+    assert ch.commands == [] and ch.inserts == []                  # 가드가 DELETE 전에 막는다 — 뮤테이션 0
+    assert w.mutations_done == 0
+
+
+def test_sync_registry_insert_failure_warns_before_reraise(capsys):
+    """B(2): DELETE 뒤 INSERT 가 실패하면 다음 정규 슬롯까지 레지스트리가 빌 수 있음을 stderr WARN 으로 남기고 재던진다."""
+    changed = [ENTRIES[0], entry("Mock Service B", base_url="http://mock-b/", expect_gpu=True), ENTRIES[2]]
+    ch = FakeCH(dim_rows=[e.dim_key() for e in changed], insert_fails=True)
+    w = writer(ch, ch_cluster="gpu-monitoring")
+    with pytest.raises(RuntimeError):
+        w.sync_registry(ENTRIES)
+    assert len(ch.commands) == 1                                   # DELETE 는 이미 나갔다
+    assert w.mutations_done == 1
+    err = capsys.readouterr().err
+    assert ("[WARN] registry_sync: DELETE 후 INSERT 실패 — 다음 정규 슬롯까지 "
+            "dim_token_metrics_service가 비어 있을 수 있음") in err

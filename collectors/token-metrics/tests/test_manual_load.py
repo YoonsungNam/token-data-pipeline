@@ -68,6 +68,7 @@ def test_constants():
     assert ml.FILE_KEYS == ("gpu.csv", "serving.csv", "engine.csv")
     assert ml.LABELS == {"app": "token-metrics-collector", "manual": "1"}
     assert ml.MAX_CONFIGMAP_BYTES == 900_000
+    assert ml.REPLACE_DAYS_MAX == 15                                       # §4.0 뮤테이션 예산 45 = 15일 × 3
     assert ml.POLL_S == 10
     assert ml.TIMEOUT_S == 3600 == \
         cronjob_obj()["spec"]["jobTemplate"]["spec"]["activeDeadlineSeconds"] + 600
@@ -346,14 +347,74 @@ def test_configmap_delete_failure_is_warn_only(monkeypatch, tmp_path, capsys):
             f"{CM_NAME} -n monitoring") in err
 
 
-def test_configmap_deleted_when_job_apply_raises(monkeypatch, tmp_path):
+def test_configmap_deleted_when_job_apply_raises(monkeypatch, tmp_path, capsys):
     p = write_inputs(tmp_path)
-    with pytest.raises(subprocess.CalledProcessError):
-        _run_main(monkeypatch, _argv(p), wait_result=True, job_apply_fails=True)
-    # 예외가 전파돼도 finally 가 ConfigMap 을 지운다 — 페이크는 monkeypatch 된 ml.kubectl 에 남아 있다
-    k8s = ml.kubectl
+    # kubectl 실패(D)는 이제 트레이스백이 아니라 exit 1로 정리된다 — finally 는 여전히 ConfigMap 을 지운다
+    rc, k8s, _ = _run_main(monkeypatch, _argv(p), wait_result=True, job_apply_fails=True)
+    assert rc == 1
     assert k8s.calls[-1] == DELETE_CALL
     assert k8s.applied == [] and len(k8s.created) == 1
+    err = capsys.readouterr().err
+    assert "[ERROR] kubectl 실패 (rc=1): kubectl apply -n monitoring -f -" in err
+
+
+def test_configmap_create_kubectl_failure_returns_1_no_traceback(monkeypatch, tmp_path, capsys):
+    """D: ConfigMap create 자체가 실패해도(인증 만료 등) 트레이스백 없이 exit 1 — finally 는 아직 없다."""
+    p = write_inputs(tmp_path)
+
+    def failing_kubectl(context, args, *, capture=False, input_data=None):
+        args = list(args)
+        assert context == "c"
+        if args[0] == "create":
+            raise subprocess.CalledProcessError(1, ["kubectl", "create", "configmap"],
+                                                stderr="error: You must be logged in")
+        raise AssertionError(f"unexpected kubectl {args}")
+
+    monkeypatch.setattr(ml, "kubectl", failing_kubectl)
+    monkeypatch.setattr(ml, "now_kst", lambda: NOW)
+    rc = ml.main(_argv(p))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "[ERROR] kubectl 실패 (rc=1): kubectl create configmap" in err
+    assert "You must be logged in" in err
+
+
+# ---- --replace 날짜 범위 가드 (A: 변이 예산 45 = 15일 × 3) ------------------------
+
+def test_replace_over_16_days_exits_2_before_kubectl(monkeypatch, tmp_path, capsys):
+    p = write_inputs(tmp_path)
+    k8s = FakeK8s(cronjob_obj())
+    monkeypatch.setattr(ml, "kubectl", k8s)
+    monkeypatch.setattr(ml, "now_kst", lambda: NOW)
+    with pytest.raises(SystemExit) as e:
+        ml.main(["--context", "c", "--from", "2026-08-01", "--to", "2026-08-16",   # 16일
+                 "--gpu", str(p["gpu"]), "--serving", str(p["serving"]), "--replace"])
+    assert e.value.code == 2
+    assert k8s.calls == []                                                # kubectl 호출 전
+    assert ("[ERROR] --replace는 한 번에 15일 이하만 가능합니다(변이 예산 45/3) — "
+            "--from/--to 범위를 나눠 제출") in capsys.readouterr().err
+
+
+def test_replace_exactly_15_days_passes_guard(monkeypatch, tmp_path):
+    p = write_inputs(tmp_path)
+    rc, k8s, _ = _run_main(
+        monkeypatch,
+        ["--context", "c", "--from", "2026-08-01", "--to", "2026-08-15",          # 15일
+         "--gpu", str(p["gpu"]), "--serving", str(p["serving"]), "--replace"],
+        wait_result=True)
+    assert rc == 0
+    assert k8s.calls[0] == ["create", "-n", "monitoring", "-f", "-"]              # kubectl 까지 도달
+
+
+def test_16_days_without_replace_passes_guard(monkeypatch, tmp_path):
+    p = write_inputs(tmp_path)
+    rc, k8s, _ = _run_main(
+        monkeypatch,
+        ["--context", "c", "--from", "2026-08-01", "--to", "2026-08-16",          # 16일, --replace 없음
+         "--gpu", str(p["gpu"]), "--serving", str(p["serving"])],
+        wait_result=True)
+    assert rc == 0
+    assert k8s.calls[0] == ["create", "-n", "monitoring", "-f", "-"]
 
 
 def test_timeout_and_passthrough_flags(monkeypatch, tmp_path):

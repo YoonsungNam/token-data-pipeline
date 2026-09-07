@@ -60,7 +60,7 @@ manual-v0 모드 — CSV(gpu·serving 필수, engine 선택)를 API 대신 입�
 | `load_budget` | FAILURE | 적재 착수 시점에 남은 시간이 `LOAD_BUDGET_S`(1200) 미만 — writer 호출 없음 |
 | `deadline` | FAILURE | 큐 처리 중 남은 시간이 `LOAD_BUDGET_S`(1200) 미만이 되면 컷 — 즉 `SOFT_DEADLINE_MINUTES − LOAD_BUDGET_S`(기본 40분−20분=20분) 경과 시점에 남은 서비스 전부를 신규 fetch 없이 즉시 종료(`SOFT_DEADLINE_MINUTES`(40분) 자체는 적재 착수의 하드 스톱 — `load_budget` 행 참고) |
 | `unknown_service` | (exit 2) | `--service`가 endpoints에 없음 — stderr `unknown service: <S>`, SERVICE_RESULT 없이 종료 |
-| `invariant_broken` | FAILURE | 예약 — 현재 코드 경로 없음(발생하지 않음). `Event.INVARIANT_BROKEN`은 열거형에만 존재하고 `app/`의 어디에서도 raise되지 않는다 |
+| `invariant_broken` (및 `empty`) | FAILURE | 예약 — 현재 코드 경로 없음(둘 다 발생하지 않음). `Event.INVARIANT_BROKEN`·`Event.EMPTY`는 열거형에만 존재하고 `app/`의 어디에서도 raise되지 않는다(NODATA 판정은 `rows==0 and rejected==0`을 직접 보며 `Event.EMPTY`를 거치지 않는다) |
 | `unexpected:<Type>` | FAILURE | fetch·normalize·writer의 예상 밖 예외 — `<Type>`은 파이썬 예외 클래스명 |
 
 `rows == 0`이고 `rejected == 0`이면 `NODATA`, `rows == 0`이고 `rejected > 0`이면 `SUCCESS rows=0 rejected=<n>` + `CHECK WARN … all_rows_rejected=1`.
@@ -149,9 +149,9 @@ go-live(`apiSince`, 기본 2026-09-09) 이전 구간(`coverageSince`, 기본 202
     service,engine_type,engine_version
 
 규칙(파서 `app/manual.py` — 위반은 `manual input error: <경로>:<줄번호>: <what>`로 exit 2, 적재 없음; `<what>`은 고정 문구다 — `header mismatch`, `header missing`, `unparsable line`(csv 모듈이 줄을 못 읽음, 예: NUL 바이트), `unknown service (not in endpoints)`, `bad date`, `bad metric`, `duplicate (model, metric)`, `duplicate service`; 컬럼 수 불일치만 정수를 채운 `column count <n> != <m>`):
-- `service`는 endpoints에 등록되고 `enabled: true`인 서비스만(`apiSince`는 무시 — **날짜 제약 없음**). 미등록 `--service`는 `unknown service: <S>`.
+- `service`는 endpoints에 등록된 서비스만(`apiSince`는 무시 — **날짜 제약 없음**). 미등록 `--service`는 `unknown service: <S>`. `enabled: false` 서비스도 파싱은 통과한다 — 거부되지 않고 다른 모드와 동일하게 `SKIPPED reason=disabled`(위 모드와 게이트 절 참고).
 - 같은 (date, service, model, metric)의 serving 행 중복은 오류(`(model, metric)` 중복 금지). `metric`은 API 키 그대로 `ttftMs | itlMs | outputTps | e2eMs | custom`(fact 표기 `ttft_ms` 등으로의 변환은 normalize가 한다).
-- `custom`은 `name`·`unit` 필수, 표준 지표 행은 둘 다 빈 값. `outputTps`는 `p50`만, 나머지 표준 지표는 `p50..p99` 4개 모두.
+- `custom`은 `name`·`unit` 필수. 표준 지표 행의 `name`·`unit` 셀은 값이 있어도 무시한다(거부하지 않음 — 파서가 조용히 버린다). `outputTps`는 `p50`만, 나머지 표준 지표는 `p50..p99` 4개 모두.
 - `#`로 시작하는 줄은 주석(안의 쉼표 무시), UTF-8 BOM 허용(`utf-8-sig`), 빈 셀 = 부재. 숫자 검증(형·범위·행 거부)과 플래그(`gpuHours > gpuCount × 24` → `hours_over_count`, `p50 ≤ p90 ≤ p95 ≤ p99` 역전 → `pct_non_monotone` — 적재하되 `flags`에 표기)는 normalize 한 곳에서만 — 파서는 형태만 만든다.
 - `--from/--to` 밖의 날짜 행은 `rows_outside_range`, `--service` 지정 시 다른 서비스 행은 `rows_other_service`로 세고 버린다(오류 아님) — **둘 다 해당하면 `rows_other_service`만 센다**(파서가 `--service` 필터를 날짜 범위 필터보다 먼저 본다). 행이 하나도 없는 (date, service)는 **페이로드를 만들지 않는다** — 앵커가 남지 않으며(`NODATA` 앵커 아님) mart 불변식 `metrics_missing`이 그 날을 "수기 입력 없음"으로 본다; `--from/--to` 범위 안이라도 CSV에 행이 없으면 그 (date, service)에는 아무것도 적재되지 않는다(제출 누락과 실제 0행을 CSV로는 구분할 수 없으므로 완결 표시를 심지 않는다).
 - 기존 앵커(API·manual 불문)가 있으면 `--replace` 없이는 `SKIPPED already_loaded`. 레지스트리 동기화는 하지 않는다.
@@ -160,11 +160,12 @@ go-live(`apiSince`, 기본 2026-09-09) 이전 구간(`coverageSince`, 기본 202
 P0 경로 — k8s Job(운영자 워크스테이션에는 kubectl만 있으면 된다; ClickHouse 접근·프록시·CA 불필요). 실제 제출 파일은 `*manual_metrics*.csv` 이름으로 저장한다(`.gitignore` — 레포 반입 금지):
 
     python3 collectors/token-metrics/tools/manual_load.py --context <ctx> --namespace monitoring \
+      [--cronjob token-metrics-collector-verify] \
       --from 2026-08-26 --to 2026-08-31 \
       --gpu gpu_manual_metrics.csv --serving serving_manual_metrics.csv --engine engine_manual_metrics.csv \
       --generated-at 2026-09-01T09:00:00+09:00 --replace
 
-흐름: CSV 3파일 → ConfigMap `token-metrics-manual-<YYYYMMDDHHMMSS>`(`kubectl create`) → CronJob `token-metrics-collector` 템플릿에서 Job `token-metrics-collector-manual-<ts>` 생성(`/manual` 볼륨 마운트, command `python -m app.main --manual-gpu /manual/gpu.csv --manual-serving /manual/serving.csv [--manual-engine /manual/engine.csv] --from D0 --to D1 [--service S] [--replace] [--generated-at ISO]`) → 로그 스트리밍(`--timeout-s` 기본 3600) → 종료 시 ConfigMap 삭제(`--keep-configmap`이면 보존; Job이 성공하지 못했으면 — rc≠0 또는 중단 — 삭제 직전 stderr `[WARN] Job이 아직 실행 중이면 입력 ConfigMap 삭제로 실패합니다 — 상태: kubectl --context=<ctx> get job <job> -n <ns>`를 찍지만 `--keep-configmap`이 아닌 한 ConfigMap은 그대로 삭제한다), Job 오브젝트는 로그 재조회용으로 남긴다. 시작 시 `[INFO] configmap=<name> job=<job> files=gpu.csv,serving.csv[,engine.csv] bytes=<n>`, 성공 시 `[NEXT] manual 적재 후 동일 날짜 mart-metrics rerun은 의무입니다 (§6.3): python3 mart/token-metrics/tools/rerun.py --context <ctx> --namespace monitoring --from D0 --to D1`. CSV가 UTF-8이 아니면(예: 엑셀 CP949 저장) `[ERROR] UTF-8 아님 — 엑셀에서는 'CSV UTF-8'로 저장 후 다시 제출` exit 2. CSV 합계는 900,000 bytes(ConfigMap 상한) 이하 — 초과면 `[ERROR] CSV 합계 <n> bytes > 900000 — 날짜 범위를 나눠 제출` exit 2. 종료 코드 `0`(적재 성공) / `1`(Job 실패·타임아웃) / `2`(인자·파일·인코딩·크기 오류 — kubectl 호출 전).
+흐름: CSV 3파일 → ConfigMap `token-metrics-manual-<YYYYMMDDHHMMSS>`(`kubectl create`) → `--cronjob`(기본 `token-metrics-collector`; company-verify는 `token-metrics-collector-verify`) 템플릿에서 Job `token-metrics-collector-manual-<ts>` 생성(`/manual` 볼륨 마운트, command `python -m app.main --manual-gpu /manual/gpu.csv --manual-serving /manual/serving.csv [--manual-engine /manual/engine.csv] --from D0 --to D1 [--service S] [--replace] [--generated-at ISO]`) → 로그 스트리밍(`--timeout-s` 기본 3600) → 종료 시 ConfigMap 삭제(`--keep-configmap`이면 보존; Job이 성공하지 못했으면 — rc≠0 또는 중단 — 삭제 직전 stderr `[WARN] Job이 아직 실행 중이면 입력 ConfigMap 삭제로 실패합니다 — 상태: kubectl --context=<ctx> get job <job> -n <ns>`를 찍지만 `--keep-configmap`이 아닌 한 ConfigMap은 그대로 삭제한다), Job 오브젝트는 로그 재조회용으로 남긴다. 시작 시 `[INFO] configmap=<name> job=<job> files=gpu.csv,serving.csv[,engine.csv] bytes=<n>`, 성공 시 `[NEXT] manual 적재 후 동일 날짜 mart-metrics rerun은 의무입니다 (§6.3): python3 mart/token-metrics/tools/rerun.py --context <ctx> --namespace monitoring --from D0 --to D1`. CSV가 UTF-8이 아니면(예: 엑셀 CP949 저장) `[ERROR] UTF-8 아님 — 엑셀에서는 'CSV UTF-8'로 저장 후 다시 제출` exit 2. CSV 합계는 900,000 bytes(ConfigMap 상한) 이하 — 초과면 `[ERROR] CSV 합계 <n> bytes > 900000 — 날짜 범위를 나눠 제출` exit 2. `--replace` 범위가 15일을 넘으면(변이 예산 45/3, 뮤테이션 산식 절) `[ERROR] --replace는 한 번에 15일 이하만 가능합니다(변이 예산 45/3) — --from/--to 범위를 나눠 제출` exit 2 — 전부 kubectl 호출 전(클러스터 무변경). kubectl 호출 자체가 실패하면(인증 만료·잘못된 context·API 서버 다운 등) `tools/rerun.py`와 같은 형식으로 트레이스백 대신 stderr `[ERROR] kubectl 실패 (rc=<n>): <argv>` + kubectl의 stderr를 그대로 찍고 exit 1(ConfigMap이 이미 만들어졌으면 finally가 그대로 정리한다). 종료 코드 `0`(적재 성공) / `1`(Job 실패·타임아웃·kubectl 실패) / `2`(인자·파일·인코딩·크기·`--replace` 범위 오류 — kubectl 호출 전).
 
 Job 정리:
 
@@ -209,9 +210,9 @@ Job 정리:
     kubectl --context <ctx> create job --from=cronjob/token-metrics-collector token-metrics-collector-manual-$(date +%s) -n monitoring
 
 뮤테이션 산식(§4.0 — 가드 `METRICS_MAX_MUTATIONS_PER_RUN=45`는 적재 착수 전에 예정 DELETE 합산을 검사한다):
-- `--replace` rerun·manual 배치: 날짜당 DELETE ≤3(서비스 수와 무관 — 한 날짜의 전 서비스를 `IN (...)`으로 한 번에 지운다) → 45/3 = **15일/실행**. `--chunk-days 7`이면 청크당 21 ≤ 45로 항상 통과하고, `--chunk-days 15`가 한 Job의 상한이다(`tools/rerun.py`가 `CHUNK_DAYS_MAX = 15`로 정적 거부 — 16 이상은 exit 2).
+- `--replace` rerun·manual 배치: 날짜당 DELETE ≤3(서비스 수와 무관 — 한 날짜의 전 서비스를 `IN (...)`으로 한 번에 지운다) → 45/3 = **15일/실행**. `--chunk-days 7`이면 청크당 21 ≤ 45로 항상 통과하고, `--chunk-days 15`가 한 Job의 상한이다(`tools/rerun.py`가 `CHUNK_DAYS_MAX = 15`로 정적 거부 — 16 이상은 exit 2). `tools/manual_load.py`에는 `--chunk-days`가 없다 — 대신 `--replace` 범위 자체를 15일로 정적 거부한다(`REPLACE_DAYS_MAX = 15` — 16일 이상은 `[ERROR] --replace는 한 번에 15일 이하만 가능합니다(변이 예산 45/3) — --from/--to 범위를 나눠 제출` exit 2, kubectl 호출 전).
 - 정기 실행의 부분 적재 복구(아래 절): (date, service)쌍당 3 → **15쌍/실행**.
-- 초과하면 적재 없이 `SERVICE_RESULT … FAILURE reason=mutation_budget` + `BATCH_RESULT … reason=mutation_budget`(exit 1) → `--chunk-days`를 줄이거나 `--service`로 나눠 실행한다. 실측은 `system.mutations`(DDL·뮤테이션 장부 절).
+- 초과하면 적재 없이 `SERVICE_RESULT … FAILURE reason=mutation_budget` + `BATCH_RESULT … reason=mutation_budget`(exit 1)이 되는 것은 `tools/rerun.py` 청크 안에서다 — 그때는 `--chunk-days`를 줄이거나 `--service`로 나눠 재시도한다. `tools/manual_load.py --replace`는 위 15일 상한이 범위 자체를 미리 막으므로 이 경로를 타지 않는다. `--replace` 없이 여러 날짜를 한 Job에 넣다가 부분 적재 잔여물 복구(날짜당 ≤3)로 예산을 넘으면, 예산 검사는 날짜마다 이뤄지므로 **그 시점까지의 날짜는 이미 적재됐고 이후 날짜들만** `FAILURE reason=mutation_budget`로 끝난다(부분 적재) — `--from/--to` 범위를 나눠 여러 번 제출한다. 실측은 `system.mutations`(DDL·뮤테이션 장부 절).
 
 rerun Job 정리(로그 재조회가 끝난 뒤):
 

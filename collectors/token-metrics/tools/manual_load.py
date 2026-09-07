@@ -58,6 +58,8 @@ VOLUME_NAME = "manual"            # cronjob.yaml volumes [0] endpoints · [1] ca
 FILE_KEYS = ("gpu.csv", "serving.csv", "engine.csv")
 LABELS = {"app": CRONJOB, "manual": "1"}
 MAX_CONFIGMAP_BYTES = 900_000     # k8s ConfigMap 1MiB 한도 여유 (create 사용 — apply 의 last-applied 주석 없음)
+REPLACE_DAYS_MAX = 15             # MetricsWriter 변이 예산 45 = 15일 × 3(summary·gpu·serving) — --replace 범위가
+                                   # 예산을 넘지 않게 (tools/rerun.py CHUNK_DAYS_MAX 와 같은 산식이지만 파일은 독립 사본)
 POLL_S = 10
 TIMEOUT_S = 3000 + 600            # 서버 activeDeadlineSeconds(§5.2) + 폴링 마진 600
 KST = dt.timezone(dt.timedelta(hours=9))
@@ -232,6 +234,9 @@ def main(argv=None):
         p.exit(2, "--from/--to는 YYYY-MM-DD 형식\n")
     if d0 > d1:
         p.exit(2, f"--from({d0}) > --to({d1})\n")
+    if args.replace and (d1 - d0).days + 1 > REPLACE_DAYS_MAX:
+        p.exit(2, f"[ERROR] --replace는 한 번에 {REPLACE_DAYS_MAX}일 이하만 가능합니다(변이 예산 45/3) — "
+                  f"--from/--to 범위를 나눠 제출\n")
     from_s, to_s = d0.isoformat(), d1.isoformat()
 
     # 파일 존재 → 읽기(BOM 제거) → 크기 가드 — 전부 kubectl 호출 전 (실패 시 클러스터 무변경)
@@ -257,28 +262,36 @@ def main(argv=None):
     job = job_name(args.cronjob, ts)                     # ConfigMap 과 같은 ts
     print(f"[INFO] configmap={cm_name} job={job} files={','.join(files)} bytes={n_bytes}", flush=True)
 
-    # create: apply 는 last-applied 주석에 본문을 한 번 더 저장해 etcd 요청 상한을 넘길 수 있다 (설계 해석 a)
-    kubectl(ctx, ["create", "-n", ns, "-f", "-"], input_data=json.dumps(build_configmap(cm_name, files)))
     rc = 1
     try:
-        res = kubectl(ctx, ["get", "cronjob", args.cronjob, "-n", ns, "-o", "json"], capture=True)
-        cronjob_obj = json.loads(res.stdout)
-        command = build_manual_command(from_s, to_s, engine=engine_path is not None,
-                                       service=args.service, replace=args.replace,
-                                       generated_at=args.generated_at)
-        kubectl(ctx, ["apply", "-n", ns, "-f", "-"],
-                input_data=json.dumps(build_job_spec(cronjob_obj, job, command, cm_name)))
-        rc = 0 if wait_job(ctx, ns, job, args.timeout_s) else 1
-    finally:
-        # 성공·실패·예외(Ctrl-C 포함) 어느 경로에서든 ConfigMap 정리 — Job 오브젝트는 남긴다 (로그 재조회용)
-        if args.keep_configmap:
-            print(f"[INFO] ConfigMap 보존(--keep-configmap) — 정리: kubectl --context={ctx} "
-                  f"delete configmap {cm_name} -n {ns}", flush=True)
-        else:
-            if rc != 0:
-                print(f"[WARN] Job이 아직 실행 중이면 입력 ConfigMap 삭제로 실패합니다 — 상태: "
-                      f"kubectl --context={ctx} get job {job} -n {ns}", file=sys.stderr, flush=True)
-            delete_configmap(ctx, ns, cm_name)
+        # create: apply 는 last-applied 주석에 본문을 한 번 더 저장해 etcd 요청 상한을 넘길 수 있다 (설계 해석 a)
+        kubectl(ctx, ["create", "-n", ns, "-f", "-"], input_data=json.dumps(build_configmap(cm_name, files)))
+        try:
+            res = kubectl(ctx, ["get", "cronjob", args.cronjob, "-n", ns, "-o", "json"], capture=True)
+            cronjob_obj = json.loads(res.stdout)
+            command = build_manual_command(from_s, to_s, engine=engine_path is not None,
+                                           service=args.service, replace=args.replace,
+                                           generated_at=args.generated_at)
+            kubectl(ctx, ["apply", "-n", ns, "-f", "-"],
+                    input_data=json.dumps(build_job_spec(cronjob_obj, job, command, cm_name)))
+            rc = 0 if wait_job(ctx, ns, job, args.timeout_s) else 1
+        finally:
+            # 성공·실패·예외(Ctrl-C 포함) 어느 경로에서든 ConfigMap 정리 — Job 오브젝트는 남긴다 (로그 재조회용)
+            if args.keep_configmap:
+                print(f"[INFO] ConfigMap 보존(--keep-configmap) — 정리: kubectl --context={ctx} "
+                      f"delete configmap {cm_name} -n {ns}", flush=True)
+            else:
+                if rc != 0:
+                    print(f"[WARN] Job이 아직 실행 중이면 입력 ConfigMap 삭제로 실패합니다 — 상태: "
+                          f"kubectl --context={ctx} get job {job} -n {ns}", file=sys.stderr, flush=True)
+                delete_configmap(ctx, ns, cm_name)
+    except subprocess.CalledProcessError as e:
+        # kubectl 실패(인증 만료·컨텍스트 오류·API 다운)를 트레이스백 대신 정리된 exit 1로 —
+        # ConfigMap create 자체가 실패했으면 위 finally 는 실행되지 않는다(아직 아무것도 만들지 않았다).
+        print(f"[ERROR] kubectl 실패 (rc={e.returncode}): {shlex.join(e.cmd)}", file=sys.stderr)
+        if e.stderr:
+            print(e.stderr.rstrip(), file=sys.stderr)
+        return 1
 
     if rc == 0:
         # §6.3: manual 적재 후 동일 날짜 범위 mart-metrics rerun 은 의무 — 안내만 (창 검사는 mart 측 책임)

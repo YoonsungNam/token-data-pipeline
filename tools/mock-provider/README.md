@@ -66,6 +66,11 @@ summary_extra_pct · name_drift · generated_at_change_at_page · not_ready_at_p
 
 이미지 빌드·컨테이너 스모크는 CI의 image job에서 검증 (로컬 개발 머신에는 docker 없음).
 
+`./run_conformance.sh <date>`에 `MOCK_METRICS_RETENTION_DAYS`(기본 14)보다 오래된 날짜를 주면 `/v1/metrics`가
+404 `data_not_retained`를 돌려주므로 `check_metrics_api.py`는 그 날짜에 대해 B1~B10 gpu/serving 구조 검증을
+건너뛰고 WARN(`retention-404`)만 남긴 채 `FAIL 0`(= 통과)로 끝난다 — 그 날짜의 응답 구조가 실제로 검증됐다는
+뜻이 아니다. 구조 검증까지 받으려면 보존 기간 안의 날짜(기본 최근 14일)를 지정한다.
+
 ## stage 배포
 
 **전제:**

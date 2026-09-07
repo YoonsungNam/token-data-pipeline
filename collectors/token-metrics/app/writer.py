@@ -14,6 +14,7 @@ DB명은 모듈 상수 2종만 (company-verify 격리 DB는 env CH_DB_FACT/CH_DB
 from __future__ import annotations
 
 import os
+import sys
 from datetime import date as date_t, datetime, timedelta, timezone
 
 import clickhouse_connect
@@ -35,6 +36,7 @@ T_SUMMARY = "raw_token_metrics_summary_1d"       # 앵커 — 응답당 1행, NO
 T_AUDIT = "collect_audit_metrics_1d"             # append-only (GRANT도 INSERT만)
 T_DIM = "dim_token_metrics_service"              # gpu_data 레지스트리 (정기 실행 diff-sync)
 DELETE_ORDER = (T_SUMMARY, T_GPU, T_SERVING)     # 앵커 먼저
+# insert_service_day() 의 실제 INSERT 순서(gpu→serving→summary)를 그대로 반영하는 계약 거울 — tests가 import.
 INSERT_ORDER = (T_GPU, T_SERVING, T_SUMMARY)     # 앵커 마지막
 
 # 컬럼 튜플 = Plan 6a DDL `_dist` 선언 순서 (tests/test_writer.py 가 DDL을 파싱해 대조). INSERT는 항상 column_names 명시.
@@ -149,6 +151,7 @@ class MetricsWriter:
 
     def _delete_day_in(self, table_local: str, date: str, services: list[str]) -> None:
         """§5.4 배칭 (B) — 테이블당 1회 `service IN (...)` DELETE (`_local`[+ON CLUSTER], mutations_sync=2)."""
+        assert table_local != self._local(T_AUDIT), "audit is append-only"
         self.client.command(
             f"ALTER TABLE {table_local}{self._on_cluster()} "
             f"DELETE WHERE date = %(d)s AND service IN %(ss)s",
@@ -231,11 +234,20 @@ class MetricsWriter:
         if desired == current:
             return False
         if current:                                              # 최초 배포(빈 테이블)는 DELETE 생략 → 뮤테이션 0
+            limit = self.cfg.max_mutations_per_run
+            if self.mutations_done + 1 > limit:                   # §4.0 가드 — 레지스트리 DELETE 전에도 적용
+                raise MutationBudgetExceeded(1, self.mutations_done, limit)
             self.client.command(
                 f"ALTER TABLE {DB_DIM}.{T_DIM}_local{self._on_cluster()} DELETE WHERE 1",
                 settings=MUTATIONS_SYNC)
             self.mutations_done += 1
         now = now_kst()
-        self.client.insert(f"{DB_DIM}.{T_DIM}_dist",
-                           [e.dim_row(now) for e in entries], column_names=DIM_COLS)
+        try:
+            self.client.insert(f"{DB_DIM}.{T_DIM}_dist",
+                               [e.dim_row(now) for e in entries], column_names=DIM_COLS)
+        except Exception:
+            # DELETE 는 이미 나갔을 수 있다(위 분기) — INSERT 가 실패하면 다음 정규 슬롯까지 레지스트리가 빈다.
+            print("[WARN] registry_sync: DELETE 후 INSERT 실패 — 다음 정규 슬롯까지 "
+                  "dim_token_metrics_service가 비어 있을 수 있음", file=sys.stderr)
+            raise
         return True
