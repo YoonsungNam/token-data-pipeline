@@ -115,3 +115,55 @@ date BETWEEN toDate($__fromTime) AND toDate($__toTime)
    ```
 
    읽기 전용 커맨드(`clickhouse-format`)이며 클러스터에 아무 것도 쓰지 않는다.
+
+## 7. token-metrics 대시보드
+
+`grafana_dashboard_token_metrics.json`(uid `token-metrics-stage`, title `Token Metrics — Stage Tester`,
+tags `token-metrics`/`stage`)은 Plan 6c(mart/token-metrics)의 stage 검증용 대시보드다(설계
+2026-08-31 §6.2). 기존 `grafana_dashboard_token_usage.json`(uid `token-usage-stage`)과는 **별개
+파일·별개 uid**이며 기존 JSON은 무수정이다. 전제(§1 플러그인 v4·§2 데이터소스·§3 임포트 절차)는
+그대로 — 같은 `mart` 계정 데이터소스를 쓰고, 6c 계정 GRANT(`mart/token-metrics/ddl/company/accounts.sql`)가
+mart 4테이블·fact 앵커·레지스트리 SELECT를 포함하므로 추가 설정은 없다.
+
+조회 대상은 mart-metrics 4테이블(`mart.agg_token_model_cost_1d_dist` M1, `mart.token_metrics_check_1d_dist` M3,
+`mart.agg_token_model_share_1d_dist` M4, `mart.agg_token_gpu_group_1d_dist` M2) + 앵커 fact
+`fact.raw_token_metrics_summary_1d_dist` + 성능 fact `fact.raw_token_metrics_serving_1d_dist`(service×model 단위만)
++ 레지스트리 `gpu_data.dim_token_metrics_service_dist`로, 데이터 패널 15개 + 텍스트 패널 1개 = 16개다(설계 §6.2가
+나열한 내용 전부). `user_id`/`user_name` 컬럼은 어떤 패널에도 없다(§5.6).
+
+| # | 패널 | FROM (물리 `_dist` 테이블) | 목적 |
+|---|---|---|---|
+| 1 | 모델별 일별 model_cost_krw (serving/standby 분해) | `mart.agg_token_model_cost_1d_dist` | 시계열 — 모델별 C(측정) + `serving_cost_krw`/`standby_cost_krw`(C × 시간 비례 분해). TCO 부재 행이 있으면 NULL(0 아님) |
+| 2 | 서비스별 총비용 (측정, 배부 미적용) | `mart.agg_token_model_cost_1d_dist` | 시계열 — 설계 §6.2 P0-core: 서비스별 Σ M1 `model_cost_krw`, `cost_label` = `측정 (배부 미적용)` |
+| 3 | 서비스×모델 GPU 시간·비용 (당일) | `mart.agg_token_model_cost_1d_dist` | 범위 내 최신 집계일 한 날의 service×model — serving/standby/test/flagged 시간, C, `krw_per_request`(요청당 원가), `tokens_per_gpu_hour`, `quality_flag` |
+| 4 | 서비스별 tokens_per_gpu_hour 추이 | `mart.agg_token_model_cost_1d_dist` | 시계열 — Σ total_tokens / Σ serving_gpu_hours |
+| 5 | 토큰 단가 p (파생 — 기준월·가동률 병기) | `mart.agg_token_model_cost_1d_dist` (+ `mart.agg_token_gpu_group_1d_dist` 조인) | 정의서 3.7 — 기준월(`base_month`)·그룹·모델별 p = Σ C / Σ W(원/1M 가중토큰), p_cached = 0.1p, p_output = 4p, `utilization_pct`(M2 월 가동률) 병기, `cost_label` = `파생` |
+| 6 | quality_flag 분포 | `mart.agg_token_model_cost_1d_dist` | 플래그별 행수 + 비용 NULL·GPU 무·토큰 무 행수 |
+| 7 | 검사 결과 (FAIL/WARN) | `mart.token_metrics_check_1d_dist` | M3 severity FAIL/WARN 행 — `check_name`·`observed`·`threshold`·`detail`·`source_type` |
+| 8 | 일별 FAIL/WARN 건수 | `mart.token_metrics_check_1d_dist` | 시계열 — severity 별 건수 |
+| 9 | 모델 비용 배분 (share) | `mart.agg_token_model_share_1d_dist` | M4 — `denominator_mode`, `share`, `allocated_cost_krw`; `cost_label` = 배분/추정(external_api)/그룹 귀속(token_not_reported) |
+| 10 | 서비스별 배분 총비용 (M4 합산, stretch) | `mart.agg_token_model_share_1d_dist` | 설계 §6.2 stretch — 서비스별 Σ `allocated_cost_krw` 를 `cost_label` 별로 합산(§6.4 (6) ①②③); 패널 2와 대비 |
+| 11 | 그룹 GPU 정체성 (I2) | `mart.agg_token_gpu_group_1d_dist` | M2 그룹 행 — 그룹 총비용 = `model_cost_sum_krw`(ΣC) + `test_cost_krw`(실험) + `idle_cost_krw`(유휴) + `unattributed_cost_krw`(미귀속), `identity_gap_krw`(≈0 정상), `over_report` |
+| 12 | 그룹 utilization 추이 | `mart.agg_token_gpu_group_1d_dist` | 시계열 — service_group/gpu_type 별 utilization |
+| 13 | TTFT/ITL 추이 (p50/p95) | `fact.raw_token_metrics_serving_1d_dist` | 시계열 — service×model 별 `ttft_ms`/`itl_ms` p50·p95(ms), `source_type` 병기 |
+| 14 | 출처 (manual-v0 vs API) | `fact.raw_token_metrics_summary_1d_dist` | 시계열 — 날짜별 `source_type` 별 보고 서비스 수 |
+| 15 | 일별 메트릭 커버리지 | `fact.raw_token_metrics_summary_1d_dist` (+ `gpu_data.dim_token_metrics_service_dist` 조인) | 보고 서비스 수(`reported_services`) vs 기대 서비스 수(`expected_services` — 마커 `metrics_coverage` 분모와 같은 술어를 날짜별로 계산), `rejected_rows`, `manual_services` |
+| 16 | (텍스트) 참고: BATCH_RESULT 마커 패널 | 없음(쿼리 없음) | `BATCH_RESULT … module=mart-metrics` 마커 형식·VictoriaLogs 안내 + 라벨 규칙(측정/배분/추정/그룹 귀속/파생) |
+
+템플릿 변수 2개: `service_group`(`SELECT DISTINCT service_group FROM mart.agg_token_model_cost_1d_dist ORDER BY 1`,
+multi/All)과 `service`(같은 테이블, `WHERE service_group IN (${service_group:singlequote})`). 패널 1~14는
+`service_group`, 패널 1~4·6~10·13·14는 `service` 변수로 필터한다(패널 5는 모델 단위 C÷W라 서비스 필터가 무의미,
+M2 패널 11·12는 service 컬럼이 없고, 커버리지 패널 15는 필터 없음).
+
+시간 필터는 §5 규칙 그대로 — 모든 데이터 패널이 `date BETWEEN toDate($__fromTime) AND toDate($__toTime)`
+를 건다. 비용 표시는 `docs/cost-model-spec.md` §7 라벨 규칙을 따른다: `cost_label` 컬럼(측정 = GPU 시간×TCO,
+배분 = 가중 토큰 비율 1/0.1/4, 추정 = 사외 API 벤더 단가, 파생 = 토큰 단가 p — 기준월·가동률 병기), 비용 NULL은
+"측정 불가"(TCO/단가 부재)이지 0이 아니다. 패널 13(TTFT/ITL)은 `custom` 지표와 `e2e_ms`/`output_tps`를 보여주지
+않는다 — 성능 패널은 설계 §6.2대로 service×model 단위의 표준 지연 지표 2종만.
+
+JSON 검증(재작성 시 재실행 — §6 절차 + 아래 한 줄; 계약 테스트는
+`cd mart/token-metrics && python -m pytest -q tests/test_docs_contract.py`):
+
+```bash
+python3 -c "import json;d=json.load(open('docs/monitoring/grafana_dashboard_token_metrics.json'));assert d['uid']=='token-metrics-stage';assert len(d['panels'])==16;print('ok')"
+```

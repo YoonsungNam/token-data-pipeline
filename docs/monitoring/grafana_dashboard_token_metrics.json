@@ -1,0 +1,1377 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_CLICKHOUSE",
+      "label": "ClickHouse (mart)",
+      "description": "mart.agg_token_model_cost_1d_dist 등 mart-metrics 4테이블 + fact.raw_token_metrics_{summary,serving}_1d_dist 조회용 — 공유 계정 mart (docs/monitoring/README.md §7 참조)",
+      "type": "datasource",
+      "pluginId": "grafana-clickhouse-datasource",
+      "pluginName": "ClickHouse"
+    }
+  ],
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "11.6.0"
+    },
+    {
+      "type": "datasource",
+      "id": "grafana-clickhouse-datasource",
+      "name": "ClickHouse",
+      "version": "4.19.0"
+    },
+    {
+      "type": "panel",
+      "id": "timeseries",
+      "name": "Time series",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "table",
+      "name": "Table",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "text",
+      "name": "Text",
+      "version": ""
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "1. 모델별 일별 model_cost_krw (serving/standby 분해)",
+      "description": "M1 agg_token_model_cost_1d_dist — 모델별 C = Σ(serving+standby, 비FAIL) gpu_hours × TCO (측정). serving_cost/standby_cost = C × 시간 비례 분해(기종 혼합 행은 근사). TCO 부재 행이 하나라도 있으면 그 날·모델은 NULL.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "currencyKRW"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    date AS time,\n    model,\n    if(countIf(model_cost_krw IS NULL) > 0, NULL, sum(model_cost_krw)) AS model_cost_krw,\n    if(countIf(model_cost_krw IS NULL) > 0, NULL,\n       sum(ifNull(model_cost_krw * serving_gpu_hours / nullIf(serving_gpu_hours + standby_gpu_hours, 0), 0))) AS serving_cost_krw,\n    if(countIf(model_cost_krw IS NULL) > 0, NULL,\n       sum(ifNull(model_cost_krw * standby_gpu_hours / nullIf(serving_gpu_hours + standby_gpu_hours, 0), 0))) AS standby_cost_krw\nFROM mart.agg_token_model_cost_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n  AND service_group IN (${service_group:singlequote})\n  AND service IN (${service:singlequote})\nGROUP BY time, model\nORDER BY time, model",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "2. 서비스별 총비용 (측정, 배부 미적용)",
+      "description": "설계 §6.2 P0-core — 서비스별 Σ M1 model_cost_krw (그 서비스가 호스팅한 모델의 C 합, 공유 모델 배분 전). 배분 후 서비스 비용은 패널 10(M4 합산).",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "currencyKRW"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    date AS time,\n    service,\n    if(countIf(model_cost_krw IS NULL) > 0, NULL, sum(model_cost_krw)) AS service_cost_krw,\n    '측정 (배부 미적용)' AS cost_label\nFROM mart.agg_token_model_cost_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n  AND service_group IN (${service_group:singlequote})\n  AND service IN (${service:singlequote})\nGROUP BY time, service\nORDER BY time, service",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "3. 서비스×모델 GPU 시간·비용 (당일)",
+      "description": "M1 — 선택 범위 안의 최신 집계일(max(date)) 한 날의 service×model 행. krw_per_request = model_cost_krw / requests (요청당 원가, 정의서 §7).",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    date,\n    service_group,\n    service,\n    model,\n    serving_gpu_hours,\n    standby_gpu_hours,\n    test_gpu_hours,\n    flagged_gpu_hours,\n    equiv_gpu_count,\n    model_cost_krw,\n    requests,\n    round(model_cost_krw / nullIf(requests, 0), 2) AS krw_per_request,\n    tokens_per_gpu_hour,\n    quality_flag,\n    '측정' AS cost_label\nFROM mart.agg_token_model_cost_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n  AND date = (SELECT max(date) FROM mart.agg_token_model_cost_1d_dist WHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime))\n  AND service_group IN (${service_group:singlequote})\n  AND service IN (${service:singlequote})\nORDER BY model_cost_krw DESC NULLS LAST, service, model",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "4. 서비스별 tokens_per_gpu_hour 추이",
+      "description": "M1 — 서비스별 Σ total_tokens / Σ serving_gpu_hours (분모 0이면 NULL).",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    date AS time,\n    service,\n    sum(total_tokens) / nullIf(sum(serving_gpu_hours), 0) AS tokens_per_gpu_hour\nFROM mart.agg_token_model_cost_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n  AND service_group IN (${service_group:singlequote})\n  AND service IN (${service:singlequote})\nGROUP BY time, service\nORDER BY time, service",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "5. 토큰 단가 p (파생 — 기준월·가동률 병기)",
+      "description": "정의서 3.7 — p = Σ C(model) / Σ W(model) (원/가중토큰 → ×1e6 = 원/1M 가중토큰), p_cached = 0.1p, p_output = 4p. 기준월 = base_month(toStartOfMonth), 가동률 = utilization_pct(M2 Σ reported / Σ allocated, 같은 달·같은 그룹; 할당표 없으면 NULL). 배분의 결과이지 비용 입력이 아니다(순환) — 정보용.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    c.base_month AS base_month,\n    c.service_group AS service_group,\n    c.model AS model,\n    c.model_cost_krw AS model_cost_krw,\n    c.weighted_tokens AS weighted_tokens,\n    round(c.model_cost_krw / nullIf(c.weighted_tokens, 0) * 1000000, 2) AS p_krw_per_m_wtoken,\n    round(c.model_cost_krw / nullIf(c.weighted_tokens, 0) * 1000000 * 0.1, 2) AS p_cached_krw_per_m,\n    round(c.model_cost_krw / nullIf(c.weighted_tokens, 0) * 1000000 * 4, 2) AS p_output_krw_per_m,\n    round(g.utilization * 100, 1) AS utilization_pct,\n    '파생' AS cost_label\nFROM (\n    SELECT toStartOfMonth(date) AS base_month,\n           service_group,\n           model,\n           if(countIf(model_cost_krw IS NULL) > 0, NULL, sum(model_cost_krw)) AS model_cost_krw,\n           sum(weighted_tokens) AS weighted_tokens\n    FROM mart.agg_token_model_cost_1d_dist\n    WHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n      AND service_group IN (${service_group:singlequote})\n    GROUP BY base_month, service_group, model\n) AS c\nLEFT JOIN (\n    SELECT toStartOfMonth(date) AS base_month,\n           service_group,\n           sum(reported_gpu_hours_total) / nullIf(sum(allocated_gpu_hours), 0) AS utilization\n    FROM mart.agg_token_gpu_group_1d_dist\n    WHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n      AND service_group IN (${service_group:singlequote})\n    GROUP BY base_month, service_group\n) AS g ON g.base_month = c.base_month AND g.service_group = c.service_group\nORDER BY base_month DESC, service_group, model",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "6. quality_flag 분포",
+      "description": "M1 — 선택 범위의 quality_flag 별 행수 (partial > no_tco > flagged > manual > no_metrics > consumer_only > normal).",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    quality_flag,\n    count() AS row_count,\n    countIf(model_cost_krw IS NULL) AS cost_null_rows,\n    countIf(has_gpu_rows = 0) AS no_gpu_rows,\n    countIf(has_token_rows = 0) AS no_token_rows\nFROM mart.agg_token_model_cost_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n  AND service_group IN (${service_group:singlequote})\n  AND service IN (${service:singlequote})\nGROUP BY quality_flag\nORDER BY row_count DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "7. 검사 결과 (FAIL/WARN)",
+      "description": "M3 token_metrics_check_1d_dist — severity FAIL/WARN 행 (INFO 제외). detail 은 사용자 식별자·payload 를 담지 않는다(마스터 §5.6).",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 16,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    date,\n    service_group,\n    service,\n    check_name,\n    severity,\n    model,\n    gpu_type,\n    observed,\n    threshold,\n    detail,\n    source_type\nFROM mart.token_metrics_check_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n  AND severity IN ('FAIL', 'WARN')\n  AND service_group IN (${service_group:singlequote})\n  AND service IN (${service:singlequote})\nORDER BY date DESC, severity, service, check_name\nLIMIT 500",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "8. 일별 FAIL/WARN 건수",
+      "description": "M3 — 일별 severity 별 검사 건수.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 24,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    date AS time,\n    severity,\n    count() AS checks\nFROM mart.token_metrics_check_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n  AND severity IN ('FAIL', 'WARN')\n  AND service_group IN (${service_group:singlequote})\n  AND service IN (${service:singlequote})\nGROUP BY time, severity\nORDER BY time, severity",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "9. 모델 비용 배분 (share)",
+      "description": "M4 agg_token_model_share_1d_dist — share = W(s,m)/W(m), allocated_cost_krw = model_cost_krw × share (배분) / 사외 API 는 벤더 단가 (추정).",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    date,\n    model,\n    service,\n    service_group,\n    provider_service,\n    is_provider,\n    denominator_mode,\n    share,\n    model_cost_krw,\n    allocated_cost_krw,\n    quality_flag,\n    multiIf(denominator_mode = 'external_api', '추정',\n            denominator_mode = 'token_not_reported', '그룹 귀속',\n            '배분') AS cost_label\nFROM mart.agg_token_model_share_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n  AND service_group IN (${service_group:singlequote})\n  AND service IN (${service:singlequote})\nORDER BY date DESC, model, share DESC NULLS LAST\nLIMIT 500",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "10. 서비스별 배분 총비용 (M4 합산, stretch)",
+      "description": "설계 §6.2 stretch — 서비스별 Σ allocated_cost_krw 를 cost_label(배분/추정/그룹 귀속) 별로 합산(§6.4 (6) ①②③). 패널 2(배부 미적용)와 나란히 본다. NULL 행이 하나라도 있으면 그 (날, 서비스, 라벨) 합은 NULL.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    date,\n    service,\n    multiIf(denominator_mode = 'external_api', '추정',\n            denominator_mode = 'token_not_reported', '그룹 귀속',\n            '배분') AS cost_label,\n    if(countIf(allocated_cost_krw IS NULL) > 0, NULL, sum(allocated_cost_krw)) AS service_allocated_cost_krw,\n    count() AS model_rows\nFROM mart.agg_token_model_share_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n  AND service_group IN (${service_group:singlequote})\n  AND service IN (${service:singlequote})\nGROUP BY date, service, cost_label\nORDER BY date DESC, service, cost_label\nLIMIT 500",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "11. 그룹 GPU 정체성 (I2)",
+      "description": "M2 agg_token_gpu_group_1d_dist — 그룹 총비용(allocated×TCO) = model_cost_sum(ΣC) + test_cost(실험) + idle_cost(유휴) + unattributed(미귀속) (identity_gap_krw ≈ 0 이 정상, over_report=1 은 보고 > 배정).",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    date,\n    service_group,\n    gpu_type,\n    allocated_gpu_hours,\n    reported_gpu_hours_total,\n    serving_gpu_hours,\n    standby_gpu_hours,\n    test_gpu_hours,\n    flagged_gpu_hours,\n    idle_gpu_hours,\n    utilization,\n    group_total_cost_krw,\n    model_cost_sum_krw,\n    test_cost_krw,\n    idle_cost_krw,\n    unattributed_cost_krw,\n    identity_gap_krw,\n    over_report,\n    allocation_source,\n    quality_flag,\n    '측정' AS cost_label\nFROM mart.agg_token_gpu_group_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n  AND service_group IN (${service_group:singlequote})\nORDER BY date DESC, service_group, gpu_type\nLIMIT 500",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "12. 그룹 utilization 추이",
+      "description": "M2 — service_group/gpu_type 별 utilization = reported_gpu_hours_total / allocated_gpu_hours.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    date AS time,\n    concat(service_group, '/', gpu_type) AS group_gpu,\n    avg(utilization) AS utilization\nFROM mart.agg_token_gpu_group_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n  AND service_group IN (${service_group:singlequote})\nGROUP BY time, group_gpu\nORDER BY time, group_gpu",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "13. TTFT/ITL 추이 (p50/p95)",
+      "description": "성능 fact raw_token_metrics_serving_1d_dist — service×model 단위 ttft_ms/itl_ms 의 p50·p95(ms). source_type(metrics-api-v1 | manual-v0) 병기. custom 지표·e2e/output_tps 는 제외.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    date AS time,\n    concat(service, '/', model, ' ', metric) AS series,\n    source_type,\n    avg(p50) AS p50,\n    avg(p95) AS p95\nFROM fact.raw_token_metrics_serving_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n  AND metric IN ('ttft_ms', 'itl_ms')\n  AND name = ''\n  AND service_group IN (${service_group:singlequote})\n  AND service IN (${service:singlequote})\nGROUP BY time, series, source_type\nORDER BY time, series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "14. 출처 (manual-v0 vs API)",
+      "description": "앵커 fact raw_token_metrics_summary_1d_dist — 날짜별 source_type 별 보고 서비스 수 (manual-v0 = 수기 CSV, metrics-api-v1 = API).",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 48,
+        "w": 6,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    date AS time,\n    source_type,\n    countDistinct(service) AS services\nFROM fact.raw_token_metrics_summary_1d_dist\nWHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n  AND service_group IN (${service_group:singlequote})\n  AND service IN (${service:singlequote})\nGROUP BY time, source_type\nORDER BY time, source_type",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "15. 일별 메트릭 커버리지",
+      "description": "앵커 fact raw_token_metrics_summary_1d_dist — 보고 서비스 수(reported_services) vs 기대 서비스 수(expected_services = 마커 metrics_coverage 분모: 레지스트리 enabled=1 AND coverage_since ≤ date AND (until IS NULL OR date ≤ until), 날짜별). rejected_rows > 0 이면 6b 정규화 거부 행 존재.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${DS_CLICKHOUSE}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 48,
+        "w": 6,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${DS_CLICKHOUSE}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "pluginVersion": "4.19.0",
+          "queryType": "sql",
+          "rawSql": "SELECT\n    f.date AS date,\n    f.reported_services AS reported_services,\n    e.expected_services AS expected_services,\n    f.gpu_rows AS gpu_rows,\n    f.serving_rows AS serving_rows,\n    f.rejected_rows AS rejected_rows,\n    f.manual_services AS manual_services\nFROM (\n    SELECT date,\n           countDistinct(service) AS reported_services,\n           sum(gpu_rows) AS gpu_rows,\n           sum(serving_rows) AS serving_rows,\n           sum(rejected_rows) AS rejected_rows,\n           countIf(source_type = 'manual-v0') AS manual_services\n    FROM fact.raw_token_metrics_summary_1d_dist\n    WHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)\n    GROUP BY date\n) AS f\nLEFT JOIN (\n    SELECT d.date AS date,\n           countIf(r.enabled = 1 AND r.coverage_since <= d.date AND (isNull(r.until) OR d.date <= r.until)) AS expected_services\n    FROM (SELECT DISTINCT date FROM fact.raw_token_metrics_summary_1d_dist WHERE date BETWEEN toDate($__fromTime) AND toDate($__toTime)) AS d\n    CROSS JOIN gpu_data.dim_token_metrics_service_dist AS r\n    GROUP BY d.date\n) AS e ON e.date = f.date\nORDER BY date DESC",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "text",
+      "title": "참고: BATCH_RESULT 마커 패널",
+      "datasource": {
+        "type": "datasource",
+        "uid": "grafana"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 56,
+        "w": 24,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "mode": "markdown",
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "**참고 — BATCH_RESULT 마커 패널 (미포함)**\n\n이 대시보드는 mart 4테이블(`mart.agg_token_model_cost_1d_dist` 등)과 앵커 fact `fact.raw_token_metrics_summary_1d_dist`·성능 fact `fact.raw_token_metrics_serving_1d_dist`의 실적 행만 관측합니다. CronJob `token-mart-metrics`(10:20 KST) 실행 자체의 판정은 로그 마커 기반입니다:\n\n`BATCH_RESULT status=SUCCESS|FAILURE module=mart-metrics metrics_coverage=<present>/<enabled> missing_services=\"a,b|-\" rows_mart=<n> rows_check=<n> rows_share=<n> warn=<n> elapsed=<s> [reason=<r>]`\n\n마커 조회에는 VictoriaLogs 데이터소스가 필요합니다 — 홈랩(stage)에는 없어 이 대시보드에는 포함하지 않았고, company 단계에서 기존 `batch_result` 대시보드에 module `mart-metrics`로 편입됩니다 (`kubectl -n monitoring logs job/<job> | grep BATCH_RESULT` 로 대체 가능).\n\n**라벨 규칙 (docs/cost-model-spec.md §7)** — `cost_label` 컬럼: `측정` = GPU 시간 × TCO(M1·M2; 패널 2의 `측정 (배부 미적용)` = 서비스별 Σ M1 C, 공유 모델 배분 전), `배분` = 가중 토큰 비율(1/0.1/4)로 나눈 공유 모델 비용(M4), `추정` = 사외 API 벤더 단가 기반(M4 `external_api`), `그룹 귀속` = 토큰 미보고 모델의 호스팅 그룹 전액 귀속, `파생` = 토큰 단가 p = C ÷ W(정의서 3.7 — 비용 입력이 아니라 배분의 결과, 기준월·가동률 병기). 비용 NULL = TCO/단가 부재(`no_tco`·`vendor_price_missing`) — 0이 아니라 '측정 불가'입니다."
+      },
+      "pluginVersion": "11.6.0",
+      "transparent": false
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 41,
+  "tags": [
+    "token-metrics",
+    "stage"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "${DS_CLICKHOUSE}"
+        },
+        "definition": "SELECT DISTINCT service_group FROM mart.agg_token_model_cost_1d_dist ORDER BY 1",
+        "hide": 0,
+        "includeAll": true,
+        "label": "service_group",
+        "multi": true,
+        "name": "service_group",
+        "options": [],
+        "query": "SELECT DISTINCT service_group FROM mart.agg_token_model_cost_1d_dist ORDER BY 1",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "${DS_CLICKHOUSE}"
+        },
+        "definition": "SELECT DISTINCT service FROM mart.agg_token_model_cost_1d_dist WHERE service_group IN (${service_group:singlequote}) ORDER BY 1",
+        "hide": 0,
+        "includeAll": true,
+        "label": "service",
+        "multi": true,
+        "name": "service",
+        "options": [],
+        "query": "SELECT DISTINCT service FROM mart.agg_token_model_cost_1d_dist WHERE service_group IN (${service_group:singlequote}) ORDER BY 1",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "Asia/Seoul",
+  "title": "Token Metrics — Stage Tester",
+  "uid": "token-metrics-stage",
+  "version": 1,
+  "weekStart": ""
+}
