@@ -1203,6 +1203,20 @@ def test_run_m2_zero_rows_day_is_success_and_dup_or_verify_paths():
         steps.run_m2(FakeGate(exists=True, verify_ok=False, verify_actual=1), M2_DATE)
 
 
+def test_run_m2_uses_dist_for_exists_verify_and_local_for_delete():
+    # fix1 MUST-1 — run_m1/run_m4와 같은 M15 규율: run_m2가 dist/local을 뒤바꿔 넘기면 exists/verify가
+    # 로컬 테이블을 보거나 DELETE가 ON CLUSTER 분산 테이블을 때리게 된다.
+    g = FakeGate()
+    steps.run_m2(g, M2_DATE)
+    prefix = f"{DB_MART}.{steps.T_M2}"
+    exists_names = [name for op, name in g.full_names if op == "exists"]
+    delete_names = [name for op, name in g.full_names if op == "delete"]
+    verify_names = [name for op, name in g.full_names if op == "verify"]
+    assert exists_names == [f"{prefix}_dist"]
+    assert delete_names == [f"{prefix}_local"]
+    assert verify_names == [f"{prefix}_dist"]
+
+
 def test_m3_stretch_seven_names_after_t7():
     assert [n for n, _ in steps.M3_BLOCKS_STRETCH] == M3_STRETCH_NAMES_T7
     blocks = steps.M3_BLOCKS_CORE + steps.M3_BLOCKS_STRETCH

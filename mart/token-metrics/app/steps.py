@@ -1133,7 +1133,7 @@ def run_m2(gate, date: str) -> dict:
 # ============================================================================
 
 # --- 17) no_allocation WARN — gpu 행이 있는 (그룹, 기종)에 date 유효 할당(unknown 제외)이 없거나 NULL
-#         (= M2 allocated_gpu_hours NULL·quality_flag no_allocation과 같은 술어 isNull(al.allocated_gpu_count))
+#         -- M3 no_allocation: M2 quality_flag 산식과 같은 술어(단, M2 플래그는 우선순위상 over_report/no_tco에 흡수될 수 있어 카운트가 다를 수 있음)
 _M3_NO_ALLOCATION = _m3_select(
     "no_allocation", "WARN",
     service_group="x.service_group", service="''", gpu_type="x.gpu_type",

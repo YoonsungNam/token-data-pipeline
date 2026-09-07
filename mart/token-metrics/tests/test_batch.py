@@ -35,7 +35,7 @@ from app.ch import DB_DIM, DB_FACT, DB_MART, DB_TOKEN_DIM, DB_TOKEN_MART
 from app.config import Config
 from app.mart import Coverage, batch_line
 from app.preflight import READ_CONTRACT
-from app.steps import MART_TABLES, StepError, run_m4
+from app.steps import MART_TABLES, StepError, run_m1, run_m3, run_m4
 
 DATE = "2026-09-03"
 DATE2 = "2026-09-04"
@@ -724,6 +724,10 @@ def _stub_four_runners(monkeypatch, rows_group=4, m2_raises=None):
 def test_runners_final_order_four():
     assert [k for k, _ in batch.RUNNERS] == ["rows_mart", "rows_check", "rows_share", "rows_group"]
     assert [fn.__name__ for _, fn in batch.RUNNERS] == ["run_m1", "run_m3", "run_m4", "run_m2"]
+    # fix1 SHOULD-2 — 함수 동일성까지 고정(이름만으로는 재바인딩된 동명 함수를 놓칠 수 있다)
+    assert batch.RUNNERS[0][1] is run_m1
+    assert batch.RUNNERS[1][1] is run_m3
+    assert batch.RUNNERS[2][1] is run_m4
     assert batch.RUNNERS[3][1] is run_m2 and batch.RUNNERS[3][1] is steps.run_m2
     assert batch._MARKER_ROW_KEYS == ("rows_mart", "rows_check", "rows_share")   # Plan 6a H 고정
     assert "rows_group" not in batch._MARKER_ROW_KEYS
