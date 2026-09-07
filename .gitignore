@@ -10,6 +10,8 @@ dim_token_user_org_insert*.sql
 
 # E2E 실행 시 run_e2e.sh가 생성하는 임시 endpoints — 레포 반입 금지
 collectors/token-usage/tests/e2e/endpoints.e2e.yaml
+collectors/token-metrics/tests/e2e/endpoints.e2e.yaml
+collectors/token-metrics/tests/e2e/.tmp/
 
 # Claude Code 로컬 전용 산출물 — 레포 반입 금지
 .claude/worktrees/

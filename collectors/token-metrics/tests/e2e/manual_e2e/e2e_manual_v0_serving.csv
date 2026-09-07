@@ -1,0 +1,5 @@
+# E2E manual-v0 serving — metric 은 API 키(ttftMs|itlMs|outputTps); 표준 지표 행은 name/unit 빈칸(ms·tokens/s 자동), outputTps 는 p50 만 (헤더 = SERVING_HEADER)
+date,service,model,metric,name,unit,p50,p90,p95,p99
+{DATE},Mock Service A,claude-opus-4-8,ttftMs,,,120,300,400,800
+{DATE},Mock Service A,claude-opus-4-8,itlMs,,,20,40,50,90
+{DATE},Mock Service A,claude-opus-4-8,outputTps,,,41,,,
