@@ -779,3 +779,47 @@ def test_run_table_forwards_extra_pred_to_delete_day():
     steps._run_table(g, DATE, dist, local, sql, expected_sql, warns,
                       extra_pred="created_by = 'x'")
     assert g.delete_preds == [("m1", "created_by = 'x'")]
+
+
+# --- T4 fix round 1: 등록부 부재/커버리지 창·검출 술어 고정·따옴표 가드 ---
+# 컨트롤러 리뷰(86682d4) fix round 1 findings 1~4. M3 리전 테스트만 추가한다(T3 fix round 1
+# 섹션 다음에 이어붙임 — 기존 T3/T4 단언은 건드리지 않는다).
+
+def test_m3_identity_drift_excludes_service_absent_from_registry():
+    # finding 1 — 등록부에서 빠진 서비스는(조인 미스 → join_use_nulls=0으로 service_group='')
+    # 비교할 대상이 없으므로 identity_drift 오탐을 내지 않는다.
+    sql = " ".join(dict(steps.M3_BLOCKS_CORE)["identity_drift"].split())
+    assert "r.service != ''" in sql
+
+
+def test_m3_service_not_in_usage_registry_reuses_metrics_missing_coverage_window():
+    # finding 2 — 커버리지 창(coverage_since/until)은 레지스트리 기반 모든 기대의 공통 게이트다.
+    # metrics_missing이 쓰는 것과 정확히 같은 두 술어를 재사용한다(공백 정규화 비교).
+    missing = " ".join(dict(steps.M3_BLOCKS_CORE)["metrics_missing"].split())
+    reg_gap = " ".join(dict(steps.M3_BLOCKS_CORE)["service_not_in_usage_registry"].split())
+    for pred in ("r.coverage_since <= {d:Date}", "(isNull(r.until) OR {d:Date} <= r.until)"):
+        assert pred in missing, pred
+        assert pred in reg_gap, pred
+
+
+def test_m3_flag_and_source_predicates_pinned():
+    # finding 3 — 뮤테이션 스윕이 잡아내지 못하는 6개 검출 술어를 블록별로 고정한다.
+    blocks = {name: " ".join(sql.split()) for name, sql in steps.M3_BLOCKS_CORE}
+    pinned = {
+        "hours_over_count": "hasAny(g.flags, ['hours_over_count'])",
+        "unknown_violation": "hasAny(g.flags, ['unknown_violation'])",
+        "pct_non_monotone": "hasAny(s.flags, ['pct_non_monotone'])",
+        "serving_without_gpu_serving_row": "r.expect_gpu = 1",
+        "manual_source": "an.source_type = 'manual-v0'",
+        "serving_missing_for_gpu_model": "sk.has_rows = 0 AND tk.requests > 0",
+    }
+    for name, pred in pinned.items():
+        assert pred in blocks[name], name
+
+
+def test_m3_select_rejects_quote_in_check_name_or_severity():
+    # finding 4 — check_name/severity를 단일따옴표 SQL 리터럴로 그대로 보간하므로, 따옴표가
+    # 섞이면 생성된 SQL 문자열 자체가 깨진다(가드 없으면 조용히 잘못된 SQL을 만든다).
+    with pytest.raises(ValueError):
+        steps._m3_select("x'y", "WARN", service_group="''", service="''", observed="0",
+                         threshold="0", detail="''", body="FROM system.one")

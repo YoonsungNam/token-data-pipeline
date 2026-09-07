@@ -384,6 +384,9 @@ def _m3_select(check_name: str, severity: str, *, service_group: str, service: s
                observed: str, threshold: str, detail: str, body: str,
                model: str = "''", gpu_type: str = "''", source_type: str = "''") -> str:
     """12컬럼(DDL 순서) SELECT 헤더 + FROM 본문. 값 인자는 SQL 식 문자열이다."""
+    if "'" in check_name or "'" in severity:
+        raise ValueError(
+            f"M3 check_name/severity must not contain a single quote: {check_name!r}/{severity!r}")
     if severity not in ("FAIL", "WARN", "INFO"):
         raise ValueError(f"M3 severity must be FAIL|WARN|INFO: {check_name}={severity}")
     return (
@@ -608,6 +611,7 @@ _M3_IDENTITY_DRIFT = _m3_select(
     body=f"""FROM {SUB_ANCHOR} AS an
 GLOBAL LEFT JOIN {SUB_REG} AS r ON r.service = an.service
 WHERE an.source_type = 'metrics-api-v1'
+  AND r.service != ''
   AND (an.reported_service != an.service OR an.reported_service_group != r.service_group)""")
 
 # --- 12) service_not_in_usage_registry WARN — 메트릭 레지스트리 서비스가 token_usage 레지스트리에 없음 (§4.3 조인 키 전제)
@@ -616,7 +620,10 @@ _M3_SERVICE_NOT_IN_USAGE_REGISTRY = _m3_select(
     service_group="r.service_group", service="r.service",
     observed="1", threshold="0", detail="'not in dim_token_service'",
     body=f"""FROM {SUB_REG} AS r
-WHERE r.enabled = 1 AND r.service GLOBAL NOT IN {SUB_USAGE_SVC}""")
+WHERE r.enabled = 1
+  AND r.coverage_since <= {{d:Date}}
+  AND (isNull(r.until) OR {{d:Date}} <= r.until)
+  AND r.service GLOBAL NOT IN {SUB_USAGE_SVC}""")
 
 # --- 13) manual_source INFO — 앵커 source_type = 'manual-v0' (§5.2 수동 반입 표기, 정보성)
 _M3_MANUAL_SOURCE = _m3_select(
