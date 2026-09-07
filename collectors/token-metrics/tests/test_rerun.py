@@ -92,10 +92,19 @@ def test_build_job_spec_command_override():
                                "labels": {"app": "token-metrics-collector", "rerun": "1"}}
     assert job["spec"]["activeDeadlineSeconds"] == 3000       # override 없음 — CronJob 값 상속
     assert job["spec"]["backoffLimit"] == 0
+    assert job["spec"]["ttlSecondsAfterFinished"] == 86400      # fix1: 완료 후 GC 기본값(없을 때만)
     container = job["spec"]["template"]["spec"]["containers"][0]
     assert container["name"] == "token-metrics-collector"
     assert container["command"] == cmd
     assert obj == cronjob_obj()                                 # deepcopy — 원본 불변
+
+
+def test_build_job_spec_keeps_existing_ttl():
+    # fix1: setdefault 의미 — CronJob 템플릿이 이미 값을 가지면 덮어쓰지 않는다
+    obj = cronjob_obj()
+    obj["spec"]["jobTemplate"]["spec"]["ttlSecondsAfterFinished"] = 3600
+    job = rerun.build_job_spec(obj, "j", ["c"])
+    assert job["spec"]["ttlSecondsAfterFinished"] == 3600
 
 
 def test_job_names_suffix_index():
@@ -201,6 +210,88 @@ def test_count_active_mart_jobs_filters_by_owner_and_prefix(monkeypatch):
     monkeypatch.setattr(rerun, "kubectl", fake)
     assert rerun.count_active_mart_jobs("c", "monitoring", "token-mart-metrics") == 2
     assert calls == [("c", ["get", "jobs", "-n", "monitoring", "-o", "json"], True)]
+
+
+def test_count_active_mart_jobs_excludes_verify_overlay_for_prod(monkeypatch):
+    # fix1: 같은 네임스페이스의 verify 오버레이 rerun Job이 prod 창을 오버-블록하면 안 된다 (설계 해석 e)
+    items = [
+        {"metadata": {"name": "token-mart-metrics-verify-rerun-1700000000-0"},   # owner 없음 — verify rerun Job
+         "status": {"active": 1}},
+    ]
+
+    def fake(context, args, *, capture=False, input_data=None):
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"items": items}), stderr="")
+
+    monkeypatch.setattr(rerun, "kubectl", fake)
+    assert rerun.count_active_mart_jobs("c", "monitoring", "token-mart-metrics") == 0
+
+
+def test_count_active_mart_jobs_counts_verify_overlay_for_verify(monkeypatch):
+    # 같은 Job을 verify 자신의 mart_cronjob으로 조회하면 정상 집계된다
+    items = [
+        {"metadata": {"name": "token-mart-metrics-verify-rerun-1700000000-0"},
+         "status": {"active": 1}},
+    ]
+
+    def fake(context, args, *, capture=False, input_data=None):
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"items": items}), stderr="")
+
+    monkeypatch.setattr(rerun, "kubectl", fake)
+    assert rerun.count_active_mart_jobs("c", "monitoring", "token-mart-metrics-verify") == 1
+
+
+# ---- wait_job (fix1: 직접 커버리지 — Complete/Failed 스왑해도 이전엔 전부 초록이었다) --------
+
+def test_wait_job_complete_returns_true(monkeypatch):
+    def fake_kubectl(context, args, *, capture=False, input_data=None):
+        if args[:2] == ["get", "job"]:
+            body = {"status": {"conditions": [{"type": "Complete", "status": "True"}]}}
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(body), stderr="")
+        if args[:2] == ["get", "pods"]:
+            return subprocess.CompletedProcess(args, 0, stdout="pod-a", stderr="")
+        raise AssertionError(f"unexpected kubectl {args}")
+
+    monkeypatch.setattr(rerun, "kubectl", fake_kubectl)
+    monkeypatch.setattr(rerun.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0))
+    assert rerun.wait_job("c", "monitoring", "job-1", 100) is True
+
+
+def test_wait_job_failed_returns_false(monkeypatch, capsys):
+    def fake_kubectl(context, args, *, capture=False, input_data=None):
+        if args[:2] == ["get", "job"]:
+            body = {"status": {"conditions": [{"type": "Failed", "status": "True"}]}}
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(body), stderr="")
+        if args[:2] == ["get", "pods"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        raise AssertionError(f"unexpected kubectl {args}")
+
+    monkeypatch.setattr(rerun, "kubectl", fake_kubectl)
+    monkeypatch.setattr(rerun.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0))
+    assert rerun.wait_job("c", "monitoring", "job-2", 100) is False
+    assert "job job-2 failed" in capsys.readouterr().err
+
+
+def test_wait_job_timeout_returns_false(monkeypatch, capsys):
+    calls = {"job": 0}
+
+    def fake_kubectl(context, args, *, capture=False, input_data=None):
+        if args[:2] == ["get", "job"]:
+            calls["job"] += 1
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"status": {}}), stderr="")
+        if args[:2] == ["get", "pods"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        raise AssertionError(f"unexpected kubectl {args}")
+
+    # 1번째 폴링은 창 안(deadline 미도달) → 루프 진입, 2번째 체크에서 데드라인 초과 → 타임아웃
+    ticks = iter([0.0, 0.5, 100.0])
+    monkeypatch.setattr(rerun.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(rerun.time, "sleep", lambda s: None)
+    monkeypatch.setattr(rerun, "kubectl", fake_kubectl)
+    monkeypatch.setattr(rerun.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0))
+
+    assert rerun.wait_job("c", "monitoring", "job-3", 5) is False
+    assert calls["job"] == 1
+    assert "[ERROR] job job-3 timeout (5s)" in capsys.readouterr().err
 
 
 # ---- main(): 순차 청크 · 중단 · 종료코드 ------------------------------------------
@@ -335,6 +426,22 @@ def test_usage_errors():
     with pytest.raises(SystemExit) as e:
         rerun.main(["--context", "c", "--from", "2026/09/01", "--to", "2026-09-02"])
     assert e.value.code == 2
+
+
+def test_main_kubectl_failure_is_clean_error_not_traceback(monkeypatch, capsys):
+    # fix1: kubectl 실패(인증 만료 등)는 트레이스백이 아니라 exit 1 + 정리된 stderr 메시지여야 한다
+    def fake_kubectl(context, args, *, capture=False, input_data=None):
+        if args[:2] == ["get", "cronjob"]:
+            raise subprocess.CalledProcessError(1, ["kubectl", "get", "cronjob"],
+                                                stderr="error: You must be logged in to the server")
+        raise AssertionError(f"unexpected kubectl {args}")
+
+    monkeypatch.setattr(rerun, "kubectl", fake_kubectl)
+    rc = rerun.main(["--context", "c"] + RANGE + ["--force-window"])   # 창 검사 생략 → count_active_mart_jobs 미호출
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "[ERROR] kubectl 실패 (rc=1): kubectl get cronjob" in err
+    assert "You must be logged in to the server" in err
 
 
 # ---- --chain-mart ---------------------------------------------------------------

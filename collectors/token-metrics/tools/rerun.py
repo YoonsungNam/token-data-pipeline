@@ -102,9 +102,12 @@ def build_job_spec(cronjob_obj, job_name, command):
 
     metadata는 name + 라벨만 남긴다 (uid/resourceVersion/namespace 등 서버 필드 제거).
     activeDeadlineSeconds는 jobTemplate.spec 값(3000, §5.2)을 그대로 상속 — override 인자 없음
-    (청크 7일 × 서비스 수의 부하 상한 = 이 서버 데드라인; 초과 시 Failed → 다음 청크 중단)."""
+    (청크 7일 × 서비스 수의 부하 상한 = 이 서버 데드라인; 초과 시 Failed → 다음 청크 중단).
+    ttlSecondsAfterFinished는 없을 때만 86400(1일)으로 채운다(fix1 nit) — CronJob 소유가
+    아닌 이 1회성 Job은 successfulJobsHistoryLimit의 GC 대상이 아니라 방치되면 영구 잔존한다."""
     spec = copy.deepcopy(cronjob_obj["spec"]["jobTemplate"]["spec"])
     spec["template"]["spec"]["containers"][0]["command"] = list(command)
+    spec.setdefault("ttlSecondsAfterFinished", 86400)
     return {"apiVersion": "batch/v1", "kind": "Job",
             "metadata": {"name": job_name, "labels": {"app": CRONJOB, "rerun": "1"}},
             "spec": spec}
@@ -128,13 +131,20 @@ def check_window(now, active_mart_jobs):
 
 def count_active_mart_jobs(context, namespace, mart_cronjob):
     """활성(status.active > 0) mart-metrics Job 수 — CronJob 소유(ownerReferences) 또는
-    이름 접두사 `<mart_cronjob>-…`(mart rerun Job, owner 없음) 둘 다 집계."""
+    이름 접두사 `<mart_cronjob>-…`(mart rerun Job, owner 없음) 둘 다 집계.
+
+    fix1: mart_cronjob이 prod(`-verify`로 끝나지 않음)일 때는 verify 오버레이의 rerun Job
+    (`<mart_cronjob>-verify-…`)을 접두사 매치에서 제외한다 — 같은 네임스페이스에 공존하는
+    verify mart Job이 prod 수집기 rerun의 실행 창을 오버-블록하면 안 된다(설계 해석 e).
+    CronJob 소유(owner) 매치는 이름이 아니라 ownerReferences 값이므로 영향받지 않는다."""
     res = kubectl(context, ["get", "jobs", "-n", namespace, "-o", "json"], capture=True)
     n = 0
     for item in json.loads(res.stdout).get("items", []):
         meta = item.get("metadata", {})
         owners = {o.get("name") for o in meta.get("ownerReferences", [])}
         name = str(meta.get("name", ""))
+        if not mart_cronjob.endswith("-verify") and name.startswith(mart_cronjob + "-verify-"):
+            continue
         if mart_cronjob not in owners and not name.startswith(mart_cronjob + "-"):
             continue
         if int(item.get("status", {}).get("active", 0) or 0) > 0:
@@ -229,52 +239,60 @@ def main(argv=None):
     from_s, to_s = d0.isoformat(), d1.isoformat()
     mart_cronjob = mart_cronjob_for(args.cronjob)
 
-    # §6.3 실행 창 — 체인 여부와 무관하게 항상 (수집기 DELETE/INSERT 가 mart-metrics 와 겹치지 않도록)
-    if args.force_window:
-        print("[WARN] 실행 창 검사 생략(--force-window)", flush=True)
-    else:
-        active = count_active_mart_jobs(args.context, args.namespace, mart_cronjob)
-        reason = check_window(now_kst(), active)
-        if reason:
-            print(f"[ERROR] 실행 창 밖: {reason} — KST 10:50 이후·활성 {mart_cronjob} Job 0일 때 "
-                  f"재시도 (--force-window로 강제)", file=sys.stderr)
-            return 3
+    try:
+        # §6.3 실행 창 — 체인 여부와 무관하게 항상 (수집기 DELETE/INSERT 가 mart-metrics 와 겹치지 않도록)
+        if args.force_window:
+            print("[WARN] 실행 창 검사 생략(--force-window)", flush=True)
+        else:
+            active = count_active_mart_jobs(args.context, args.namespace, mart_cronjob)
+            reason = check_window(now_kst(), active)
+            if reason:
+                print(f"[ERROR] 실행 창 밖: {reason} — KST 10:50 이후·활성 {mart_cronjob} Job 0일 때 "
+                      f"재시도 (--force-window로 강제)", file=sys.stderr)
+                return 3
 
-    res = kubectl(args.context, ["get", "cronjob", args.cronjob, "-n", args.namespace,
-                                 "-o", "json"], capture=True)
-    cronjob_obj = json.loads(res.stdout)
-    chunks = split_chunks(d0, d1, args.chunk_days)
-    names = job_names(args.cronjob, int(time.time()), len(chunks))
-    n = len(chunks)
-    for i, ((c0, c1), job_name) in enumerate(zip(chunks, names), start=1):
-        print(f"[INFO] 청크 {i}/{n}: {c0} .. {c1} → Job {job_name}", flush=True)
-        job = build_job_spec(cronjob_obj, job_name,
-                             build_collect_command(c0.isoformat(), c1.isoformat(),
-                                                   args.service, args.replace))
-        kubectl(args.context, ["apply", "-n", args.namespace, "-f", "-"],
-                input_data=json.dumps(job))
-        if not wait_job(args.context, args.namespace, job_name, TIMEOUT_SINGLE_S):
-            print(f"[ERROR] 청크 {i}/{n} 실패 — 이후 청크 중단; 재시도: --from {c0} --to {to_s} "
-                  f"(그 외 인자 동일)", file=sys.stderr)
-            return 1
+        res = kubectl(args.context, ["get", "cronjob", args.cronjob, "-n", args.namespace,
+                                     "-o", "json"], capture=True)
+        cronjob_obj = json.loads(res.stdout)
+        chunks = split_chunks(d0, d1, args.chunk_days)
+        names = job_names(args.cronjob, int(time.time()), len(chunks))
+        n = len(chunks)
+        for i, ((c0, c1), job_name) in enumerate(zip(chunks, names), start=1):
+            print(f"[INFO] 청크 {i}/{n}: {c0} .. {c1} → Job {job_name}", flush=True)
+            job = build_job_spec(cronjob_obj, job_name,
+                                 build_collect_command(c0.isoformat(), c1.isoformat(),
+                                                       args.service, args.replace))
+            kubectl(args.context, ["apply", "-n", args.namespace, "-f", "-"],
+                    input_data=json.dumps(job))
+            if not wait_job(args.context, args.namespace, job_name, TIMEOUT_SINGLE_S):
+                print(f"[ERROR] 청크 {i}/{n} 실패 — 이후 청크 중단; 재시도: --from {c0} --to {to_s} "
+                      f"(그 외 인자 동일)", file=sys.stderr)
+                return 1
 
-    # §6.3: collectors rerun 후 동일 날짜 범위 mart-metrics rerun 은 의무 — 항상 안내.
-    # --cronjob …-verify → mart 쪽 --cronjob token-mart-metrics-verify, --force-window → 6c --force (창만 생략).
-    # 6c 는 활성 token-mart-* Job 이 있으면 --force 와 무관하게 exit 2 로 거부한다 — 그때는 위 명령을 다시 실행.
-    mart_cmd = build_mart_command(args.context, args.namespace, from_s, to_s, args.chunk_days,
-                                  mart_cronjob=mart_cronjob, force=args.force_window)
-    print("")
-    print("[NEXT] collectors rerun 후 동일 날짜 mart-metrics rerun은 의무입니다 (§6.3):")
-    print("  " + shlex.join(mart_cmd), flush=True)
-    if args.chain_mart:
-        mart_path = REPO_ROOT / MART_RERUN
-        if not mart_path.exists():
-            print(f"[ERROR] --chain-mart: {MART_RERUN} 가 아직 없습니다 (Plan 6c 전) — "
-                  f"mart-metrics 구현 후 위 명령을 실행하세요.", file=sys.stderr)
-            return 1
-        # 절대경로 + 리스트 인자 (cwd 무관, 공백 인자 안전); mart rerun 의 반환값 그대로 종료
-        return subprocess.call([sys.executable, str(mart_path)] + mart_cmd[2:])
-    return 0
+        # §6.3: collectors rerun 후 동일 날짜 범위 mart-metrics rerun 은 의무 — 항상 안내.
+        # --cronjob …-verify → mart 쪽 --cronjob token-mart-metrics-verify, --force-window → 6c --force (창만 생략).
+        # 6c 는 활성 token-mart-* Job 이 있으면 --force 와 무관하게 exit 2 로 거부한다 — 그때는 위 명령을 다시 실행.
+        mart_cmd = build_mart_command(args.context, args.namespace, from_s, to_s, args.chunk_days,
+                                      mart_cronjob=mart_cronjob, force=args.force_window)
+        print("")
+        print("[NEXT] collectors rerun 후 동일 날짜 mart-metrics rerun은 의무입니다 (§6.3):")
+        print("  " + shlex.join(mart_cmd), flush=True)
+        if args.chain_mart:
+            mart_path = REPO_ROOT / MART_RERUN
+            if not mart_path.exists():
+                print(f"[ERROR] --chain-mart: {MART_RERUN} 가 아직 없습니다 (Plan 6c 전) — "
+                      f"mart-metrics 구현 후 위 명령을 실행하세요.", file=sys.stderr)
+                return 1
+            # 절대경로 + 리스트 인자 (cwd 무관, 공백 인자 안전); mart rerun 의 반환값 그대로 종료
+            return subprocess.call([sys.executable, str(mart_path)] + mart_cmd[2:])
+        return 0
+    except subprocess.CalledProcessError as e:
+        # fix1: kubectl 실패(인증 만료·컨텍스트 오류·API 다운)를 트레이스백 대신 정리된 exit 1로 —
+        # 종료코드 공간은 0/1/2/3 그대로, e.stdout(Job/CronJob JSON 본문)은 찍지 않는다.
+        print(f"[ERROR] kubectl 실패 (rc={e.returncode}): {shlex.join(e.cmd)}", file=sys.stderr)
+        if e.stderr:
+            print(e.stderr.rstrip(), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
