@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# namespace는 매니페스트에 고정하지 않는다 — install.sh의 -n ${NAMESPACE}(기본 monitoring)에 일원화
+# (고정 시 --namespace 옵션과 apply -k가 충돌)
+resources:
+  - ../../base
+images:
+  - name: token-mart-metrics
+    newName: ghcr.io/yoonsungnam/token-mart-metrics
+    # 실제 태그는 install.sh가 kubectl set image로 덮는다 (build.sh 태그와 일치)
+    newTag: latest
