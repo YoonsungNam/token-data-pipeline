@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- 토큰 파이프라인 배포 지도 — 기존 배포 DDL vs 신규(Plan 6a) DDL · 잡 시간표 · 계정/GRANT · 9/9 적용 순서.
+     브라우저에서 직접 연다 (GitHub 웹은 HTML을 렌더링하지 않는다). 흐름 지도는 mermaid(CDN)로 그린다 — 오프라인이면 표만 보인다.
+     사내 호스트·주소·비밀번호·이메일 없음 (Secret/ConfigMap은 이름만). 갱신 시 열 수·ORDER BY·잡 사양의 출처는 페이지 하단 참조. -->
+<title>토큰 파이프라인 배포 지도</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --ground:#F2F4F6; --surface:#FFFFFF; --ink:#1B2430; --muted:#5B6774;
+    --teal:#2A7F8C; --teal-soft:#DCEDF0; --teal-ink:#0F3238;
+    --amber:#D9791C; --amber-soft:#FBE6CB; --amber-ink:#4A2A08;
+    --line:#D5DBE1; --code-bg:#EEF2F5; --warn:#B4322B; --warn-soft:#FBE3E1;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ground:#0F1519; --surface:#182027; --ink:#E6EBEF; --muted:#94A1AD;
+      --teal:#4FB3C0; --teal-soft:#173238; --teal-ink:#BFE3E8;
+      --amber:#F0A24A; --amber-soft:#3D2A12; --amber-ink:#F7D6AE;
+      --line:#2A353F; --code-bg:#202A33; --warn:#F08C84; --warn-soft:#3A1F1D;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#0F1519; --surface:#182027; --ink:#E6EBEF; --muted:#94A1AD;
+    --teal:#4FB3C0; --teal-soft:#173238; --teal-ink:#BFE3E8;
+    --amber:#F0A24A; --amber-soft:#3D2A12; --amber-ink:#F7D6AE;
+    --line:#2A353F; --code-bg:#202A33; --warn:#F08C84; --warn-soft:#3A1F1D;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans KR",system-ui,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;font-size:14px;line-height:1.55;margin:0}
+  .page{max-width:1180px;margin:0 auto;padding:36px 24px 72px}
+  code,.mono{font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace}
+  code{font-size:12px;background:var(--code-bg);padding:1px 5px;border-radius:3px;white-space:nowrap}
+  td code{white-space:normal}
+  a{color:var(--teal)}
+  h1{font-size:30px;line-height:1.2;font-weight:600;margin:0 0 8px;text-wrap:balance;letter-spacing:-.01em}
+  h2{font-size:20px;line-height:1.3;font-weight:600;margin:0 0 4px;text-wrap:balance}
+  h3{font-size:15px;font-weight:600;margin:20px 0 8px}
+  p{margin:0 0 10px;max-width:72ch}
+  .eyebrow{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+  .lede{color:var(--muted);font-size:15px;max-width:70ch}
+  .meta{color:var(--muted);font-size:12.5px;margin-top:10px;display:flex;flex-wrap:wrap;gap:6px 14px}
+  section{margin-top:44px}
+  .sec-head{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:8px 20px;margin-bottom:14px}
+  .sec-head p{margin:0;color:var(--muted);font-size:13px}
+
+  .chip{display:inline-flex;align-items:center;gap:6px;padding:1px 9px;border-radius:999px;font-size:11.5px;font-weight:600;letter-spacing:.02em;white-space:nowrap;line-height:1.6;vertical-align:middle}
+  .chip.ex{background:var(--teal-soft);color:var(--teal-ink);border:1px solid var(--teal)}
+  .chip.nw{background:var(--amber-soft);color:var(--amber-ink);border:1px solid var(--amber)}
+  .chip.pl{background:transparent;color:var(--amber-ink);border:1px dashed var(--amber)}
+  .chip.role{background:var(--code-bg);color:var(--ink);border:1px solid var(--line);font-weight:500}
+  .chip.warn{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn)}
+  .legend{display:flex;flex-wrap:wrap;gap:8px 10px;margin:16px 0 0;align-items:center}
+  .legend .hint{color:var(--muted);font-size:12.5px}
+
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-top:22px}
+  .stat{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:12px 14px 10px}
+  .stat .n{font-size:26px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.1;display:flex;align-items:baseline;gap:8px}
+  .stat .n small{font-size:13px;font-weight:500;color:var(--muted)}
+  .stat .l{font-size:12px;color:var(--muted);margin-top:4px}
+  .stat.ex{border-top:3px solid var(--teal)} .stat.nw{border-top:3px solid var(--amber)}
+
+  /* 지도 시트: 인쇄된 지도처럼 테마와 무관하게 밝은 종이 위에 그린다 (mermaid 노드 색이 고정값이므로 일관 유지) */
+  .sheet{background:#F7F9FA;border:1px solid #C3CCD4;border-radius:8px;padding:14px 10px 6px;overflow-x:auto;color:#1B2430}
+  .sheet .map{width:max-content;min-width:100%;transform-origin:0 0}
+  .sheet pre.mermaid{margin:0;background:transparent;font-family:inherit}
+  .sheet pre.mermaid svg{display:block;max-width:none!important;height:auto}
+  .map-scroll{overflow:auto;max-height:82vh;border-radius:6px}
+  .zoom{display:flex;align-items:center;gap:6px;padding:0 6px 10px;font-size:12px;color:#5B6774}
+  .zoom button{font:inherit;font-weight:600;color:#1B2430;background:#FFFFFF;border:1px solid #C3CCD4;border-radius:4px;min-width:30px;height:26px;cursor:pointer}
+  .zoom button:hover{border-color:#2A7F8C;color:#2A7F8C}
+  .zoom button:focus-visible{outline:2px solid #2A7F8C;outline-offset:1px}
+  .zoom output{min-width:44px;text-align:center;font-variant-numeric:tabular-nums;color:#1B2430}
+  .zoom .hint{margin-left:auto}
+  .sheet .cap{font-size:12px;color:#5B6774;padding:6px 6px 4px;display:flex;flex-wrap:wrap;gap:6px 18px}
+  .sheet .cap b{font-weight:600}
+  .swatch{display:inline-block;width:12px;height:12px;border-radius:2px;vertical-align:-1px;margin-right:5px}
+
+  .tbl-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
+  table{border-collapse:collapse;width:100%;min-width:960px;font-size:13px}
+  th{text-align:left;font-weight:600;color:var(--muted);font-size:11.5px;letter-spacing:.04em;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--surface);white-space:nowrap}
+  td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:0}
+  td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  tr.ex td:first-child{box-shadow:inset 3px 0 0 var(--teal)}
+  tr.nw td:first-child{box-shadow:inset 3px 0 0 var(--amber)}
+  tr.pl td:first-child{box-shadow:inset 3px 0 0 var(--amber);}
+  tr.pl td:first-child{background:repeating-linear-gradient(180deg,var(--surface) 0 6px,transparent 6px 10px) left/3px 100% no-repeat}
+  td .sub{display:block;color:var(--muted);font-size:12px;margin-top:2px}
+  .db-title{display:flex;align-items:center;gap:10px;margin:22px 0 8px}
+  .db-title h3{margin:0}
+  .db-title .desc{color:var(--muted);font-size:12.5px}
+
+  .tl-wrap{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:14px 18px 8px;overflow-x:auto}
+  .tl{position:relative;height:150px;min-width:900px;border-bottom:1px solid var(--line)}
+  .tick{position:absolute;bottom:0;height:6px;border-left:1px solid var(--line)}
+  .tick span{position:absolute;top:8px;left:0;transform:translateX(-50%);font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .mk{position:absolute;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11.5px;white-space:nowrap}
+  .mk .dot{width:12px;height:12px;border-radius:50%;background:var(--teal);border:2px solid var(--teal)}
+  .mk.pl .dot{background:transparent;border:2px dashed var(--amber)}
+  .mk.nw .dot{background:var(--amber);border-color:var(--amber)}
+  .mk.r{transform:translateX(-6px);align-items:flex-start}
+  .mk .lab{color:var(--ink)}
+  .mk .lab small{color:var(--muted)}
+  .band{position:absolute;height:12px;border-radius:3px}
+  .band.slots{border:1px dashed var(--amber);background:var(--amber-soft)}
+  .band.run{background:var(--amber)}
+  .band.window{background:repeating-linear-gradient(135deg,var(--amber-soft) 0 5px,transparent 5px 10px);border:1px dashed var(--amber)}
+  .band .lab{position:absolute;left:0;top:14px;font-size:11.5px;white-space:nowrap;color:var(--ink)}
+  .band .lab small{color:var(--muted)}
+
+  .matrix td.c{text-align:center;white-space:nowrap}
+  .pv{display:inline-block;min-width:22px;padding:0 6px;border-radius:3px;font-size:11.5px;font-weight:600;font-family:"IBM Plex Mono",ui-monospace,monospace}
+  .pv.ex{background:var(--teal-soft);color:var(--teal-ink)} .pv.nw{background:var(--amber-soft);color:var(--amber-ink)}
+  .pv.none{color:var(--muted);font-weight:400}
+
+  .steps{list-style:none;margin:0;padding:0;counter-reset:s}
+  .steps>li{position:relative;padding:12px 16px 12px 58px;border:1px solid var(--line);background:var(--surface);border-radius:6px;margin-bottom:8px;counter-increment:s}
+  .steps>li::before{content:counter(s);position:absolute;left:16px;top:12px;width:28px;height:28px;border-radius:50%;background:var(--ink);color:var(--ground);font-weight:600;font-size:14px;display:flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums}
+  .steps .who{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px;align-items:center}
+  .steps .who b{font-weight:600}
+  .steps ul{margin:4px 0 0;padding-left:18px;color:var(--ink)}
+  .steps li li{margin:2px 0}
+  .steps .dep{color:var(--muted);font-size:12.5px;margin-top:4px}
+
+  .notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+  .note{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:12px 14px;font-size:13px}
+  .note b{display:block;margin-bottom:4px;font-weight:600}
+  .note.warn{border-left:3px solid var(--warn)}
+  .note.info{border-left:3px solid var(--teal)}
+  .foot{margin-top:40px;color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding-top:12px}
+  @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+  @media (max-width:640px){h1{font-size:24px}.page{padding:24px 14px 56px}}
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <div class="eyebrow">token-data-pipeline · ClickHouse 클러스터 gpu-monitoring</div>
+    <h1>토큰 파이프라인 배포 지도</h1>
+    <p class="lede">이미 배포된 토큰 사용량 파이프라인과, PR #14(Plan 6a)로 들어갈 메트릭 DDL·GRANT, 그 위에서 돌 6b/6c 잡까지 — 원천에서 소비까지 한 장에 놓았다.</p>
+    <div class="meta">
+      <span>기준 2026-09-07</span>
+      <span>브랜치 <code>feat/token-metrics-schema</code> @ <code>df5956b</code> (PR #14 draft, CI 4/4)</span>
+      <span>기존 = <code>main</code> 517a175 시점의 배포분</span>
+    </div>
+    <div class="legend">
+      <span class="chip ex">기존 · 배포됨</span>
+      <span class="chip nw">신규 · 6a DDL/GRANT (PR #14)</span>
+      <span class="chip pl">예정 · 6b/6c 잡 (플랜 확정, 미구현)</span>
+      <span class="hint">모든 사내 테이블은 <code>_local</code>(ReplicatedMergeTree) + <code>_dist</code>(Distributed) 쌍 · INSERT는 <code>_dist</code>, ALTER DELETE는 <code>_local</code></span>
+    </div>
+
+    <div class="stats">
+      <div class="stat ex"><div class="n">14 <small>물리 28</small></div><div class="l">기존 테이블 (fact 3 · gpu_data 7 · mart 4)</div></div>
+      <div class="stat nw"><div class="n">13 <small>물리 26</small></div><div class="l">신규 테이블 (fact 4 · gpu_data 5 · mart 4)</div></div>
+      <div class="stat ex"><div class="n">2 <small>+ 예정 2</small></div><div class="l">CronJob (수집 1 · 마트 1 씩)</div></div>
+      <div class="stat nw"><div class="n">3</div><div class="l">예정 Job 템플릿 (rerun 2 · manual 1)</div></div>
+      <div class="stat ex"><div class="n">1 <small>mart</small></div><div class="l">운영 계정 (공유 · 동료 소유) + 격리 검증용 token_verify</div></div>
+      <div class="stat nw"><div class="n">35 <small>+ 40</small></div><div class="l">GRANT 문 (기존 4파일 · 신규 3파일)</div></div>
+    </div>
+  </header>
+
+  <!-- ───────────── 흐름 지도 ───────────── -->
+  <section>
+    <div class="sec-head">
+      <div>
+        <div class="eyebrow">흐름 지도</div>
+        <h2>원천 → 수집 → fact / dim → 마트 잡 → mart / view → 소비</h2>
+      </div>
+      <p>실선 = 매일 쓰는 경로 · 점선 = 교차검증(P2, 별도 모듈) · 마트 잡이 읽는 dim/mart는 표에서 확인</p>
+    </div>
+    <div class="sheet">
+      <div class="zoom" aria-label="지도 확대 조절">
+        <button type="button" data-zoom="out" aria-label="축소">−</button>
+        <output id="zoom-val">100%</output>
+        <button type="button" data-zoom="in" aria-label="확대">+</button>
+        <button type="button" data-zoom="reset">원래 크기</button>
+        <span class="hint">그림은 실제 크기로 그려지고 상자 안에서 가로·세로 스크롤된다</span>
+      </div>
+      <div class="map-scroll"><div class="map" id="map">
+<pre class="mermaid">
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#FFFFFF','primaryTextColor':'#1B2430','primaryBorderColor':'#8C98A4','lineColor':'#6B7885','clusterBkg':'#EDF1F4','clusterBorder':'#C3CCD4','titleColor':'#1B2430','edgeLabelBackground':'#F7F9FA','fontSize':'15px'},'flowchart':{'useMaxWidth':false,'htmlLabels':false,'curve':'basis','nodeSpacing':22,'rankSpacing':56,'padding':16,'wrappingWidth':260}}}%%
+flowchart LR
+  subgraph SRC["원천"]
+    direction TB
+    S1["서비스 토큰 사용량 API"]
+    S2["서비스 /v1/metrics<br/>서비스 담당자 구현"]
+    S5["manual-v0 수기 CSV<br/>8/26~9/8"]
+    S4["로스터 CSV · 모델 카탈로그 시트<br/>TCO · 할당 · 벤더 가격 CSV"]
+    S3["추론엔진 /metrics<br/>노출 서비스 소수"]
+  end
+  subgraph COL["수집 · 반입"]
+    direction TB
+    J1["CronJob token-usage-collector<br/>02:00 KST"]
+    J3["CronJob token-metrics-collector<br/>02:05~09:05 · 8슬롯"]
+    J6["Job token-metrics-collector-manual-*<br/>manual_load.py"]
+    J5["수동 INSERT SQL<br/>csv_to_* 생성기 · seed"]
+  end
+  subgraph FACT["fact"]
+    direction TB
+    F1["raw_token_usage_1d<br/>raw_token_usage_summary_1d<br/>collect_audit_1d"]
+    F2["raw_token_metrics_gpu_1d<br/>raw_token_metrics_serving_1d<br/>raw_token_metrics_summary_1d<br/>collect_audit_metrics_1d"]
+  end
+  subgraph DIM["gpu_data · dim"]
+    direction TB
+    D1["dim_token_service"]
+    D4["dim_token_metrics_service"]
+    D2["dim_token_user_org<br/>dim_token_model"]
+    D5["dim_token_model_alias<br/>dim_token_gpu_tco<br/>dim_token_gpu_allocation<br/>dim_token_vendor_price"]
+  end
+  subgraph MJ["마트 잡"]
+    direction TB
+    J2["CronJob token-mart-daily<br/>04:00 KST"]
+    J4["CronJob token-mart-metrics<br/>10:20 KST"]
+  end
+  subgraph MART["mart"]
+    direction TB
+    M1["token_usage_1d<br/>agg_token_service_1d<br/>agg_token_org_1d<br/>agg_token_model_1d"]
+    M2["agg_token_model_cost_1d · M1<br/>token_metrics_check_1d · M3<br/>agg_token_model_share_1d · M4<br/>agg_token_gpu_group_1d · M2"]
+  end
+  subgraph VIEW["gpu_data · view"]
+    D3["view_token_usage_1d<br/>view_token_usage_service_1d<br/>view_token_usage_org_1d<br/>view_token_usage_model_1d"]
+  end
+  subgraph OUT["소비"]
+    direction TB
+    O1["대시보드"]
+    O2["비용 · 점유 · 검사표 조회"]
+    O3["교차검증 P2<br/>별도 모듈 · 미구축"]
+  end
+  S1 --> J1
+  J1 --> F1
+  J1 --> D1
+  S2 --> J3
+  J3 --> F2
+  J3 --> D4
+  S5 --> J6
+  J6 --> F2
+  S4 --> J5
+  J5 --> D2
+  J5 --> D5
+  F1 --> J2
+  D1 --> J2
+  D2 --> J2
+  J2 --> M1
+  J2 --> D3
+  F2 --> J4
+  D4 --> J4
+  D5 --> J4
+  J4 --> M2
+  D3 --> O1
+  M2 --> O2
+  S3 -.-> O3
+  M2 -.-> O3
+  classDef ex fill:#DCEDF0,stroke:#2A7F8C,stroke-width:1.4px,color:#0F3238;
+  classDef nw fill:#FBE6CB,stroke:#D9791C,stroke-width:1.4px,color:#4A2A08;
+  classDef pl fill:#FFF4E6,stroke:#D9791C,stroke-width:1.4px,stroke-dasharray:5 3,color:#4A2A08;
+  classDef src fill:#FFFFFF,stroke:#8C98A4,color:#1B2430;
+  class S1,S2,S3,S4,S5 src;
+  class J1,J2,J5,F1,D1,D2,D3,M1,O1 ex;
+  class F2,D4,D5,M2 nw;
+  class J3,J4,J6,O2,O3 pl;
+</pre>
+      </div></div>
+      <div class="cap">
+        <span><span class="swatch" style="background:#DCEDF0;border:1px solid #2A7F8C"></span><b>기존</b> 배포됨</span>
+        <span><span class="swatch" style="background:#FBE6CB;border:1px solid #D9791C"></span><b>신규</b> 6a DDL (PR #14)</span>
+        <span><span class="swatch" style="background:#FFF4E6;border:1px dashed #D9791C"></span><b>예정</b> 6b/6c 잡 · 소비</span>
+        <span><span class="swatch" style="background:#FFFFFF;border:1px solid #8C98A4"></span>원천 (레포 밖)</span>
+        <span>token-mart-daily는 dim_token_user_org·dim_token_model도 읽고, token-mart-metrics는 mart.token_usage_1d·agg_token_service_1d·dim_token_service도 읽는다 (GRANT 표 참조)</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────── DDL 인벤토리 ───────────── -->
+  <section>
+    <div class="sec-head">
+      <div>
+        <div class="eyebrow">DDL 인벤토리</div>
+        <h2>DB별 테이블 27종 — 무엇이 이미 있고, 무엇이 9/9에 들어가는가</h2>
+      </div>
+      <p>열 수는 <code>_local</code> 기준 · 모든 fact/mart/view 테이블은 TTL 25개월 · dim은 PARTITION/TTL 없음</p>
+    </div>
+
+    <div class="db-title"><h3><code>fact</code></h3><span class="desc">공유 DB — 수집기 원시 적재. 수집기 <code>accounts.sql</code>이 <code>CREATE DATABASE IF NOT EXISTS fact</code>를 냈다</span></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>테이블</th><th>상태</th><th>열</th><th>ORDER BY</th><th>PARTITION</th><th>쓰기</th><th>읽기</th><th>DDL 파일</th></tr></thead>
+        <tbody>
+          <tr class="ex"><td><code>raw_token_usage_1d</code><span class="sub">사용자×모델 일 단위 원시</span></td><td><span class="chip ex">기존</span></td><td class="num">15</td><td><code>(date, service, user_type, user_id, model)</code></td><td><code>toYYYYMMDD(date)</code></td><td>token-usage-collector</td><td>token-mart-daily STEP 1 · invariants</td><td><code>collectors/token-usage/ddl/company/raw_token_usage.sql</code></td></tr>
+          <tr class="ex"><td><code>raw_token_usage_summary_1d</code><span class="sub">서비스 일 합계 (커버리지 판정)</span></td><td><span class="chip ex">기존</span></td><td class="num">15</td><td><code>(date, service)</code></td><td><code>toYYYYMM(date)</code></td><td>token-usage-collector</td><td>token-mart-daily STEP 0 게이트 · invariants(reconcile)</td><td>〃</td></tr>
+          <tr class="ex"><td><code>collect_audit_1d</code><span class="sub">--replace 감사 (append-only)</span></td><td><span class="chip ex">기존</span></td><td class="num">11</td><td><code>(date, service, replaced_at)</code></td><td><code>toYYYYMM(date)</code></td><td>token-usage-collector</td><td>운영 조회</td><td>〃</td></tr>
+          <tr class="nw"><td><code>raw_token_metrics_gpu_1d</code><span class="sub">모델×GPU 유형 GPU Hour</span></td><td><span class="chip nw">신규</span></td><td class="num">12</td><td><code>(date, service, model, gpu_type, category)</code></td><td><code>toYYYYMM(date)</code></td><td>token-metrics-collector · manual · rerun</td><td>token-mart-metrics (M1·M2·M3)</td><td><code>collectors/token-metrics/ddl/company/raw_token_metrics.sql</code></td></tr>
+          <tr class="nw"><td><code>raw_token_metrics_serving_1d</code><span class="sub">TTFT/ITL/E2E 백분위 · outputTps</span></td><td><span class="chip nw">신규</span></td><td class="num">15</td><td><code>(date, service, model, metric, name)</code></td><td><code>toYYYYMM(date)</code></td><td>token-metrics-collector · manual · rerun</td><td>token-mart-metrics (M3)</td><td>〃</td></tr>
+          <tr class="nw"><td><code>raw_token_metrics_summary_1d</code><span class="sub">서비스 일 앵커 — 슬롯 존재 판정</span></td><td><span class="chip nw">신규</span></td><td class="num">15</td><td><code>(date, service)</code></td><td><code>toYYYYMM(date)</code></td><td>token-metrics-collector · manual · rerun</td><td>수집기(앵커 스킵) · token-mart-metrics 커버리지</td><td>〃</td></tr>
+          <tr class="nw"><td><code>collect_audit_metrics_1d</code><span class="sub">--replace/manual 감사 (append-only, INSERT만)</span></td><td><span class="chip nw">신규</span></td><td class="num">9</td><td><code>(date, service, replaced_at)</code></td><td><code>toYYYYMM(date)</code></td><td>token-metrics-collector rerun · manual</td><td>운영 조회</td><td>〃</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="db-title"><h3><code>gpu_data</code></h3><span class="desc">동료 소유 DB — CREATE DATABASE 없음. 토큰 파이프라인 객체는 <code>dim_token_*</code> / <code>view_token_usage_*</code> 접두어 규칙</span></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>테이블</th><th>상태</th><th>열</th><th>ORDER BY</th><th>PARTITION</th><th>쓰기</th><th>읽기</th><th>DDL 파일</th></tr></thead>
+        <tbody>
+          <tr class="ex"><td><code>dim_token_service</code><span class="sub">서비스 레지스트리 (source_type별 동기화)</span></td><td><span class="chip ex">기존</span></td><td class="num">7</td><td><code>(service)</code></td><td>—</td><td>token-usage-collector</td><td>token-mart-daily · token-metrics-collector · token-mart-metrics</td><td><code>collectors/token-usage/ddl/company/dim_token_service.sql</code></td></tr>
+          <tr class="ex"><td><code>dim_token_user_org</code><span class="sub">사용자→조직 SCD (로스터)</span></td><td><span class="chip ex">기존</span></td><td class="num">7</td><td><code>(user_id, effective_from)</code></td><td>—</td><td>수동 <code>csv_to_dim_user_org_insert.py</code> → admin INSERT</td><td>token-mart-daily (org 매핑)</td><td><code>assets/user-org/ddl/company/dim_token_user_org.sql</code></td></tr>
+          <tr class="ex"><td><code>dim_token_model</code><span class="sub">모델 카탈로그 SCD</span></td><td><span class="chip ex">기존</span></td><td class="num">10</td><td><code>(model, effective_from)</code></td><td>—</td><td>수동 <code>seed_dim_token_model.sql</code> · 카탈로그 INSERT</td><td>token-mart-daily (model/provider)</td><td><code>assets/model-catalog/ddl/company/dim_token_model.sql</code></td></tr>
+          <tr class="ex"><td><code>view_token_usage_1d</code> · <code>view_token_usage_service_1d</code> · <code>view_token_usage_org_1d</code> · <code>view_token_usage_model_1d</code><span class="sub">대시보드용 물리 사본 (CREATE VIEW 아님) — mart 4종과 동일 스키마·정렬</span></td><td><span class="chip ex">기존</span></td><td class="num">18 · 25 · 13 · 12</td><td><code>(date, service, user_type, user_id, model)</code> · <code>(date, service)</code> · <code>(date, org_path)</code> · <code>(date, model, provider)</code></td><td><code>toYYYYMMDD</code> · <code>toYYYYMM</code> ×3</td><td>token-mart-daily STEP 2</td><td>대시보드</td><td><code>mart/token-usage/ddl/company/view_token_usage.sql</code></td></tr>
+          <tr class="nw"><td><code>dim_token_metrics_service</code><span class="sub">메트릭 서비스 레지스트리 — <code>expect_gpu</code>/<code>expect_serving</code> 포함</span></td><td><span class="chip nw">신규</span></td><td class="num">12</td><td><code>(service)</code></td><td>—</td><td>token-metrics-collector (yaml 동기화)</td><td>token-mart-metrics · seed 검증</td><td><code>collectors/token-metrics/ddl/company/dim_token_metrics_service.sql</code></td></tr>
+          <tr class="nw"><td><code>dim_token_model_alias</code><span class="sub">모델 별칭 → 정규 모델 SCD</span></td><td><span class="chip nw">신규</span></td><td class="num">6</td><td><code>(alias, effective_from)</code></td><td>—</td><td>수동 <code>sheet_to_dim_token_model_alias_insert.py</code> · seed</td><td>token-mart-metrics (M1)</td><td><code>assets/model-catalog/ddl/company/dim_token_model_alias.sql</code></td></tr>
+          <tr class="nw"><td><code>dim_token_gpu_tco</code><span class="sub">GPU 유형별 TCO SCD</span></td><td><span class="chip nw">신규</span></td><td class="num">6</td><td><code>(gpu_type, effective_from)</code></td><td>—</td><td>수동 <code>csv_to_layer_c_dim_insert.py</code> · seed</td><td>token-mart-metrics (M1·M2)</td><td><code>assets/model-catalog/ddl/company/dim_token_gpu_tco.sql</code></td></tr>
+          <tr class="nw"><td><code>dim_token_gpu_allocation</code><span class="sub">서비스 그룹×GPU 유형 할당 SCD</span></td><td><span class="chip nw">신규</span></td><td class="num">6</td><td><code>(service_group, gpu_type, effective_from)</code></td><td>—</td><td>수동 <code>csv_to_layer_c_dim_insert.py</code> · seed</td><td>token-mart-metrics (M2)</td><td><code>assets/model-catalog/ddl/company/dim_token_gpu_allocation.sql</code></td></tr>
+          <tr class="nw"><td><code>dim_token_vendor_price</code><span class="sub">벤더 단가 SCD</span></td><td><span class="chip nw">신규</span></td><td class="num">9</td><td><code>(provider, model, tier, effective_from)</code></td><td>—</td><td>수동 <code>csv_to_layer_c_dim_insert.py</code> · seed</td><td>token-mart-metrics (M1·M4)</td><td><code>assets/model-catalog/ddl/company/dim_token_vendor_price.sql</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="db-title"><h3><code>mart</code></h3><span class="desc">동료 소유 공유 DB — 8개 mart/view 테이블 전부 <code>CONSTRAINT check_created_by CHECK created_by != ''</code> (파이프라인은 <code>'token-pipeline'</code>)</span></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>테이블</th><th>상태</th><th>열</th><th>ORDER BY</th><th>PARTITION</th><th>쓰기</th><th>읽기</th><th>DDL 파일</th></tr></thead>
+        <tbody>
+          <tr class="ex"><td><code>token_usage_1d</code><span class="sub">fact와 파티션·정렬·샤딩키 co-location</span></td><td><span class="chip ex">기존</span></td><td class="num">18</td><td><code>(date, service, user_type, user_id, model)</code></td><td><code>toYYYYMMDD(date)</code></td><td>token-mart-daily STEP 1</td><td>STEP 2 view · token-mart-metrics · invariants</td><td><code>mart/token-usage/ddl/company/mart_tables.sql</code></td></tr>
+          <tr class="ex"><td><code>agg_token_service_1d</code></td><td><span class="chip ex">기존</span></td><td class="num">25</td><td><code>(date, service)</code></td><td><code>toYYYYMM(date)</code></td><td>token-mart-daily STEP 1</td><td>STEP 2 view · token-mart-metrics</td><td>〃</td></tr>
+          <tr class="ex"><td><code>agg_token_org_1d</code></td><td><span class="chip ex">기존</span></td><td class="num">13</td><td><code>(date, org_path)</code></td><td><code>toYYYYMM(date)</code></td><td>token-mart-daily STEP 1</td><td>STEP 2 view</td><td>〃</td></tr>
+          <tr class="ex"><td><code>agg_token_model_1d</code></td><td><span class="chip ex">기존</span></td><td class="num">12</td><td><code>(date, model, provider)</code></td><td><code>toYYYYMM(date)</code></td><td>token-mart-daily STEP 1</td><td>STEP 2 view</td><td>〃</td></tr>
+          <tr class="nw"><td><code>agg_token_model_cost_1d</code><span class="sub">M1 · 모델별 비용 (핵심)</span></td><td><span class="chip nw">신규</span></td><td class="num">28</td><td><code>(date, service, model)</code></td><td><code>toYYYYMM(date)</code></td><td>token-mart-metrics 1번째</td><td>비용 조회 · M4</td><td><code>mart/token-metrics/ddl/company/mart_metrics_tables.sql</code></td></tr>
+          <tr class="nw"><td><code>token_metrics_check_1d</code><span class="sub">M3 · 검사표 (core 13 checks)</span></td><td><span class="chip nw">신규</span></td><td class="num">12</td><td><code>(date, service, check_name, model, gpu_type)</code></td><td><code>toYYYYMM(date)</code></td><td>token-mart-metrics 2번째</td><td>운영 검사 조회</td><td>〃</td></tr>
+          <tr class="nw"><td><code>agg_token_model_share_1d</code><span class="sub">M4 · 모델 점유 (stretch)</span></td><td><span class="chip nw">신규</span></td><td class="num">14</td><td><code>(date, model, service, provider_service)</code></td><td><code>toYYYYMM(date)</code></td><td>token-mart-metrics 3번째</td><td>점유 조회</td><td>〃</td></tr>
+          <tr class="nw"><td><code>agg_token_gpu_group_1d</code><span class="sub">M2 · 서비스 그룹×GPU (stretch)</span></td><td><span class="chip nw">신규</span></td><td class="num">23</td><td><code>(date, service_group, gpu_type)</code></td><td><code>toYYYYMM(date)</code></td><td>token-mart-metrics 4번째</td><td>GPU 그룹 조회</td><td>〃</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="notes" style="margin-top:14px">
+      <div class="note info"><b>환경 변형은 같은 DDL의 파생물</b>stage: <code>ddl/stage/*</code> — MergeTree, 클러스터 없음 (<code>tools/gen_stage_ddl.py</code> 생성). company-verify: <code>ddl/company-verify/*</code> — 격리 DB <code>token_verify_fact</code>/<code>token_verify_dim</code>/<code>token_verify_mart</code>, 계정 <code>token_verify</code> (<code>tools/gen_verify_ddl.py</code> 생성 — 레포에서 유일하게 <code>CREATE USER</code>를 담는 파일).</div>
+      <div class="note info"><b>seed 4파일은 플레이스홀더</b><code>seed_dim_token_model_alias / gpu_tco / gpu_allocation / vendor_price.sql</code> — <code>effective_from 2026-01-01</code>, <code>_dist</code>로 NOT IN 가드 INSERT. 실값은 생성기 산출 SQL(gitignore)로 admin이 넣는다. 실 입력(메타데이터 xlsx/csv, TCO·할당·벤더 CSV)과 산출 SQL은 레포에 들어오지 않는다.</div>
+    </div>
+  </section>
+
+  <!-- ───────────── 잡 ───────────── -->
+  <section>
+    <div class="sec-head">
+      <div>
+        <div class="eyebrow">잡</div>
+        <h2>하루의 시간표 — 수집 2 · 마트 2, 그리고 되돌리기 창</h2>
+      </div>
+      <p>Asia/Seoul · 예정 잡의 시각은 설계 §5.2/§6.1 산식과 연동 (단독 수정 금지)</p>
+    </div>
+    <div class="tl-wrap">
+      <div class="tl">
+        <div class="tick" style="left:0%"><span>00:00</span></div>
+        <div class="tick" style="left:8.333%"><span>02:00</span></div>
+        <div class="tick" style="left:16.667%"><span>04:00</span></div>
+        <div class="tick" style="left:25%"><span>06:00</span></div>
+        <div class="tick" style="left:33.333%"><span>08:00</span></div>
+        <div class="tick" style="left:41.667%"><span>10:00</span></div>
+        <div class="tick" style="left:50%"><span>12:00</span></div>
+        <div class="tick" style="left:58.333%"><span>14:00</span></div>
+        <div class="tick" style="left:66.667%"><span>16:00</span></div>
+        <div class="tick" style="left:75%"><span>18:00</span></div>
+        <div class="tick" style="left:83.333%"><span>20:00</span></div>
+        <div class="tick" style="left:91.667%"><span>22:00</span></div>
+        <div class="tick" style="left:100%"><span>24:00</span></div>
+
+        <div class="mk ex r" style="left:8.333%;top:4px"><span class="lab">token-usage-collector <small>02:00</small></span><span class="dot"></span></div>
+        <div class="mk ex r" style="left:16.667%;top:30px"><span class="lab">token-mart-daily <small>04:00</small></span><span class="dot"></span></div>
+
+        <div class="band slots" style="left:8.68%;width:29.17%;top:66px"><span class="lab">token-metrics-collector <small>02:05 → 09:05 · 매시 5분 · 8슬롯 (5 2-9 * * *)</small></span></div>
+        <div class="mk pl" style="left:8.68%;top:66px"><span class="dot"></span></div>
+        <div class="mk pl" style="left:12.85%;top:66px"><span class="dot"></span></div>
+        <div class="mk pl" style="left:17.01%;top:66px"><span class="dot"></span></div>
+        <div class="mk pl" style="left:21.18%;top:66px"><span class="dot"></span></div>
+        <div class="mk pl" style="left:25.35%;top:66px"><span class="dot"></span></div>
+        <div class="mk pl" style="left:29.51%;top:66px"><span class="dot"></span></div>
+        <div class="mk pl" style="left:33.68%;top:66px"><span class="dot"></span></div>
+        <div class="mk pl" style="left:37.85%;top:66px"><span class="dot"></span></div>
+
+        <div class="band run" style="left:43.06%;width:2.08%;top:118px"></div>
+        <div class="band window" style="left:45.14%;width:20%;top:118px"><span class="lab">rerun 창 <small>≥ 10:50 (token-mart-metrics-rerun-*)</small></span></div>
+        <div class="mk nw r" style="left:43.06%;top:100px"><span class="lab">token-mart-metrics <small>10:20 · activeDeadline 1800s → 10:50</small></span><span class="dot"></span></div>
+      </div>
+    </div>
+
+    <h3 style="margin-top:22px">CronJob · Job · 수동 경로</h3>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>이름</th><th>상태</th><th>종류</th><th>스케줄 / 트리거</th><th>실행</th><th>Secret · ConfigMap (이름만)</th><th>읽기 → 쓰기</th><th>되돌리기 · 예산</th></tr></thead>
+        <tbody>
+          <tr class="ex"><td><code>token-usage-collector</code></td><td><span class="chip ex">기존</span></td><td>CronJob</td><td><code>0 2 * * *</code> Asia/Seoul</td><td><code>python -m app.main</code></td><td><code>token-usage-ch-secret</code> · <code>token-usage-endpoints</code> · <code>token-usage-ca-bundle</code>(선택)</td><td>서비스 API · dim_token_service → fact 3 + dim_token_service</td><td><code>collectors/token-usage/tools/rerun.py</code> (--replace) · 예산 45 = 3×15</td></tr>
+          <tr class="ex"><td><code>token-mart-daily</code></td><td><span class="chip ex">기존</span></td><td>CronJob</td><td><code>0 4 * * *</code> Asia/Seoul</td><td><code>python -m app.batch</code></td><td><code>token-mart-ch-secret</code></td><td>STEP 0 summary 커버리지 게이트 → STEP 1 fact + dim 3종 → mart 4 → STEP 2 gpu_data view 4</td><td><code>mart/token-usage/tools/rerun.py</code> (dim 정정 후) · 예산 64 = 4×16</td></tr>
+          <tr class="ex"><td>수동 반입</td><td><span class="chip ex">기존</span></td><td>admin 수동</td><td>로스터·카탈로그 변경 시</td><td><code>assets/user-org/csv_to_dim_user_org_insert.py</code> · <code>seed_dim_token_model.sql</code></td><td>—</td><td>CSV/시트 → dim_token_user_org · dim_token_model</td><td><code>tools/data-admin/delete_data.py</code>는 dim_token_user_org 제외 (admin 수동 경로)</td></tr>
+          <tr class="ex"><td>불변식 검증</td><td><span class="chip ex">기존</span></td><td>수동 / CI</td><td>배포 후 · 이상 시</td><td><code>tools/verify/run_invariants.py</code> (<code>invariants.sql</code> 7개 불변식)</td><td>—</td><td>fact · mart 읽기 전용</td><td>—</td></tr>
+          <tr class="pl"><td><code>token-metrics-collector</code></td><td><span class="chip pl">예정 6b</span></td><td>CronJob</td><td><code>5 2-9 * * *</code> Asia/Seoul · 8슬롯 · Forbid · startingDeadline 540s · activeDeadline 3000s · backoffLimit 0</td><td><code>python -m app.main</code></td><td><code>token-metrics-ch-secret</code>(CH_USER mart) · <code>token-metrics-endpoints</code> · <code>token-metrics-ca-bundle</code>(선택) · <code>registry-pull-secret</code>(공유)</td><td>/v1/metrics · dim_token_service → fact metrics 4 + dim_token_metrics_service (앵커 있으면 슬롯 스킵 = mutation 0)</td><td>Job <code>token-metrics-collector-rerun-&lt;epoch&gt;-&lt;i&gt;</code> (rerun.py, chunk-days 1..15, --replace ≤3 mutation/일)</td></tr>
+          <tr class="pl"><td><code>token-metrics-collector-manual-&lt;ts&gt;</code></td><td><span class="chip pl">예정 6b</span></td><td>Job + ConfigMap <code>token-metrics-manual-&lt;ts&gt;</code></td><td>수기 CSV 도착 시 (M14-수기 · 9/9 12:00)</td><td><code>manual_load.py</code></td><td>위와 동일 Secret</td><td>manual-v0 CSV 3파일 → fact metrics 3 + audit</td><td>audit에 manual 기록 · 같은 --replace 예산</td></tr>
+          <tr class="pl"><td><code>token-mart-metrics</code></td><td><span class="chip pl">예정 6c</span></td><td>CronJob</td><td><code>20 10 * * *</code> Asia/Seoul · Forbid · startingDeadline 1800s</td><td><code>python -m app.batch</code></td><td><code>token-mart-metrics-ch-secret</code> · <code>registry-pull-secret</code>(공유)</td><td>fact metrics 3 · 신규 dim 4 · dim_token_metrics_service · dim_token_service · mart.token_usage_1d · agg_token_service_1d → M1 → M3 → M4 → M2</td><td>Job <code>token-mart-metrics-rerun-&lt;from&gt;-&lt;to&gt;-&lt;epoch&gt;</code> (≥10:50 창, chunk-days ≤16, ≤4 mutation/일)</td></tr>
+          <tr class="pl"><td><code>install.sh</code> ×2</td><td><span class="chip pl">예정</span></td><td>operator 스크립트</td><td>9/9 배포 시</td><td>6b: 7단계, 프리플라이트 [4/7] (DB 2개 존재 · dim_token_service_dist count) · 6c: 6단계, 프리플라이트 [3/6] (DESCRIBE 3테이블 13컬럼 읽기 계약, exit 3)</td><td>Secret/ConfigMap 생성 · <code>registry-pull-secret</code>은 없을 때만 생성</td><td>테이블 DDL만 적용 (GRANT는 admin 별도)</td><td><code>-verify</code> 오버레이 = company-verify 격리 실행</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ───────────── 계정 · GRANT ───────────── -->
+  <section>
+    <div class="sec-head">
+      <div>
+        <div class="eyebrow">계정 · GRANT</div>
+        <h2>계정은 하나, 권한은 파일 일곱 개</h2>
+      </div>
+      <p>모든 GRANT는 <code>TO mart ON CLUSTER 'gpu-monitoring'</code> · 테이블 단위 · admin이 수동 실행 (install.sh는 GRANT를 만지지 않는다)</p>
+    </div>
+    <div class="notes" style="margin-bottom:14px">
+      <div class="note info"><b><code>mart</code> — 공유 운영 계정 (2026-07-14 계정 공유 합의)</b>동료 소유. 레포의 어떤 사내 <code>accounts.sql</code>도 <code>CREATE USER</code>·비밀번호·SETTINGS/PROFILE을 담지 않는다. 기존 수집기·마트·예정 6b/6c 잡 모두 이 계정으로 접속 (Secret은 이름만 레포에).</div>
+      <div class="note info"><b><code>token_verify</code> — company-verify 격리 검증 전용</b><code>ddl/company-verify/accounts.sql</code>(생성 파일)만 <code>CREATE USER</code>를 담는다. 격리 DB <code>token_verify_*</code>에만 권한. 6b <code>-verify</code> 오버레이가 <code>CH_USER token_verify</code>, <code>CH_DB_FACT/CH_DB_DIM = token_verify_fact/token_verify_dim</code>으로 실행.</div>
+    </div>
+
+    <div class="tbl-wrap">
+      <table class="matrix">
+        <thead><tr><th>객체 (mart 계정 기준)</th><th>SELECT</th><th>INSERT</th><th>ALTER DELETE<br>(<code>_local</code>)</th><th>부여 파일 · GRANT 수</th></tr></thead>
+        <tbody>
+          <tr class="ex"><td><code>fact.raw_token_usage_1d</code> · <code>raw_token_usage_summary_1d</code></td><td class="c"><span class="pv ex">_dist</span> <span class="pv ex">_local</span></td><td class="c"><span class="pv ex">_dist</span> <span class="pv ex">_local</span></td><td class="c"><span class="pv ex">●</span></td><td rowspan="3"><code>collectors/token-usage/ddl/company/accounts.sql</code> — 17 GRANT + <code>CREATE DATABASE IF NOT EXISTS fact</code> · 마트 읽기용 SELECT 4건(fact 3 + registry) 포함</td></tr>
+          <tr class="ex"><td><code>fact.collect_audit_1d</code> <span class="sub">append-only</span></td><td class="c"><span class="pv ex">_dist</span> <span class="pv ex">_local</span></td><td class="c"><span class="pv ex">_dist</span> <span class="pv ex">_local</span></td><td class="c"><span class="pv none">없음</span></td></tr>
+          <tr class="ex"><td><code>gpu_data.dim_token_service</code></td><td class="c"><span class="pv ex">_dist</span> <span class="pv ex">_local</span> <span class="pv nw">_dist ×2</span></td><td class="c"><span class="pv ex">_dist</span> <span class="pv ex">_local</span></td><td class="c"><span class="pv ex">●</span></td></tr>
+          <tr class="ex"><td><code>mart.token_usage_1d</code> · <code>agg_token_service_1d</code> · <code>agg_token_org_1d</code> · <code>agg_token_model_1d</code></td><td class="c"><span class="pv ex">_dist</span> <span class="pv nw">_dist (usage·service만)</span></td><td class="c"><span class="pv ex">_dist</span></td><td class="c"><span class="pv ex">●</span></td><td rowspan="2"><code>mart/token-usage/ddl/company/accounts.sql</code> — 16 GRANT (8 테이블 × SELECT,INSERT <code>_dist</code> + ALTER DELETE <code>_local</code>)</td></tr>
+          <tr class="ex"><td><code>gpu_data.view_token_usage_1d</code> · <code>_service_1d</code> · <code>_org_1d</code> · <code>_model_1d</code></td><td class="c"><span class="pv ex">_dist</span></td><td class="c"><span class="pv ex">_dist</span></td><td class="c"><span class="pv ex">●</span></td></tr>
+          <tr class="ex"><td><code>gpu_data.dim_token_user_org</code></td><td class="c"><span class="pv ex">_dist</span></td><td class="c"><span class="pv none">없음 (admin 수동 INSERT)</span></td><td class="c"><span class="pv none">없음</span></td><td><code>assets/user-org/ddl/company/accounts.sql</code> — 1 GRANT</td></tr>
+          <tr class="ex"><td><code>gpu_data.dim_token_model</code></td><td class="c"><span class="pv ex">_dist</span></td><td class="c"><span class="pv none">없음 (admin 수동 INSERT)</span></td><td class="c"><span class="pv none">없음</span></td><td><code>assets/model-catalog/ddl/company/accounts.sql</code> — 1 GRANT</td></tr>
+          <tr class="ex"><td><code>system.mutations</code> · <code>*.*</code></td><td class="c"><span class="pv ex">mutations</span> <span class="pv nw">mutations</span></td><td class="c"><span class="pv none">—</span></td><td class="c"><span class="pv none">—</span></td><td>CREATE TEMPORARY TABLE ON <code>*.*</code> — collectors/token-usage(기존) · mart/token-metrics(신규) 양쪽에서 부여 (중복 무해)</td></tr>
+          <tr class="nw"><td><code>fact.raw_token_metrics_gpu_1d</code> · <code>_serving_1d</code> · <code>_summary_1d</code></td><td class="c"><span class="pv nw">_dist</span> <span class="pv nw">_local</span> <span class="pv nw">_dist (mart용)</span></td><td class="c"><span class="pv nw">_dist</span> <span class="pv nw">_local</span></td><td class="c"><span class="pv nw">●</span></td><td rowspan="3"><code>collectors/token-metrics/ddl/company/accounts.sql</code> — 15 GRANT (CREATE DATABASE 없음 — fact는 기존)</td></tr>
+          <tr class="nw"><td><code>fact.collect_audit_metrics_1d</code> <span class="sub">append-only</span></td><td class="c"><span class="pv nw">_dist</span> <span class="pv nw">_local</span></td><td class="c"><span class="pv nw">_dist</span> <span class="pv nw">_local</span></td><td class="c"><span class="pv none">없음</span></td></tr>
+          <tr class="nw"><td><code>gpu_data.dim_token_metrics_service</code></td><td class="c"><span class="pv nw">_dist</span> <span class="pv nw">_local</span> <span class="pv nw">_dist (mart용)</span></td><td class="c"><span class="pv nw">_dist</span> <span class="pv nw">_local</span></td><td class="c"><span class="pv nw">●</span></td></tr>
+          <tr class="nw"><td><code>mart.agg_token_model_cost_1d</code> · <code>token_metrics_check_1d</code> · <code>agg_token_model_share_1d</code> · <code>agg_token_gpu_group_1d</code></td><td class="c"><span class="pv nw">_dist</span></td><td class="c"><span class="pv nw">_dist</span></td><td class="c"><span class="pv nw">●</span></td><td><code>mart/token-metrics/ddl/company/accounts.sql</code> — 21 GRANT (mart 4 × 2 + SELECT 6 dim + SELECT fact 3 + SELECT mart 2 + TEMP TABLE + mutations)</td></tr>
+          <tr class="nw"><td><code>gpu_data.dim_token_model_alias</code> · <code>dim_token_gpu_tco</code> · <code>dim_token_gpu_allocation</code> · <code>dim_token_vendor_price</code></td><td class="c"><span class="pv nw">_dist ×2</span></td><td class="c"><span class="pv none">없음 (admin 수동 INSERT)</span></td><td class="c"><span class="pv none">없음</span></td><td><code>assets/model-catalog/ddl/company/accounts_metrics.sql</code> — 4 GRANT · 같은 SELECT를 mart/token-metrics accounts.sql도 부여</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:10px;color:var(--muted);font-size:12.5px">색 = 부여한 파일의 세대(<span class="pv ex">기존</span> / <span class="pv nw">신규</span>). "×2"·"(mart용)"은 같은 객체에 두 파일이 SELECT를 겹쳐 부여한다는 뜻 — 어느 한쪽만 적용돼도 읽기는 열린다.</p>
+  </section>
+
+  <!-- ───────────── 적용 순서 ───────────── -->
+  <section>
+    <div class="sec-head">
+      <div>
+        <div class="eyebrow">9/9 적용 순서</div>
+        <h2>새 파일만 적용한다 — 기존 DDL·GRANT는 손대지 않는다</h2>
+      </div>
+      <p>출처 <code>collectors/token-metrics/ddl/README.md</code> "적용 순서" (설계 §7.5) · mart README는 이 번호를 따른다</p>
+    </div>
+    <ol class="steps">
+      <li>
+        <div class="who"><span class="chip role">admin</span><b>수집기 GRANT 선적용</b><span class="chip nw">신규</span></div>
+        <code>collectors/token-metrics/ddl/company/accounts.sql</code> — 15 GRANT. 이름 기반이라 테이블 생성 전에 실행해도 된다.
+        <div class="dep">전제: <code>fact</code> DB와 <code>gpu_data.dim_token_service</code>가 이미 있음 (기존 배포분).</div>
+      </li>
+      <li>
+        <div class="who"><span class="chip role">operator</span><b>6b 수집기 설치</b><span class="chip pl">예정 6b</span></div>
+        <code>collectors/token-metrics/install.sh company --context … --registry … --tag &lt;sha7&gt;</code> → <code>raw_token_metrics.sql</code> + <code>dim_token_metrics_service.sql</code> (IF NOT EXISTS, 재실행 안전) → Secret/ConfigMap → CronJob <code>token-metrics-collector</code>.
+        <div class="dep">프리플라이트 [4/7]: DB 2개 존재 + <code>dim_token_service_dist</code> count — 1단계 GRANT가 없으면 여기서 멈춘다.</div>
+      </li>
+      <li>
+        <div class="who"><span class="chip role">admin</span><span class="chip role">operator</span><b>마트 GRANT → 6c 마트 설치</b><span class="chip nw">신규</span><span class="chip pl">예정 6c</span></div>
+        admin: <code>mart/token-metrics/ddl/company/accounts.sql</code> — 21 GRANT → operator: <code>mart/token-metrics/install.sh</code> → <code>mart_metrics_tables.sql</code> → CronJob <code>token-mart-metrics</code>.
+        <div class="dep">프리플라이트 [3/6]: fact metrics 3테이블 13컬럼 DESCRIBE 읽기 계약 (exit 3) — 2단계가 끝나 있어야 통과.</div>
+      </li>
+      <li>
+        <div class="who"><span class="chip role">admin</span><b>Layer C dim 4 · seed 4 · GRANT · 실값</b><span class="chip nw">신규</span></div>
+        <ul>
+          <li><code>assets/model-catalog/ddl/company/dim_token_model_alias.sql</code> · <code>dim_token_gpu_tco.sql</code> · <code>dim_token_gpu_allocation.sql</code> · <code>dim_token_vendor_price.sql</code></li>
+          <li><code>seed_*.sql</code> 4 (플레이스홀더, 후행 검증 SELECT는 빈 결과) — <code>seed_dim_token_model_alias.sql</code> 검증 6은 2단계의 <code>dim_token_metrics_service</code>가 있어야 한다</li>
+          <li><code>accounts_metrics.sql</code> — 4 GRANT</li>
+          <li>실값 INSERT SQL: <code>sheet_to_dim_token_model_alias_insert.py</code>(시트) · <code>csv_to_layer_c_dim_insert.py</code>(TCO·할당·벤더) 산출물 — 레포 밖</li>
+        </ul>
+        <div class="dep">마감: <code>token-mart-metrics</code> 첫 실행(9/10 10:20) 전. M1이 dim 4를 GLOBAL JOIN으로 읽는다.</div>
+      </li>
+    </ol>
+  </section>
+
+  <!-- ───────────── 확인 필요 ───────────── -->
+  <section>
+    <div class="sec-head">
+      <div>
+        <div class="eyebrow">확인 필요</div>
+        <h2>지도를 그리며 드러난 것</h2>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="note warn"><b>token-mart-daily 실제 스케줄 — 장부 M15</b>GitHub 기준선은 <code>0 4 * * *</code>. 6c의 10:20은 "토큰 mart가 그 전에 끝난다"는 순서 전제이므로 사내 CronJob 스케줄이 10:20 이전인지 admin 확인이 필요하다 (<code>kubectl get cronjob token-mart-daily -o jsonpath='{.spec.schedule}'</code>). 어느 프리플라이트도 이 순서를 검사하지 않는다.</div>
+      <div class="note warn"><b>README 두 곳이 "계정 생성"을 잘못 말한다</b><code>mart/token-usage/ddl/README.md</code>는 "계정 자체는 collectors accounts.sql에서 기생성"이라 하고, <code>collectors/token-usage/ddl/README.md</code> 1단계는 아직 CREATE USER/CHANGE_ME를 언급한다. 실제로는 어느 파일에도 CREATE USER가 없다 (mart는 동료 소유). 기존 모듈 불변 원칙상 이번 PR에서는 고치지 않았다.</div>
+      <div class="note warn"><b><code>assets/model-catalog/ddl/README.md</code>는 main 그대로</b>신규 dim 4·seed·<code>accounts_metrics.sql</code>·생성기가 이 README에는 없다. 문서는 <code>collectors/token-metrics/ddl/README.md</code>(적용 순서)와 Plan 6a에만 있다.</div>
+      <div class="note info"><b>6a 브랜치는 아직 아무것도 배포하지 않았다</b>PR #14는 DDL·GRANT·seed·생성기·테스트만 추가한다. install.sh ×2, CronJob ×2, Job 템플릿 3, Secret 2, ConfigMap 2는 6b/6c 플랜에 정의돼 있고 코드가 없다. 9/9 게이트 전까지 신규 열은 전부 "예정"이다.</div>
+      <div class="note info"><b>mutation 예산은 정기 실행에서 0</b>6b 정기 슬롯은 앵커가 있으면 스킵, 없으면 INSERT만. mutation은 rerun(--replace ≤3/일)과 mart rerun(≤4/일)에서만 발생 — 기존 수집기 예산 45(3×15)·마트 64(4×16) 안에서 계산.</div>
+      <div class="note info"><b>교차검증 P2는 지도 밖의 점선</b>추론엔진 <code>/metrics</code>는 노출 서비스가 소수(장부 M24 ③)라 표본 교차검증 전용(M10). 수집기·마트 어느 테이블에도 적재 경로가 없고, 별도 모듈(설계 #14)이 생기기 전까지는 소비 노드에 점선으로만 닿는다.</div>
+    </div>
+  </section>
+
+  <div class="foot">
+    사내 호스트·주소·비밀번호·이메일은 싣지 않았다 (Secret·ConfigMap은 이름만). 열 수·ORDER BY·PARTITION은 <code>ddl/company/*.sql</code>의 <code>_local</code> 정의에서, 잡 사양은 <code>k8s/base/cronjob.yaml</code>과 6b/6c 플랜에서 옮겼다.
+  </div>
+</div>
+<script>
+(function(){
+  var map=document.getElementById('map'),out=document.getElementById('zoom-val');
+  if(!map||!out)return;
+  var z=1,useZoom=('zoom' in map.style);
+  function apply(){
+    z=Math.min(2.5,Math.max(0.5,Math.round(z*20)/20));
+    if(useZoom){map.style.zoom=z;}
+    else{map.style.transform='scale('+z+')';map.style.width=z===1?'':'calc(100% / '+z+')';}
+    out.value=out.textContent=Math.round(z*100)+'%';
+  }
+  document.querySelectorAll('[data-zoom]').forEach(function(b){
+    b.addEventListener('click',function(){
+      var k=b.getAttribute('data-zoom');
+      if(k==='in')z+=0.15;else if(k==='out')z-=0.15;else z=1;
+      apply();
+    });
+  });
+})();
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+<script>
+  // 글꼴이 바뀐 뒤 그려야 노드 폭이 글자에 맞는다 — 웹폰트 로드 후 한 번만 실행
+  if (window.mermaid) {
+    mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' });
+    var run = function () { mermaid.run({ querySelector: 'pre.mermaid' }); };
+    (document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve()).then(run, run);
+  }
+</script>
+<noscript><p style="padding:8px 24px;font-family:system-ui,sans-serif">흐름 지도(mermaid)는 JavaScript가 켜져 있어야 그려진다. 표는 그대로 보인다.</p></noscript>
+</body>
+</html>
