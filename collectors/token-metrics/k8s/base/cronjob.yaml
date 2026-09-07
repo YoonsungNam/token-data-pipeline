@@ -1,0 +1,85 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: token-metrics-collector
+  labels:
+    app: token-metrics-collector
+spec:
+  # 매시 05분, 02~09시 KST = 하루 8슬롯 (설계 §5.2) — 02:05 첫 슬롯, 09:05 최종 슬롯(FINAL_HOUR_KST=9)
+  schedule: "5 2-9 * * *"
+  timeZone: Asia/Seoul
+  # §5.4 존재확인 → DELETE → INSERT 시퀀스의 전제: 단일 작성자 (경합 금지)
+  concurrencyPolicy: Forbid
+  # 슬롯 산식(§5.2): 지연 시작 ≤540 + activeDeadlineSeconds 3000 + grace 30 = 3570s < 3600s
+  # → Forbid가 다음 슬롯을 건너뛰지 않는다. 산식과 연동된 값 — 단독 수정 금지
+  startingDeadlineSeconds: 540
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        app: token-metrics-collector
+    spec:
+      # 0: 슬롯당 시도 1회 — 재시도는 다음 슬롯이 담당 (§5.2; 1 실행 = 1 BATCH_RESULT 줄 slot=HH)
+      backoffLimit: 0
+      # §5.2 산식 계약: SOFT_DEADLINE_MINUTES 40×60 = 2400s(그 안에 LOAD_BUDGET_S 1200 예약) + 종료 마진 600s
+      # 산식과 연동된 값 — 단독 수정 금지 (env 리터럴과 함께 tests/test_manifests.py가 고정)
+      activeDeadlineSeconds: 3000
+      template:
+        metadata:
+          labels:
+            app: token-metrics-collector
+        spec:
+          # Never: 파드 로그가 실행 단위와 1:1 — BATCH_RESULT '1 실행 = 1 마커 라인' 소비 (§5.2)
+          restartPolicy: Never
+          imagePullSecrets:
+            # 네임스페이스 공유 Secret — install.sh는 없을 때만 생성 (§7.5)
+            - name: registry-pull-secret
+          containers:
+            - name: token-metrics-collector
+              image: token-metrics-collector:latest
+              imagePullPolicy: Always
+              envFrom:
+                # CH_PORT/CH_USER/CH_PASSWORD/CH_CLUSTER[/CH_DB_FACT/CH_DB_DIM][/COLLECTOR_HTTPS_PROXY/COLLECTOR_API_CA_BUNDLE]
+                # — Secret 키 이름이 곧 컨테이너 env 이름. CH_HOST는 install.sh [7/7]가 set env로 주입.
+                - secretRef:
+                    name: token-metrics-ch-secret
+              env:
+                - name: ENDPOINTS_FILE
+                  value: /etc/token-metrics/endpoints.yaml
+                - name: SOFT_DEADLINE_MINUTES
+                  value: "40"
+                - name: LOAD_BUDGET_S
+                  value: "1200"
+                - name: FINAL_HOUR_KST
+                  value: "9"
+                - name: MAX_RESPONSE_BYTES
+                  value: "5000000"
+                - name: METRICS_MAX_MUTATIONS_PER_RUN
+                  value: "45"
+              volumeMounts:
+                - name: endpoints
+                  mountPath: /etc/token-metrics
+                  readOnly: true
+                - name: ca-bundle
+                  mountPath: /etc/token-metrics-ca
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  # limits 없는 배포 금지 (기존 모듈 OOM 실경험) — 응답 ≤5MB 단건 + normalize 여유
+                  memory: 1Gi
+              # CA 번들은 install.sh [2/7]가 ConfigMap으로 주입(선택) — 있으면
+              # COLLECTOR_API_CA_BUNDLE=/etc/token-metrics-ca/ca-bundle.pem (Secret 키)
+          # 볼륨 index 순서는 계약: [0] endpoints, [1] ca-bundle — company-verify 패치·tools/manual_load.py([2] manual)가 의존
+          volumes:
+            - name: endpoints
+              configMap:
+                name: token-metrics-endpoints
+            - name: ca-bundle
+              configMap:
+                name: token-metrics-ca-bundle
+                optional: true

@@ -19,3 +19,7 @@ done
 
 "${PYTHON}" contract/tests/conformance_check.py --base-url "http://127.0.0.1:${PORT}" --date "${DATE_ARG}"
 echo "CONFORMANCE PASS (date=${DATE_ARG})"
+
+# /v1/metrics — token-metric-api @6a552d2 자가 검사 (같은 uvicorn 프로세스; FAIL이 있으면 exit 1)
+"${PYTHON}" contract/tests/check_metrics_api.py --base-url "http://127.0.0.1:${PORT}" --date "${DATE_ARG}"
+echo "METRICS CONFORMANCE PASS (date=${DATE_ARG})"

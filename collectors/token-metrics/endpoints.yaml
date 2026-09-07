@@ -1,0 +1,14 @@
+# 메트릭 레지스트리 정본 (설계 2026-08-31 §4.3) — ConfigMap token-metrics-endpoints 의 기본 본문.
+# 사내 실파일은 collectors/token-metrics/endpoints-metrics.company.yaml (gitignore) — 이 파일은 합성 예시만 담는다.
+# 폐기 서비스는 enabled: false 로 유지, 항목 제거 금지 (until 로 마지막 데이터 날짜를 고정).
+services:
+  - serviceGroup: "Mock Group"          # 토큰 레지스트리와 바이트 동일
+    service: "Mock Service A"
+    baseUrl: "http://token-mock-provider-a.monitoring.svc:8000"
+    enabled: true
+    apiSince: "2026-09-09"              # 정기 API 수집 시작 데이터 날짜
+    coverageSince: "2026-08-26"         # 커버리지 기대 시작(manual 포함)
+    until: null
+    expectGpu: true
+    expectServing: true
+    usageIncludesConsumers: false       # 플랫폼 제공자만 true
