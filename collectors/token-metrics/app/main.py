@@ -257,8 +257,9 @@ def run_collection(cfg: Config, entries: list[ServiceEntry], target_date: str, c
     if register_dims and ctx.mode == MODE_REGULAR:
         try:
             writer.sync_registry(dim_entries if dim_entries is not None else entries)
-        except Exception:                           # 레지스트리 동기화 실패는 수집을 막지 않는다 — WARN 마커만
+        except Exception as exc:                    # 레지스트리 동기화 실패는 수집을 막지 않는다 — WARN 마커만
             print("CHECK WARN service=- registry_sync_failed=1", flush=True)
+            print(f"registry sync failed: {type(exc).__name__}", file=sys.stderr)
 
     queue = [_QueueItem(entry=e) for e in entries]
     outcomes: list[ServiceOutcome] = []
@@ -323,9 +324,9 @@ def run_collection(cfg: Config, entries: list[ServiceEntry], target_date: str, c
     if pending:
         _load(pending)
 
+    line = _batch_line(scope, started, clock, ctx, reason=_batch_reason(scope))
+    _batch_status["line"] = line                    # SIGTERM 신선도 — emit_batch와 무관하게 갱신
     if emit_batch:
-        line = _batch_line(outcomes, started, clock, ctx, reason=_batch_reason(outcomes))
-        _batch_status["line"] = line
         print(line, flush=True)
     return 1 if any(o.status == "FAILURE" for o in outcomes) else 0
 

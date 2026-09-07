@@ -51,6 +51,15 @@ def ctx(mode=MODE_REGULAR, hour=2, replace=False, cfg=None) -> RunContext:
     return make_context(cfg or Config(), mode, datetime(2026, 9, 11, hour, 5, tzinfo=KST), replace=replace)
 
 
+@pytest.fixture(autouse=True)
+def _reset_batch_status_line():
+    """_batch_status['line'] 은 모듈 전역 — 어느 테스트든 값을 남기면 다음 테스트가 그 값을 물려받는다(Fix round 1).
+    각 테스트 전후로 스냅샷·복원해 실행 순서에 무관하게 만든다."""
+    saved = _batch_status["line"]
+    yield
+    _batch_status["line"] = saved
+
+
 # ---------- 상수·RunContext ----------
 
 def test_module_constants_and_initial_batch_line():
@@ -622,6 +631,59 @@ def test_batch_line_format_and_final_in_run(capsys):
     cfg8 = Config(final_hour_kst=8)
     _, _, out = run(capsys, [ENTRY], fetcher_ok(), c=ctx(hour=8, cfg=cfg8), cfg=cfg8)
     assert out[-1].endswith(" slot=08 final=1") and sum(1 for l in out if l.startswith("BATCH_RESULT")) == 1
+
+
+# ---------- SIGTERM 캐시 신선도 · _run_dates 공유 계약 (Fix round 1) ----------
+
+def test_sigterm_mid_run_reflects_partial_progress(capsys):
+    """서비스 2개째 처리 중 SIGTERM — 캐시 줄은 그 시점까지의 진행(1개 성공)을 반영해야 한다.
+    _record 의 _batch_status 갱신을 지우거나 scope 대신 지역 outcomes 를 쓰면 이 값이 stale 해진다."""
+    def f(entry, d, cfg, session):
+        if entry.service == SERVICE_B:
+            _sigterm_handler(15, None)
+        return check_report_structure(report(d=d, service=entry.service), d)
+
+    with pytest.raises(SystemExit) as ei:
+        run(capsys, [ENTRY, ENTRY_B, ENTRY_C], f)
+    assert ei.value.code == 1
+    out = capsys.readouterr().out.rstrip("\n").splitlines()
+    assert out[-1].endswith(" note=sigterm")
+    assert "services_ok=1" in out[-1]
+
+
+def test_run_dates_shares_one_writer_across_dates(monkeypatch):
+    """_run_dates 는 writer=None 이면 MetricsWriter(cfg) 를 1회만 생성해 날짜 전체(뮤테이션 장부)에 공유한다."""
+    writer = FakeWriter()
+    made = []
+    monkeypatch.setattr("app.main.MetricsWriter", lambda c: (made.append(c), writer)[1])
+    clock = Clock()
+    code = _run_dates(Config(), [ENTRY], [ENTRY], ["2026-09-01", "2026-09-02", "2026-09-03"],
+                      ctx(mode=MODE_RERUN), fetcher_ok(), clock=clock, sleeper=lambda s: clock.advance(s))
+    assert code == 0
+    assert len(made) == 1
+    assert writer.batches == [("2026-09-01", [SERVICE]), ("2026-09-02", [SERVICE]), ("2026-09-03", [SERVICE])]
+
+
+def test_run_dates_shared_started_deadline_spans_whole_run(capsys):
+    """소프트 데드라인은 날짜별이 아니라 실행 전체 — started 를 모든 run_collection 호출에 공유해야
+    누적 경과가 후속 날짜를 예산 밖으로 넘긴다(개별 날짜 700s 는 예산 안, 누적은 창 1200s 밖)."""
+    clock = Clock()
+
+    def f(entry, d, cfg, session):
+        clock.advance(700)
+        return check_report_structure(report(d=d, service=entry.service), d)
+
+    code = _run_dates(Config(), [ENTRY], [ENTRY], ["2026-09-01", "2026-09-02", "2026-09-03"],
+                      ctx(mode=MODE_RERUN), f, writer=FakeWriter(), clock=clock,
+                      sleeper=lambda s: clock.advance(s))
+    out = capsys.readouterr().out.rstrip("\n").splitlines()
+    assert code == 1
+    service_lines = [l for l in out if l.startswith("SERVICE_RESULT")]
+    assert len(service_lines) == 3
+    assert service_lines[0].startswith("SERVICE_RESULT status=SUCCESS") and "reason=" not in service_lines[0]
+    assert service_lines[1].endswith(" reason=load_budget")             # 누적 1400s > 예산 창 1200s
+    assert service_lines[2].endswith(" reason=deadline")                # 누적 1400s 시점에 착수 창 이미 종료
+    assert out[-1].startswith("BATCH_RESULT status=FAILURE ")
 
 
 # ---------- main(): CLI · 대상일 · 단일 BATCH_RESULT ----------
