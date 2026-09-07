@@ -15,16 +15,18 @@
 날짜 무관(레지스트리끼리의 정합성 검사)이라 이 규칙에서 제외된다. DB명은 app.ch 상수 5종만(import
 시 1회 보간).
 
-service_not_in_usage_registry 경고(컨트롤러 결정 D1): batch는 이 검사에 대해 서비스별
-CHECK WARN을 직접 찍지 않는다 — M3(steps.run_m3)가 내는 집계 1줄
-(`CHECK WARN service_not_in_usage_registry severity=<S> count=<n>`)이 유일한 출력 소스다.
-SQL_M0_REG_NOT_IN_USAGE(steps.SUB_REG/SUB_USAGE_SVC로 조립)는 조용히 실행해 서비스명만
-마커 missing_services에 병합한다(metrics_coverage=N/M 수치는 이 병합의 영향을 받지 않는다).
+service_not_in_usage_registry 경고(컨트롤러 결정 D1/fix1-1): 이 검사의 CHECK WARN 출력은
+M3(steps.run_m3)이 생산자로서 이미 찍는다(`CHECK WARN service_not_in_usage_registry
+severity=<S> count=<n>`) — batch는 M3(및 다른 러너)가 반환한 `CHECK WARN `/`CHECK INFO `
+접두 줄을 재출력하지 않고 집계에만 반영한다(생산자가 찍는다·소비자는 재출력하지 않는다는
+계약, RUNNERS 루프 참고). SQL_M0_REG_NOT_IN_USAGE(steps.SUB_REG/SUB_USAGE_SVC로 조립)는
+조용히 실행해 서비스명만 마커 missing_services에 병합한다(fix1-4/5 — `_merge_not_in_usage`).
 따라서 warn=은 `CHECK WARN ` 접두 줄 수(체크당 1줄)이고 `CHECK INFO`는 제외한다.
 """
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import re
 import signal
@@ -186,23 +188,32 @@ def _fail_all(dates: list[str], reason: str) -> int:
 # M0 커버리지 · M0b 토큰 mart 존재 (§6.1)
 # =============================================================================
 
-def _check_m0_coverage(gate, date: str, warns: list[str]) -> Coverage:
+def _check_m0(gate, date: str, warns: list[str]) -> Coverage:
     """M0 — 기대(레지스트리 coverage 창) vs 실제(앵커). EXPECTED_LATE 없음(설계 §6.1 — 빈 목록).
     누락 서비스명은 마커 missing_services에만 싣고 WARN 줄에는 카운트만 쓴다.
 
-    reg.service ∉ usage_svc(SQL_M0_REG_NOT_IN_USAGE)는 컨트롤러 결정 D1에 따라 조용히 실행한다
-    — CHECK WARN은 찍지 않고(M3의 집계 1줄이 유일 소스), 서비스명만 missing_services에 병합한다.
-    metrics_coverage=N/M(present/enabled)은 이 병합 이전의 M0-only 값을 그대로 유지한다 —
-    "그날 커버리지 결손"과 "레지스트리 정합성 결손"은 원인이 달라 카운트를 섞지 않는다.
-    """
+    레지스트리 정합성 검사(SQL_M0_REG_NOT_IN_USAGE)는 이 함수가 아니라 `_merge_not_in_usage`가
+    담당한다(컨트롤러 결정 fix1-5 — M0과 분리해, 레지스트리 조회가 실패해도 여기서 이미 계산한
+    coverage(present/enabled)를 호출자가 그대로 마커에 보존할 수 있게 한다)."""
     expected = [row[0] for row in gate.query(SQL_M0_EXPECTED_SERVICES, {"d": date})]
     anchors = {row[0] for row in gate.query(SQL_M0_ANCHOR_SERVICES, {"d": date})}
     coverage = compute_coverage(expected, anchors, [])
     if coverage.missing:
         _warn(warns, f"CHECK WARN metrics_coverage missing={len(coverage.missing)}")
+    return coverage
+
+
+def _merge_not_in_usage(gate, coverage: Coverage) -> Coverage:
+    """reg.service ∉ usage_svc(SQL_M0_REG_NOT_IN_USAGE)는 컨트롤러 결정 D1에 따라 조용히
+    실행한다 — CHECK WARN은 찍지 않고(M3의 집계 1줄이 유일 소스), 서비스명만 missing_services에
+    병합한다. 마커 missing_services(합집합) ⊇ M0 커버리지 결손(coverage.missing) — 이 함수는
+    T2 `compute_coverage()`가 반환한 `coverage` 객체를 변경하지 않고(컨트롤러 결정 fix1-4)
+    `dataclasses.replace`로 새 Coverage를 만들어 반환한다. metrics_coverage=N/M(present/enabled)과
+    `CHECK WARN metrics_coverage`의 missing=<n> 카운트는 이 병합 이전(M0-only)의 값을 그대로
+    유지한다 — "그날 커버리지 결손"과 "레지스트리 정합성 결손"은 원인이 달라 카운트를 섞지 않는다."""
     not_in_usage = {row[0] for row in gate.query(SQL_M0_REG_NOT_IN_USAGE)}
     if not_in_usage:
-        coverage.missing = sorted(set(coverage.missing) | not_in_usage)
+        return dataclasses.replace(coverage, missing=sorted(set(coverage.missing) | not_in_usage))
     return coverage
 
 
@@ -223,7 +234,9 @@ def run_batch(cfg: Config, date: str, gate=None, *, token_mart_present: bool | N
     광역 가드: M0·M0b·러너에서 발생하는 모든 예외 → status=FAILURE 마커 + exit_code 1
     (StepError → reason=<첫 토큰>, 그 외 → reason=exception). 앵커 0건(no-metrics day)은
     예외가 아니라 WARN — M1은 토큰-only 행(no_metrics/consumer_only)을 적재하고 SUCCESS.
-    _status["line"]은 단계마다 갱신해 SIGTERM 시 부분 진행이 담긴 마커가 나가게 한다.
+    _status["line"]은 단계마다 갱신해 SIGTERM 시 부분 진행이 담긴 마커가 나가게 한다 —
+    try 진입 직후 첫 문장이 FAILURE/coverage=0/0/reason=sigterm으로 캐시를 리셋한다
+    (컨트롤러 결정 fix1-2: 이전 날짜의 SUCCESS 캐시가 이번 날짜 M0 진행 중까지 남는 것을 방지).
     """
     gate = gate or CHGate(cfg)
     started = time.monotonic()
@@ -233,7 +246,12 @@ def run_batch(cfg: Config, date: str, gate=None, *, token_mart_present: bool | N
     skip_share = False
 
     try:
-        coverage = _check_m0_coverage(gate, date, warns)
+        _status["line"] = _line("FAILURE", _EMPTY_COVERAGE, rows, warns, started, "sigterm")
+
+        coverage = _check_m0(gate, date, warns)
+        _status["line"] = _line("FAILURE", coverage, rows, warns, started, "sigterm")
+
+        coverage = _merge_not_in_usage(gate, coverage)
         _status["line"] = _line("FAILURE", coverage, rows, warns, started, "sigterm")
 
         if not _token_mart_present(gate, date, token_mart_present):
@@ -245,7 +263,13 @@ def run_batch(cfg: Config, date: str, gate=None, *, token_mart_present: bool | N
             result = fn(gate, date)
             rows[key] = int(result[key])
             for w in result["warns"]:
-                _warn(warns, _normalize_warn(w))
+                # 컨트롤러 결정 fix1-1: 생산자(steps.run_m3 등)가 이미 CHECK WARN|INFO 접두 줄을
+                # 찍었다면 재출력하지 않고 집계만 한다 — 접두 없는 코드(dup_suspect:<dist> 등,
+                # 생산자가 찍지 않음)만 batch가 정규화해 1회 출력한다.
+                if w.startswith("CHECK WARN ") or w.startswith("CHECK INFO "):
+                    warns.append(w)
+                else:
+                    _warn(warns, _normalize_warn(w))
             _status["line"] = _line("FAILURE", coverage, rows, warns, started, "sigterm")
 
         line = _line("SUCCESS", coverage, rows, warns, started)
@@ -290,6 +314,12 @@ def main(argv=None) -> int:
     cfg = load_config()
     dates, _is_rerun = target_dates(args)
     if dates is None:
+        return 2
+    if not dates:
+        # target_dates()는 --from/--to 미쌍(None) 케이스만 자체 stderr 메시지를 찍는다 — 역전
+        # 범위(--from이 --to보다 늦음)는 빈 리스트를 반환하며 아무 메시지도 없으므로 여기서
+        # 보충한다(컨트롤러 결정 fix1-3; target_dates의 메시지와 중복 출력하지 않는다).
+        print("[ERROR] 대상 날짜 없음 — --from은 --to보다 늦을 수 없습니다", file=sys.stderr, flush=True)
         return 2
 
     gate = CHGate(cfg)

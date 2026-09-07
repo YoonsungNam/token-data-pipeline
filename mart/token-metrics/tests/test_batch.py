@@ -1,5 +1,5 @@
 """Tests for app/batch.py — 읽기 계약 프리플라이트 → 변이 예산 프리체크 → M0/M0b →
-RUNNERS(M1→M3) 오케스트레이션 → BATCH_RESULT 마커 · SIGTERM (Plan 6c T5).
+RUNNERS(M1→M3) 오케스트레이션 → BATCH_RESULT 마커 · SIGTERM (Plan 6c T5, fix round 1).
 
 FakeGate는 mart/token-usage/tests/test_batch.py의 더블(SQL 부분문자열 라우팅)을 클론하되
 실행 표면(insert_select/verify_count)은 호출 자체를 금지한다 — M1/M3 러너는
@@ -8,11 +8,25 @@ FakeGate는 mart/token-usage/tests/test_batch.py의 더블(SQL 부분문자열 �
 컨트롤러 결정 D1(service_not_in_usage_registry): batch는 서비스별 CHECK WARN을 직접 찍지
 않는다 — M3(steps.run_m3)의 집계 1줄(`CHECK WARN service_not_in_usage_registry severity=<S>
 count=<n>`)이 유일한 출력 소스다. SQL_M0_REG_NOT_IN_USAGE(steps.SUB_REG/SUB_USAGE_SVC로
-조립)는 조용히 실행되어 이름만 마커 missing_services에 병합된다. 따라서 원 아웃라인의
-"서비스별 CHECK WARN 줄" 기대 테스트는 이 파일에서 제거·재작성됐다(아래 D1 관련 절 참고).
+조립)는 조용히 실행되어 이름만 마커 missing_services에 병합된다.
 컨트롤러 결정 D2: 이 쿼리는 날짜 무관이라 `{d:Date}` 바인딩 계약(date-bound 집합)에서 제외한다.
+
+fix round 1(리뷰 6항목) 반영:
+1. RUNNERS 루프 — 러너가 이미 `CHECK WARN `/`CHECK INFO ` 접두로 반환한 줄(생산자가 이미
+   찍은 M3 요약 줄)은 batch가 재출력하지 않는다(집계만).
+2. `_status` 캐시 — `run_batch`의 try 진입 직후 FAILURE/coverage=0/0/reason=sigterm으로
+   리셋해, 이전 날짜의 SUCCESS 캐시가 다음 날짜 M0 진행 중까지 남지 않게 한다.
+3. `main` — `--from`이 `--to`보다 늦어 `target_dates`가 `([], True)`를 반환하면(오늘은 `None`만
+   처리) stderr 1줄 + exit 2, `CHGate`는 생성되지 않는다.
+4. `_merge_not_in_usage` — T2 `compute_coverage()`가 반환한 `Coverage`를 변경하지 않고
+   `dataclasses.replace`로 새 객체를 만든다(합집합 ≠ 원본 치환).
+5. `_check_m0`/`_merge_not_in_usage` 분리 — 레지스트리 조회 실패 시에도 이미 계산된 M0
+   수치(metrics_coverage=<present>/<enabled>)를 마커에 보존한다.
+6. 리뷰에서 생존한 뮤테이션(worst=max, RUNNERS 루프 내 상태 갱신, SIGTERM 핸들러 등록) 각각에
+   대한 표적 테스트 추가.
 """
 import re
+import signal
 
 import pytest
 
@@ -178,15 +192,41 @@ def test_reg_not_in_usage_feeds_missing_services_without_printing(monkeypatch, c
     assert m.group("warn") == "0"        # 이 검사 자체의 CHECK WARN은 M3(스텁이라 없음)에서만 남
 
 
-def test_reg_not_in_usage_merges_with_m0_missing_sorted_dedup():
-    """M0 커버리지 결손(present<enabled)과 레지스트리 결손을 합칠 때 정렬·중복 제거하되,
-    metrics_coverage=N/M은 병합 전 M0-only 값을 유지한다(원인이 다른 두 카운트를 섞지 않음)."""
-    gate = FakeGate(expected=["Mock Service A", "Mock Service B"], anchors=["Mock Service A"],
-                    not_in_usage=["Mock Service B", "Mock Service C"])
+def test_reg_not_in_usage_merges_with_m0_missing_sorted_dedup(monkeypatch, capsys):
+    """fix1-4: M0 커버리지 결손(present<enabled)과 레지스트리 결손을 합칠 때 정렬·중복
+    제거하되(합집합 ≠ 치환 — M0 missing=["b"], not-in-usage={"c","a"} → missing_services=a,b,c),
+    metrics_coverage=N/M과 CHECK WARN metrics_coverage의 missing=<n> 카운트는 병합 전
+    M0-only 값(=1)을 유지한다."""
+    stub_runners(monkeypatch)
+    gate = FakeGate(expected=["a", "b"], anchors=["a"], not_in_usage=["c", "a"])
+    out = batch.run_batch(Config(), DATE, gate=gate)
+    printed = capsys.readouterr().out
+    m = MARKER_RE.match(out.line)
+    assert m.group("missing") == "a,b,c"                        # dedup + 정렬(합집합)
+    assert (m.group("present"), m.group("enabled")) == ("1", "2")  # M0-only, 병합 영향 없음
+    assert "CHECK WARN metrics_coverage missing=1" in printed    # 레지스트리 이름 제외한 카운트
+
+
+def test_compute_coverage_return_value_not_mutated_by_merge(monkeypatch):
+    """fix1-4: T2 compute_coverage()가 반환한 Coverage 객체는 병합 후에도 원본 그대로다
+    (dataclasses.replace로 새 객체를 만들 뿐, in-place 변경 금지)."""
+    captured = {}
+    real_compute_coverage = batch.compute_coverage
+
+    def spy(*a, **kw):
+        cov = real_compute_coverage(*a, **kw)
+        captured["cov"] = cov
+        return cov
+
+    monkeypatch.setattr(batch, "compute_coverage", spy)
+    gate = FakeGate(expected=["a", "b"], anchors=["a"], not_in_usage=["c", "a"])
     warns: list = []
-    coverage = batch._check_m0_coverage(gate, DATE, warns)
-    assert coverage.missing == ["Mock Service B", "Mock Service C"]     # dedup + 정렬
-    assert (coverage.present, coverage.enabled) == (1, 2)               # M0-only, 병합 영향 없음
+    coverage = batch._check_m0(gate, DATE, warns)
+    merged = batch._merge_not_in_usage(gate, coverage)
+    assert captured["cov"] is coverage
+    assert coverage.missing == ["b"]             # 원본 불변
+    assert merged.missing == ["a", "b", "c"]     # 새 객체(합집합)
+    assert merged is not coverage
 
 
 def test_reg_not_in_usage_query_has_no_date_param(monkeypatch):
@@ -195,6 +235,25 @@ def test_reg_not_in_usage_query_has_no_date_param(monkeypatch):
     batch.run_batch(Config(), DATE, gate=gate)
     calls = [c for c in gate.query_calls if "GLOBAL NOT IN" in c[0]]
     assert len(calls) == 1 and calls[0][1] is None
+
+
+def test_reg_query_failure_after_good_m0_preserves_coverage_numbers(monkeypatch):
+    """fix1-5: 레지스트리 조회(SQL_M0_REG_NOT_IN_USAGE) 실패는 exception 경로로 가지만, 이미
+    계산된 M0 수치(metrics_coverage=<present>/<enabled>)를 마커에 그대로 보존한다."""
+    stub_runners(monkeypatch)
+
+    class RegFailsGate(FakeGate):
+        def query(self, sql, params=None):
+            if "GLOBAL NOT IN" in sql:
+                raise RuntimeError("registry lookup failed")
+            return super().query(sql, params)
+
+    gate = RegFailsGate(expected=["Mock Service A", "Mock Service B"],
+                        anchors=["Mock Service A", "Mock Service B"])
+    out = batch.run_batch(Config(), DATE, gate=gate)
+    m = MARKER_RE.match(out.line)
+    assert out.exit_code == 1 and m.group("reason") == "exception"
+    assert (m.group("present"), m.group("enabled")) == ("2", "2")
 
 
 # ============================================================================
@@ -248,6 +307,22 @@ def test_token_mart_presence_queried_when_not_given(monkeypatch):
     assert not any("agg_token_service_1d_dist" in sql for sql, _ in given.query_calls)
 
 
+def test_m3_check_lines_not_reprinted_by_batch(monkeypatch, capsys):
+    """fix1-1: 러너가 이미 `CHECK WARN `/`CHECK INFO ` 접두로 반환한 줄(생산자가 이미 찍었다는
+    계약)은 batch가 재출력하지 않는다 — 접두 없는 코드(dup_suspect:<dist>)만 batch가 1회 출력."""
+    stub_runners(monkeypatch, warns_m3=[
+        "dup_suspect:mart.x_dist",
+        "CHECK WARN foo severity=WARN count=1",
+        "CHECK INFO bar severity=INFO count=2",
+    ])
+    out = batch.run_batch(Config(), DATE, gate=full_gate())
+    printed = capsys.readouterr().out
+    assert printed.count("CHECK WARN dup_suspect:mart.x_dist") == 1
+    assert "CHECK WARN foo severity=WARN count=1" not in printed
+    assert "CHECK INFO bar severity=INFO count=2" not in printed
+    assert MARKER_RE.match(out.line).group("warn") == "2"     # dup_suspect + foo(INFO bar는 제외)
+
+
 def test_step_warns_are_normalized_and_counted(monkeypatch, capsys):
     stub_runners(monkeypatch,
                  warns_m1=[f"dup_suspect:{DB_MART}.agg_token_model_cost_1d_dist"],
@@ -255,10 +330,12 @@ def test_step_warns_are_normalized_and_counted(monkeypatch, capsys):
                            "CHECK INFO manual_source severity=INFO count=1"])
     out = batch.run_batch(Config(), DATE, gate=full_gate())
     printed = capsys.readouterr().out
+    # fix1-1: CHECK WARN|INFO 접두 줄은 생산자(steps.run_m3)가 이미 찍는다는 계약이므로 batch는
+    # 재출력하지 않는다(스텁이라 여기선 아무도 찍지 않음 — printed에 나타나지 않아야 한다).
     assert f"CHECK WARN dup_suspect:{DB_MART}.agg_token_model_cost_1d_dist" in printed
-    assert "CHECK WARN rows_rejected severity=WARN count=2" in printed
-    assert "CHECK INFO manual_source severity=INFO count=1" in printed
-    assert MARKER_RE.match(out.line).group("warn") == "2"      # INFO는 warn 카운트 제외
+    assert "CHECK WARN rows_rejected severity=WARN count=2" not in printed
+    assert "CHECK INFO manual_source severity=INFO count=1" not in printed
+    assert MARKER_RE.match(out.line).group("warn") == "2"      # INFO는 제외, 재출력 여부와 무관
 
 
 def test_step_error_marks_failure_with_reason(monkeypatch):
@@ -320,6 +397,51 @@ def test_status_cache_is_failure_sigterm_while_in_progress(monkeypatch):
     assert m.group("status") == "FAILURE" and m.group("reason") == "sigterm"
     assert m.group("present") == "2"                # M0 결과가 이미 반영된 캐시
     assert batch._status["line"] == out.line        # 완료 후 캐시 = 최종 줄
+
+
+def test_status_cache_reset_before_next_dates_m0(monkeypatch):
+    """fix1-2: 이전 날짜의 SUCCESS 캐시가 다음 날짜 M0 진행 중까지 남아있으면 SIGTERM이 실행되지
+    않은 날짜의 SUCCESS 마커를 잘못 재출력한다 — try 진입 직후 FAILURE reason=sigterm으로
+    캐시를 리셋해야 한다."""
+    stub_runners(monkeypatch, rows_mart=3, rows_check=5)
+    batch.run_batch(Config(), DATE, gate=full_gate())          # 날짜 A → SUCCESS(rows_mart=3) 캐시
+    assert "status=SUCCESS" in batch._status["line"]
+
+    snapshot = []
+
+    class SnapshotGate(FakeGate):
+        def query(self, sql, params=None):
+            if "dim_token_metrics_service_dist" in sql and "coverage_since" in sql:
+                snapshot.append(batch._status["line"])
+            return super().query(sql, params)
+
+    batch.run_batch(Config(), DATE2, gate=SnapshotGate(
+        expected=["Mock Service A", "Mock Service B"],
+        anchors=["Mock Service A", "Mock Service B"]))
+    assert snapshot, "SQL_M0_EXPECTED_SERVICES query was not observed"
+    m = MARKER_RE.match(snapshot[0])
+    assert m.group("status") == "FAILURE" and m.group("reason") == "sigterm"
+    assert m.group("rows_mart") == "0"
+    assert "SUCCESS" not in snapshot[0]
+
+
+def test_status_updated_inside_runners_loop_between_m1_and_m3(monkeypatch):
+    """fix1-6(a): RUNNERS 루프 내부의 `_status` 갱신이 살아있는지 — M1 완료 직후(M3 실행 전)
+    캐시에 rows_mart가 이미 반영돼 있어야 한다."""
+    seen = {}
+
+    def run_m1(gate, date):
+        return {"rows_mart": 9, "warns": []}
+
+    def run_m3(gate, date):
+        seen["line"] = batch._status["line"]
+        return {"rows_check": 5, "warns": []}
+
+    monkeypatch.setattr(batch, "RUNNERS", [("rows_mart", run_m1), ("rows_check", run_m3)])
+    batch.run_batch(Config(), DATE, gate=full_gate())
+    m = MARKER_RE.match(seen["line"])
+    assert m.group("status") == "FAILURE"
+    assert m.group("rows_mart") == "9"
 
 
 # ============================================================================
@@ -406,14 +528,16 @@ def test_mutation_budget_env_override(monkeypatch, capsys):
 # ============================================================================
 
 def test_main_prints_one_marker_per_date_and_worst_exit(monkeypatch, capsys):
-    stub_runners(monkeypatch, m1_raises=StepError("verify_count"), fail_dates=(DATE2,))
+    """fix1-6(c): FAILURE 날짜를 먼저, SUCCESS 날짜를 나중에 두어 `worst = max(worst, …)`가
+    아니라 `worst = outcome.exit_code`(마지막 값으로 덮어쓰기)로 퇴화하면 실패하도록 만든다."""
+    stub_runners(monkeypatch, m1_raises=StepError("verify_count"), fail_dates=(DATE,))
     wire_main(monkeypatch, full_gate())
     code = batch.main(["--from", DATE, "--to", DATE2])
     out = capsys.readouterr().out
     lines = marker_lines(out)
     assert code == 1 and len(lines) == 2
-    assert MARKER_RE.match(lines[0]).group("status") == "SUCCESS"
-    assert MARKER_RE.match(lines[1]).group("status") == "FAILURE"
+    assert MARKER_RE.match(lines[0]).group("status") == "FAILURE"
+    assert MARKER_RE.match(lines[1]).group("status") == "SUCCESS"
     assert "user_id" not in out
 
 
@@ -428,6 +552,31 @@ def test_main_date_alias_single_day(monkeypatch, capsys):
 def test_main_from_without_to_exits_2(monkeypatch):
     wire_main(monkeypatch, full_gate())
     assert batch.main(["--from", DATE]) == 2
+
+
+def test_main_inverted_from_to_exits_2_without_marker_or_chgate(monkeypatch, capsys):
+    """fix1-3: --from이 --to보다 늦으면 target_dates가 ([], True)를 반환한다(오늘은 None만
+    처리) — stderr 1줄 + exit 2, 마커 0줄, CHGate는 생성되지 않는다."""
+    def boom(cfg):
+        raise AssertionError("CHGate must not be constructed for an inverted date range")
+
+    monkeypatch.setattr(batch, "CHGate", boom)
+    monkeypatch.setattr(batch, "load_config", lambda: Config())
+    code = batch.main(["--from", "2026-09-05", "--to", "2026-09-01"])
+    out = capsys.readouterr()
+    assert code == 2
+    assert marker_lines(out.out) == []
+    assert "대상 날짜 없음" in out.err
+
+
+def test_main_registers_sigterm_handler(monkeypatch):
+    """fix1-6(d): main()이 SIGTERM 핸들러 등록을 빠뜨리면 실패한다."""
+    calls = []
+    monkeypatch.setattr(batch.signal, "signal", lambda *a: calls.append(a))
+    stub_runners(monkeypatch)
+    wire_main(monkeypatch, full_gate())
+    batch.main(["--date", DATE])
+    assert calls == [(signal.SIGTERM, batch._sigterm_handler)]
 
 
 def test_main_help_exits_zero():
