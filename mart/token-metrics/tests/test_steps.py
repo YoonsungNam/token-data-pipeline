@@ -4,6 +4,8 @@ _run_table 시퀀스(FakeGate). ClickHouse 없이 돈다(SQL 실행은 T10 e2e·
 FakeGate는 mart/token-usage/tests/test_steps.py의 것을 복제하되 테이블 키를 mart-metrics
 4테이블로 바꿨다(_TABLE_KEYS 부분 문자열 라우팅 — 서로 부분 문자열이 아니어야 함, 테스트로 고정).
 """
+from __future__ import annotations
+
 import os
 import pathlib
 import re
@@ -86,6 +88,10 @@ class FakeGate:
         self.query_calls = []
         self.verify_calls = []
         self._current_short = None
+        # fix1 M15 (추가 전용) — exists/delete_day/verify_count에 실제로 전달된 전체 테이블명
+        # (op, table_name) 그대로 기록. 기존 order/delete_preds/verify_calls·_short 라우팅은 불변
+        # (M3Gate가 그대로 계속 동작).
+        self.full_names = []
 
     def _short(self, s: str) -> str:
         for key, short in sorted(self._TABLE_KEYS, key=lambda kv: -len(kv[0])):
@@ -95,11 +101,13 @@ class FakeGate:
 
     def exists(self, table_dist, date):
         self.order.append(("exists", self._short(table_dist)))
+        self.full_names.append(("exists", table_dist))
         return self._exists
 
     def delete_day(self, table_local, date, extra_pred=""):
         self.order.append(("delete", self._short(table_local)))
         self.delete_preds.append((self._short(table_local), extra_pred))
+        self.full_names.append(("delete", table_local))
 
     def insert_select(self, sql, params=None):
         short = self._short(sql)
@@ -117,6 +125,7 @@ class FakeGate:
         short = self._short(table_dist)
         self.order.append(("verify", short))
         self.verify_calls.append((short, date, expected))
+        self.full_names.append(("verify", table_dist))
         actual = expected if self._verify_actual is None else self._verify_actual
         return (self._verify_ok, actual)
 
@@ -200,6 +209,14 @@ def test_sub_queries_shared_between_insert_and_expected():
         assert subs[name] in steps.SQL_M1, name
 
 
+def test_sub_reg_is_unique_per_service():
+    # fix1 finding 1 — dim_token_metrics_service_local은 평범한 ORDER BY (service) MergeTree라
+    # 부분 재동기화로 (service) 중복 행이 남을 수 있다. EXPECTED_SQL_M1은 SUB_REG를 공유하지
+    # 않으므로(키는 tok/gpu 쪽에서만 옴) 중복이 생겨도 dup_suspect로는 드러나지 않는다 — SUB_REG
+    # 자체가 서비스당 1행만 반환하도록 강제해 조인 팬아웃을 원천 차단한다.
+    assert "LIMIT 1 BY service" in steps.SUB_REG
+
+
 def test_global_join_and_global_in_only():
     for name, sql in sql_constants().items():
         for m in re.finditer(r"\bLEFT JOIN\b", sql):
@@ -208,7 +225,8 @@ def test_global_join_and_global_in_only():
             assert sql[max(0, m.start() - 7):m.start()] == "GLOBAL ", (name, sql[m.start() - 40:m.end()])
         if not name.endswith("_SUMMARY"):   # SQL_M3_SUMMARY(T4)는 단일 테이블 GROUP BY — 서브쿼리 없음
             assert "GLOBAL IN" in sql, name
-        assert " JOIN " not in sql.replace("GLOBAL LEFT JOIN", ""), name   # INNER/CROSS 금지
+        stripped = sql.replace("GLOBAL LEFT JOIN", "")
+        assert re.search(r"(^|\s)JOIN\s", stripped, re.M) is None, name   # INNER/CROSS 금지(줄 시작 JOIN 포함)
 
 
 # ----------------------------------------------------------------------------
@@ -702,3 +720,62 @@ def test_run_m3_raises_step_error_when_verify_fails():
 
     with pytest.raises(steps.StepError):
         steps.run_m3(Failing([], rows=3), DATE)
+
+
+# --- T3 fix round 1: 의미 고정 테스트 ---
+# 컨트롤러 리뷰(90aaf60) fix round 1 — 뮤테이션 스윕이 잡아내지 못한 6종(M7/M8/M9/M13/M15/M16)을
+# 개별 고정한다. 여기부터는 새 테스트만 추가하고 기존 T3/M3 단언은 건드리지 않는다(M3 리전은 T4 소유).
+
+def test_m1_token_side_date_filter_and_binding_counts():
+    # M7 — u.date = {d:Date} 게이트가 사라지면 그날 전체가 아니라 누적 전체를 읽어버린다.
+    assert "WHERE u.date = {d:Date}" in steps.SQL_M1
+    assert steps.SQL_M1.count("{d:Date}") == 17
+    assert steps.EXPECTED_SQL_M1.count("{d:Date}") == 5
+
+
+def test_m1_gpu_rows_gated_by_anchor_presence():
+    # M13 — 앵커 없는 서비스의 gpu 행이 게이트 없이 들어오면 검증되지 않은 데이터가 섞인다.
+    frag = "g.service GLOBAL IN (SELECT service FROM"
+    assert frag in steps.SQL_M1
+    assert frag in steps.EXPECTED_SQL_M1
+
+
+def test_m1_outer_join_keys_pair_same_named_columns():
+    # M8/M9 — 조인 키가 뒤바뀌면(예: an.service = k.model) 전부 미스가 나거나 오조인된다.
+    sql = steps.SQL_M1
+    assert "GLOBAL LEFT JOIN tok_agg AS tk ON tk.service = k.service AND tk.model = k.model" in sql
+    assert "GLOBAL LEFT JOIN gpu_agg AS ga ON ga.service = k.service AND ga.model = k.model" in sql
+    assert f"GLOBAL LEFT JOIN {steps.SUB_ANCHOR} AS an ON an.service = k.service" in sql
+    assert f"GLOBAL LEFT JOIN {steps.SUB_REG} AS r ON r.service = k.service" in sql
+    for bad in ("an.service = k.model", "r.service = k.model",
+                "tk.service = k.model", "ga.service = k.model",
+                "tk.model = k.service", "ga.model = k.service"):
+        assert bad not in sql, bad
+
+
+def test_run_m1_uses_dist_for_exists_verify_and_local_for_delete():
+    # M15 — run_m1이 dist/local을 뒤바꿔 넘기면 exists/verify가 로컬 테이블을 보거나 DELETE가
+    # ON CLUSTER 분산 테이블을 때리게 된다.
+    g = FakeGate()
+    steps.run_m1(g, DATE)
+    prefix = f"{DB_MART}.{steps.T_M1}"
+    exists_names = [name for op, name in g.full_names if op == "exists"]
+    delete_names = [name for op, name in g.full_names if op == "delete"]
+    verify_names = [name for op, name in g.full_names if op == "verify"]
+    assert exists_names == [f"{prefix}_dist"]
+    assert delete_names == [f"{prefix}_local"]
+    assert verify_names == [f"{prefix}_dist"]
+
+
+def test_run_table_forwards_extra_pred_to_delete_day():
+    # M16 — _run_table이 extra_pred를 delete_day에 넘기지 않으면 공유 테이블 DELETE가
+    # created_by 등 소유자 조건 없이 전체 삭제된다.
+    g = FakeGate()
+    warns: list = []
+    dist = f"{DB_MART}.{steps.T_M1}_dist"
+    local = f"{DB_MART}.{steps.T_M1}_local"
+    sql = f"SELECT 1 /* {steps.T_M1} */"
+    expected_sql = f"SELECT 1 /* {steps.T_M1} */"
+    steps._run_table(g, DATE, dist, local, sql, expected_sql, warns,
+                      extra_pred="created_by = 'x'")
+    assert g.delete_preds == [("m1", "created_by = 'x'")]

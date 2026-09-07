@@ -118,7 +118,8 @@ SUB_EFF_PRICE = f"""(SELECT provider, model,
 # reg — 메트릭 레지스트리 전체 행(설계 §4.3; 6b가 원자 교체). until은 Nullable(Date).
 SUB_REG = f"""(SELECT service, service_group, enabled, coverage_since, until,
                expect_gpu, expect_serving, usage_includes_consumers
-        FROM {DB_DIM}.dim_token_metrics_service_dist)"""
+        FROM {DB_DIM}.dim_token_metrics_service_dist
+        LIMIT 1 BY service)"""
 
 # usage_svc — 토큰 측 모집단(dim_token_service enabled=1; 읽기 계약 2컬럼 service/enabled).
 SUB_USAGE_SVC = f"""(SELECT service FROM {DB_TOKEN_DIM}.dim_token_service_dist WHERE enabled = 1)"""
