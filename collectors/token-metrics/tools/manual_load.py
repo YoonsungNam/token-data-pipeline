@@ -242,7 +242,10 @@ def main(argv=None):
     for path in paths:
         if not path.is_file():
             p.exit(2, f"[ERROR] 파일 없음: {path}\n")
-    files = read_manual_files(paths[0], paths[1], engine_path)
+    try:
+        files = read_manual_files(paths[0], paths[1], engine_path)
+    except UnicodeDecodeError:
+        p.exit(2, "[ERROR] UTF-8 아님 — 엑셀에서는 'CSV UTF-8'로 저장 후 다시 제출\n")
     n_bytes = total_bytes(files)
     if n_bytes > MAX_CONFIGMAP_BYTES:
         p.exit(2, f"[ERROR] CSV 합계 {n_bytes} bytes > {MAX_CONFIGMAP_BYTES} — 날짜 범위를 나눠 제출\n")
@@ -272,6 +275,9 @@ def main(argv=None):
             print(f"[INFO] ConfigMap 보존(--keep-configmap) — 정리: kubectl --context={ctx} "
                   f"delete configmap {cm_name} -n {ns}", flush=True)
         else:
+            if rc != 0:
+                print(f"[WARN] Job이 아직 실행 중이면 입력 ConfigMap 삭제로 실패합니다 — 상태: "
+                      f"kubectl --context={ctx} get job {job} -n {ns}", file=sys.stderr, flush=True)
             delete_configmap(ctx, ns, cm_name)
 
     if rc == 0:

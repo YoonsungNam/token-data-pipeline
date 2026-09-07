@@ -48,7 +48,7 @@ def write_inputs(tmp_path, *, engine=False, gpu_bom=False):
     gpu = tmp_path / "gpu_manual_metrics.csv"
     serving = tmp_path / "serving_manual_metrics.csv"
     gpu_text = GPU_HEADER + "\n" + GPU_ROW + "\n"
-    gpu.write_bytes((("﻿" if gpu_bom else "") + gpu_text).encode("utf-8"))
+    gpu.write_bytes((("\ufeff" if gpu_bom else "") + gpu_text).encode("utf-8"))
     serving.write_text(SERVING_HEADER + "\n" + SERVING_ROW + "\n", encoding="utf-8")
     paths = {"gpu": gpu, "serving": serving, "engine": None}
     if engine:
@@ -106,7 +106,7 @@ def test_configmap_body_from_files(tmp_path):
     files = ml.read_manual_files(p["gpu"], p["serving"], None)
     assert list(files) == ["gpu.csv", "serving.csv"]                    # engine 없음 · 키 순서
     assert files["gpu.csv"].startswith("date,service,")                  # BOM 제거
-    assert "﻿" not in files["gpu.csv"]
+    assert "\ufeff" not in files["gpu.csv"]
     assert files["serving.csv"].splitlines()[1] == SERVING_ROW
     cm = ml.build_configmap(CM_NAME, files)
     assert cm["apiVersion"] == "v1" and cm["kind"] == "ConfigMap"
@@ -249,6 +249,7 @@ class FakeK8s:
 def _run_main(monkeypatch, argv, *, wait_result, **k8s_kw):
     k8s = FakeK8s(cronjob_obj(), **k8s_kw)
     waited = []
+    seen = []                                            # now_kst() 호출 횟수 — ConfigMap·Job 은 같은 ts 여야 한다
 
     def fake_wait(context, namespace, job_name, timeout_s):
         waited.append((context, namespace, job_name, timeout_s))
@@ -257,8 +258,9 @@ def _run_main(monkeypatch, argv, *, wait_result, **k8s_kw):
 
     monkeypatch.setattr(ml, "kubectl", k8s)
     monkeypatch.setattr(ml, "wait_job", fake_wait)
-    monkeypatch.setattr(ml, "now_kst", lambda: NOW)
+    monkeypatch.setattr(ml, "now_kst", lambda: (seen.append(1), NOW)[1])
     rc = ml.main(argv)
+    assert len(seen) == 1                                # now_kst() 는 정확히 1회 — 단일 타임스탬프 계약
     return rc, k8s, waited
 
 
@@ -320,7 +322,18 @@ def test_configmap_deleted_on_failure(monkeypatch, tmp_path, capsys):
     assert rc == 1
     assert k8s.calls[-1] == DELETE_CALL                                   # 실패해도 마지막은 삭제
     assert len(waited) == 1
-    assert "[NEXT]" not in capsys.readouterr().out                        # 실패 시 mart 안내 없음
+    captured = capsys.readouterr()
+    out, err = captured.out, captured.err
+    assert "[NEXT]" not in out                                            # 실패 시 mart 안내 없음
+    assert (f"[WARN] Job이 아직 실행 중이면 입력 ConfigMap 삭제로 실패합니다 — 상태: "
+            f"kubectl --context=c get job {JOB_NAME} -n monitoring") in err
+
+
+def test_no_still_running_warn_on_success(monkeypatch, tmp_path, capsys):
+    p = write_inputs(tmp_path)
+    _run_main(monkeypatch, _argv(p), wait_result=True)
+    err = capsys.readouterr().err
+    assert "Job이 아직 실행 중이면" not in err                              # 성공 경로에는 WARN 없음
 
 
 def test_configmap_delete_failure_is_warn_only(monkeypatch, tmp_path, capsys):
@@ -396,6 +409,21 @@ def test_size_guard(monkeypatch, tmp_path, capsys):
     assert k8s.calls == []                                                # create/apply 0회
     n = ml.total_bytes(ml.read_manual_files(p["gpu"], p["serving"], None))
     assert f"[ERROR] CSV 합계 {n} bytes > 900000 — 날짜 범위를 나눠 제출" in capsys.readouterr().err
+
+
+def test_non_utf8_csv_exits_2(monkeypatch, tmp_path, capsys):
+    p = write_inputs(tmp_path)
+    p["gpu"].write_bytes("서비스".encode("cp949"))                        # 엑셀 'CSV(쉼표로 분리)' 기본값 (CP949/EUC-KR)
+    k8s = FakeK8s(cronjob_obj())
+    monkeypatch.setattr(ml, "kubectl", k8s)
+    monkeypatch.setattr(ml, "now_kst", lambda: NOW)
+    with pytest.raises(SystemExit) as e:
+        ml.main(_argv(p))
+    assert e.value.code == 2
+    assert k8s.calls == []                                                # kubectl 호출 0회
+    err = capsys.readouterr().err
+    assert "[ERROR] UTF-8 아님 — 엑셀에서는 'CSV UTF-8'로 저장 후 다시 제출" in err
+    assert "서비스" not in err                                             # 파일 내용을 에러 메시지에 echo 하지 않는다
 
 
 def test_usage_errors(monkeypatch, tmp_path, capsys):
