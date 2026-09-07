@@ -21,7 +21,7 @@ spec:
         app: token-mart-metrics
     spec:
       backoffLimit: 1
-      # 설계 §6.1 — 서버사이드 SQL 경량, 30분 타임아웃. rerun.py range_deadline_s 산식(1800 × 청크 수)과 연동 — 단독 수정 금지
+      # 설계 §6.1 — 서버사이드 SQL 경량, 30분 타임아웃. rerun.py range_deadline_s 산식(청크당 1800 × ceil(일수/7), 상한 7200)과 연동 — 단독 수정 금지
       activeDeadlineSeconds: 1800
       template:
         metadata:

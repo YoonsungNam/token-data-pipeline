@@ -165,7 +165,8 @@ if [[ "${ans}" == "y" || "${ans}" == "Y" ]]; then
 else
   # 갱신하지 않으면(N/EOF) 기존 Secret의 CH_DB_TOKEN_MART/CH_DB_TOKEN_DIM(있을 때만)을 [3/6] 프리플라이트
   # DESCRIBE 대상 DB로 쓴다 — READ_CONTRACT 배열의 db 접두가 이 값으로 보간된다. CH_USER/CH_PASSWORD도
-  # 함께 확인해 Secret이 온전한지 검증한다(둘 중 하나라도 없으면 갱신(y)을 유도하고 중단).
+  # 함께 읽어 둔다 — 아래 ch_query()가 [3/6] DESCRIBE를 이 값들로(앱 계정) 실행한다(둘 중 하나라도
+  # 없으면 갱신(y)을 유도하고 중단).
   existing_token_mart="$(${KUBECTL} get secret "${SECRET_NAME}" -n "${NAMESPACE}" -o jsonpath='{.data.CH_DB_TOKEN_MART}' 2>/dev/null | base64 -d 2>/dev/null || true)"
   existing_token_dim="$(${KUBECTL} get secret "${SECRET_NAME}" -n "${NAMESPACE}" -o jsonpath='{.data.CH_DB_TOKEN_DIM}' 2>/dev/null | base64 -d 2>/dev/null || true)"
   [[ -n "${existing_token_mart}" ]] && CH_DB_TOKEN_MART="${existing_token_mart}"
@@ -181,6 +182,18 @@ else
     exit 1
   fi
 fi
+
+# 파드 안의 clickhouse-client(로컬 접속)로 단일 쿼리 — 접속 계정은 컨테이너가 쓸 앱 계정(CH_USER/CH_PASSWORD).
+# default 계정으로 돌리면 GRANT 누락을 잡지 못하므로(accounts.sql의 GRANT SELECT ... TO mart) 앱 계정으로
+# 같은 쿼리를 실행해 "테이블 존재 + 앱 계정이 DESCRIBE/SELECT 가능"을 함께 확인한다(설계 §6.1·§7.5;
+# collectors/token-metrics/install.sh ch_query()와 동일 관례).
+# 비밀번호는 --password argv로 넘기지 않는다 — kubectl exec의 argv는 API 서버 감사 이벤트 커맨드에 그대로
+# 남으므로, here-string으로 파드 stdin에 실어 clickhouse-client가 표준입력에서 읽게 한다
+# (버전 무관 형태; -i가 있어야 here-string이 파드 stdin까지 전달된다).
+ch_query() {
+  ${KUBECTL} exec -i -n "${CH_NAMESPACE}" "${ch_pod}" -- \
+    sh -c 'clickhouse-client --user "$0" --password "$(cat)" --query "$1"' "${ch_user}" "$1" <<<"${ch_pass}"
+}
 
 # ── [3/6] 읽기 계약 프리플라이트 (설계 §6.1 3테이블/13컬럼 — DESCRIBE 대조, 불일치 시 설치 중단) ──
 # 항목 형식 "<db>.<table>_dist:<column>" — tests/test_install_contract.py가 app/preflight.py READ_CONTRACT와
@@ -208,8 +221,7 @@ for entry in "${READ_CONTRACT[@]}"; do
   table="${entry%%:*}"; col="${entry##*:}"
   if [[ "${table}" != "${prev_table}" ]]; then
     prev_table="${table}"
-    cols="$(${KUBECTL} exec -n "${CH_NAMESPACE}" "${ch_pod}" -- \
-      clickhouse-client -q "DESCRIBE TABLE ${table}" 2>/dev/null | cut -f1 || true)"
+    cols="$(ch_query "DESCRIBE TABLE ${table}" 2>/dev/null | cut -f1 || true)"
     if [[ -z "${cols}" ]]; then
       missing+=("${table%_dist}.*")
       echo "  ${table}: 테이블 부재(또는 DESCRIBE 권한 없음)"
@@ -226,7 +238,7 @@ if [[ ${#missing[@]} -gt 0 ]]; then
   echo "  (설계 §6.1 읽기 계약 불일치 — DDL/CronJob 적용 전 중단. 사내 스키마·GRANT 확인 후 재실행)"
   exit 3
 fi
-echo "  PREFLIGHT OK read_contract tables=3 columns=${#READ_CONTRACT[@]}"
+echo "  PREFLIGHT OK read_contract tables=$(printf '%s\n' "${READ_CONTRACT[@]%%:*}" | sort -u | wc -l) columns=${#READ_CONTRACT[@]}"
 
 # ── [4/6] 테이블 DDL (kubectl cp + clickhouse-client — 원형 apply_sql 그대로) ────────────────
 echo ""

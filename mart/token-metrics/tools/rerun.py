@@ -138,7 +138,7 @@ def build_job_spec(cronjob_obj, name, args, active_deadline_s=None):
         spec["activeDeadlineSeconds"] = active_deadline_s
     spec.setdefault("ttlSecondsAfterFinished", 86400)
     return {"apiVersion": "batch/v1", "kind": "Job",
-            "metadata": {"name": name, "labels": {"app": "token-mart-metrics", "rerun": "1"}},
+            "metadata": {"name": name, "labels": {"app": CRONJOB, "rerun": "1"}},
             "spec": spec}
 
 

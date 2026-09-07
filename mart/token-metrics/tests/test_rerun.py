@@ -189,21 +189,25 @@ class FakeKubectl:
         return [json.loads(inp) for a, inp in self.calls if a[:1] == ["apply"]]
 
 
-def test_window_refused_exit_2_without_kubectl(monkeypatch):
+def test_window_refused_exit_2_without_kubectl(monkeypatch, capsys):
     fake = FakeKubectl()
     monkeypatch.setattr(rerun, "kubectl", fake)
     monkeypatch.setattr(rerun, "_now_kst", lambda: kst(10, 49))
     assert rerun.main(["--context", "c"]) == 2
     assert rerun.main(["--context", "c", "--from", "2026-08-01", "--to", "2026-08-02"]) == 2
     assert fake.calls == []                                                # 창 밖이면 kubectl 미호출
+    # T11 런타임이 이 문구를 그대로 인용한다 — 고정 (SHOULD-3(b)(8))
+    assert "RERUN REFUSED window" in capsys.readouterr().err
 
 
-def test_active_jobs_refused_exit_2_even_with_force(monkeypatch):
+def test_active_jobs_refused_exit_2_even_with_force(monkeypatch, capsys):
     fake = FakeKubectl(jobs=jobs_json(("token-mart-daily-abc", {"active": 1})))
     monkeypatch.setattr(rerun, "kubectl", fake)
     monkeypatch.setattr(rerun, "_now_kst", lambda: kst(10, 49))
     assert rerun.main(["--context", "c", "--force"]) == 2
     assert [a[:2] for a, _ in fake.calls] == [["get", "jobs"]]            # 활성 Job 조회 후 중단
+    # T11 런타임이 이 문구를 그대로 인용한다 — 고정 (SHOULD-3(b)(8))
+    assert "RERUN REFUSED active_jobs=" in capsys.readouterr().err
 
 
 def test_manual_mode_creates_job_from_cronjob(monkeypatch):
@@ -284,3 +288,57 @@ def test_main_kubectl_failure_is_clean_error_not_traceback(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "[ERROR] kubectl 실패 (rc=1): kubectl get jobs" in err
     assert "You must be logged in to the server" in err
+
+
+# ── kubectl()/wait_job() 계약 (SHOULD-3(b)) ───────────────────────────────────────────────
+
+def test_kubectl_builds_expected_argv_and_calls_subprocess_run(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return types.SimpleNamespace(stdout="{}")
+
+    monkeypatch.setattr(rerun.subprocess, "run", fake_run)
+    rerun.kubectl("homelab", ["get", "jobs", "-n", "monitoring", "-o", "json"],
+                  capture=True, input_data=None)
+    assert len(calls) == 1
+    cmd, kwargs = calls[0]
+    assert cmd == ["kubectl", "--context=homelab", "--insecure-skip-tls-verify",
+                   "get", "jobs", "-n", "monitoring", "-o", "json"]
+    assert kwargs["check"] is True
+    assert kwargs["text"] is True
+    assert kwargs["capture_output"] is True
+    assert kwargs["input"] is None
+
+
+def test_wait_job_returns_true_on_complete_condition(monkeypatch):
+    calls = {"get_job": 0}
+
+    def fake_kubectl(context, args, *, capture=False, input_data=None):
+        if args[:2] == ["get", "job"]:
+            calls["get_job"] += 1
+            conditions = [] if calls["get_job"] == 1 else [{"type": "Complete", "status": "True"}]
+            return types.SimpleNamespace(stdout=json.dumps({"status": {"conditions": conditions}}))
+        if args[:2] == ["get", "pods"]:
+            return types.SimpleNamespace(stdout="")                        # 파드 없음 — 로그 스트리밍 스킵
+        raise AssertionError(f"unexpected kubectl call: {args}")
+
+    monkeypatch.setattr(rerun, "kubectl", fake_kubectl)
+    monkeypatch.setattr(rerun.time, "sleep", lambda s: None)
+    assert rerun.wait_job("c", "ns", "job-1", 3600) is True
+    assert calls["get_job"] == 2                                           # 2번째 폴링에서 Complete
+
+
+def test_wait_job_returns_false_on_failed_condition(monkeypatch):
+    def fake_kubectl(context, args, *, capture=False, input_data=None):
+        if args[:2] == ["get", "job"]:
+            return types.SimpleNamespace(stdout=json.dumps(
+                {"status": {"conditions": [{"type": "Failed", "status": "True"}]}}))
+        if args[:2] == ["get", "pods"]:
+            return types.SimpleNamespace(stdout="")
+        raise AssertionError(f"unexpected kubectl call: {args}")
+
+    monkeypatch.setattr(rerun, "kubectl", fake_kubectl)
+    monkeypatch.setattr(rerun.time, "sleep", lambda s: None)
+    assert rerun.wait_job("c", "ns", "job-1", 3600) is False
