@@ -153,7 +153,13 @@ def main(argv=None, client=None, now_fn=now_kst) -> int:
     # distributed_product_mode='global': 불변식 SQL도 _dist 대상 서브쿼리/조인을 각
     # 샤드에서 전역 조회하도록 강제 — insert_select와 동일 취지(로컬 샤드만 보고 부분
     # 집계하는 사고 방지, §4.0 분산 조인 표준).
-    result = ch_client.query(sql, settings={"distributed_product_mode": "global"})
+    # B5(M-6, additive) — --sql(invariants_metrics.sql)만 join_use_nulls=0을 추가로 고정한다
+    # (그 파일 헤더 :33이 이 의존을 명시 — LEFT JOIN 미스는 ''/0). 기본 invariants.sql 경로는
+    # 이 설정이 없어도 동일하게 동작하므로(둘 다 zero-diff 대상) 손대지 않는다 — 동작·출력 불변.
+    settings = {"distributed_product_mode": "global"}
+    if args.sql:
+        settings["join_use_nulls"] = 0
+    result = ch_client.query(sql, settings=settings)
     rows = list(result.result_rows or [])
 
     if rows:

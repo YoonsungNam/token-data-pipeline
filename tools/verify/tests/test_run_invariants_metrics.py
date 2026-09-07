@@ -102,8 +102,11 @@ def test_sql_flag_default_is_invariants_sql(monkeypatch):
                 "FROM {FACT}.t WHERE date = '{DATE}'")
 
     monkeypatch.setattr(ri, "load_sql", fake_load)
-    assert ri.main(["--date", "2026-09-03"], client=FakeCH([])) == 0
+    client = FakeCH([])
+    assert ri.main(["--date", "2026-09-03"], client=client) == 0
     assert seen == [ri.SQL_PATH]
+    # B5(M-6) — 기본(--sql 미지정) 경로는 join_use_nulls을 보내지 않는다(기존 동작·출력 불변).
+    assert client.last_settings == {"distributed_product_mode": "global"}
 
 
 def test_sql_flag_loads_metrics_file(capsys):
@@ -120,7 +123,9 @@ def test_sql_flag_loads_metrics_file(capsys):
     assert "fact.raw_token_metrics_summary_1d_dist" in sent
     assert "gpu_data.dim_token_gpu_tco_dist" in sent
     assert "mart.agg_token_gpu_group_1d_dist" in sent
-    assert fake.last_settings == {"distributed_product_mode": "global"}
+    # B5(M-6) — invariants_metrics.sql 헤더(:33)가 명시하는 join_use_nulls=0 의존을 --sql
+    # 경로에서만 추가로 고정한다(invariants.sql 기본 경로는 그대로 — 위 테스트가 대조).
+    assert fake.last_settings == {"distributed_product_mode": "global", "join_use_nulls": 0}
     out = capsys.readouterr().out
     assert "ALL INVARIANTS PASS" in out
     assert "sql=invariants_metrics.sql" in out
@@ -222,6 +227,11 @@ def test_metrics_cost_predicate_matches_m1():
     assert "raw_token_metrics_summary_1d_dist" in blk
     assert "abs(ifNull(m.model_cost_krw, 0) - ifNull(f.fact_cost, 0)) > 1" in blk
     assert "isNull(m.model_cost_krw) != (f.tco_null_cnt > 0)" in blk
+    # A3 — 조인 키/서브쿼리 날짜 술어를 변이 저항적으로 고정(공백 정규화로 재포맷에는 안전, 키
+    # 변경에는 실패).
+    blk_norm = " ".join(blk.split())
+    assert "ON f.service = m.service AND f.canon_model = m.model" in blk_norm
+    assert "WHERE g.date = '{DATE}'" in blk
 
 
 def test_metrics_sql_no_coalesce_and_no_user_id():
@@ -267,7 +277,8 @@ def test_share_sum_mismatch_modes_and_null_rule():
     assert "FROM {MART}.agg_token_model_share_1d_dist" in blk
     assert "denominator_mode IN ('all_services','provider_reported','token_not_reported')" in blk
     assert "isNotNull(model_cost_krw)" in blk
-    assert "GROUP BY model" in blk
+    # A3 — 그룹핑 키가 늘어나면(예: ", mode") 매칭 실패하도록 라인엔드/`)` 앵커
+    assert re.search(r"GROUP BY model\s*[\n)]", blk)
     assert ("HAVING abs(ifNull(sum(allocated_cost_krw), 0) "
             "- ifNull(any(model_cost_krw), 0)) > 1") in blk
 
@@ -277,7 +288,8 @@ def test_dup_key_blocks_group_by_full_order_by_key():
     gpu = _block(code, "metrics_gpu_dup_key")
     srv = _block(code, "metrics_serving_dup_key")
     assert "FROM {FACT}.raw_token_metrics_gpu_1d_dist" in gpu
-    assert "GROUP BY service, model, gpu_type, category" in gpu
+    # A3 — 그룹핑 키 변경(컬럼 추가/제거)에 실패하도록 라인엔드/`)` 앵커
+    assert re.search(r"GROUP BY service, model, gpu_type, category\s*[\n)]", gpu)
     assert "FROM {FACT}.raw_token_metrics_serving_1d_dist" in srv
     assert "GROUP BY service, model, metric, name" in srv
     for blk in (gpu, srv):
