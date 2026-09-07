@@ -402,3 +402,14 @@ def test_normalize_result_direct_construction_defaults():
     r = NormalizeResult(generated_at=NOW)
     assert (r.rows, r.rejected, r.merged_dups, r.warns, r.engine_type, r.engine_version) == (0, 0, 0, {}, "", "")
     assert r.is_nodata and r.warn_total == 0
+
+
+# ---------- exported literals pinned (source_type column · SERVICE_RESULT marker · T7 consumers) ----------
+
+from app.normalize import LATENCY_KEYS, PCT_KEYS  # noqa: E402
+
+
+def test_exported_literals_pinned():
+    assert (SOURCE_API, SOURCE_MANUAL) == ("metrics-api-v1", "manual-v0")
+    assert PCT_KEYS == ("p50", "p90", "p95", "p99")
+    assert LATENCY_KEYS == {"ttftMs": "ttft_ms", "itlMs": "itl_ms", "e2eMs": "e2e_ms"}
