@@ -39,7 +39,7 @@ from app.ch import CHGate, DB_DIM, DB_FACT, DB_MART, DB_TOKEN_DIM, DB_TOKEN_MART
 from app.config import Config, load_config
 from app.mart import Coverage, batch_line, compute_coverage, mutation_budget_exceeded, target_dates
 from app.preflight import contract_tables, missing_columns
-from app.steps import MART_TABLES, StepError, SUB_REG, SUB_USAGE_SVC, run_m1, run_m3, run_m4
+from app.steps import MART_TABLES, StepError, SUB_REG, SUB_USAGE_SVC, run_m1, run_m2, run_m3, run_m4
 
 log = logging.getLogger("app.batch")
 
@@ -83,9 +83,10 @@ FROM {DB_TOKEN_MART}.agg_token_service_1d_dist
 WHERE date = {{d:Date}}
 """
 
-# 실행 순서 고정: M1 → M3. T6가 ("rows_share", run_m4), T7이 ("rows_group", run_m2)를 append.
 # 각 러너: fn(gate, date) -> {"<key>": int, "warns": list[str]}.
-RUNNERS: list[tuple[str, Callable]] = [("rows_mart", run_m1), ("rows_check", run_m3), ("rows_share", run_m4)]
+# 실행 순서 고정(설계 §6.1 §4.0 변이 순서 M1·M3·M4·M2): M1 → M3 → M4 → M2. RUNNERS 4개 완성(Plan 6c T7).
+RUNNERS: list[tuple[str, Callable]] = [("rows_mart", run_m1), ("rows_check", run_m3),
+                                       ("rows_share", run_m4), ("rows_group", run_m2)]
 
 # 마커 필드(Plan 6a H 고정) — rows_group(T7)은 마커에 싣지 않고 로그만
 _MARKER_ROW_KEYS = ("rows_mart", "rows_check", "rows_share")
@@ -243,6 +244,7 @@ def run_batch(cfg: Config, date: str, gate=None, *, token_mart_present: bool | N
     warns: list[str] = []
     coverage = _EMPTY_COVERAGE
     rows = {k: 0 for k in _MARKER_ROW_KEYS}
+    rows.update({k: 0 for k, _ in RUNNERS})   # 마커 밖 러너 키(rows_group)도 0 초기화 — 실패 시에도 존재(T7)
     skip_share = False
 
     try:
@@ -265,6 +267,8 @@ def run_batch(cfg: Config, date: str, gate=None, *, token_mart_present: bool | N
                 continue
             result = fn(gate, date)
             rows[key] = int(result[key])
+            if key not in _MARKER_ROW_KEYS:
+                log.info("M2 %s=%d", key, rows[key])   # rows_group — 마커 미포함(Plan 6a H), 로그만
             for w in result["warns"]:
                 # 컨트롤러 결정 fix1-1: 생산자(steps.run_m3 등)가 이미 CHECK WARN|INFO 접두 줄을
                 # 찍었다면 재출력하지 않고 집계만 한다 — 접두 없는 코드(dup_suspect:<dist> 등,

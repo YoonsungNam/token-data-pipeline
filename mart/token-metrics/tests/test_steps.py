@@ -1074,3 +1074,205 @@ def test_run_m3_default_includes_t6_stretch_blocks():
     inserted_sql = gate.inserted[0][0]
     for name in M4_STRETCH_NAMES:
         assert f"'{name}' AS check_name" in inserted_sql, name
+
+
+# ============================================================================
+# T7 — M2 agg_token_gpu_group_1d(할당×24·idle 클램프·identity_gap·unattributed=flagged+other) + M3 stretch 4블록(20블록 완성)
+# ============================================================================
+
+M2_DATE = "2026-09-03"
+M3_STRETCH_NAMES_T7 = ["provider_ambiguous", "vendor_price_missing", "consumer_tokens_exceed_provider",
+                       "no_allocation", "sum_hours_over_allocation",
+                       "gpu_block_empty_unexpected", "serving_block_empty_unexpected"]
+T7_GROUP_BLOCKS = {"no_allocation", "sum_hours_over_allocation"}          # 그룹×기종 단위(gpu_type 채움)
+T7_ANCHOR_BLOCKS = {"gpu_block_empty_unexpected", "serving_block_empty_unexpected"}   # 서비스 단위
+
+
+def _m2_outer_select() -> str:
+    return steps.SQL_M2[steps.SQL_M2.rindex("\nSELECT\n"):steps.SQL_M2.index("\nFROM keys AS k")]
+
+
+def test_m2_insert_column_list_matches_ddl_order():
+    cols = ddl_columns("agg_token_gpu_group_1d_local")
+    assert len(cols) == 23                                   # Plan 6a DDL 정본(설계 §6.1 컬럼 목록 23)
+    assert cols[:3] == ["date", "service_group", "gpu_type"] and cols[-1] == "created_by"
+    assert insert_columns(steps.SQL_M2) == cols
+    aliases = re.findall(r"\bAS (\w+)\s*,?\s*$", _m2_outer_select(), re.M)
+    assert aliases == cols
+    assert re.search(r"'token-metrics-pipeline'\s+AS created_by", steps.SQL_M2)
+    assert steps.SQL_M2.lstrip().startswith(f"INSERT INTO {DB_MART}.agg_token_gpu_group_1d_dist")
+
+
+def test_m2_allocated_hours_is_count_times_24():
+    assert "al.allocated_gpu_count * 24" in steps.SQL_M2
+    assert re.search(r"allocated_gpu_count \* 24\s+AS allocated_gpu_hours", steps.SQL_M2)
+    assert "allocated_gpu_hours * t.tco" in steps.SQL_M2       # 그룹 총비용 = 할당 × TCO (정의서 3.4)
+    assert "reported_gpu_hours_total / 24" in steps.SQL_M2     # equiv_gpu_count
+
+
+def test_m2_idle_clamped_with_greatest_zero():
+    assert "greatest(" in steps.SQL_M2
+    assert "- reported_gpu_hours_total, 0)" in steps.SQL_M2
+    assert "reported_gpu_hours_total > allocated_gpu_hours" in steps.SQL_M2          # over_report (I1)
+    assert re.search(r"toUInt8\(ifNull\(reported_gpu_hours_total > allocated_gpu_hours, 0\)\)\s+AS over_report", steps.SQL_M2)
+    assert re.search(r"if\(isNull\(allocated_gpu_hours\), NULL,\s+greatest\(allocated_gpu_hours - reported_gpu_hours_total, 0\)\)\s+AS idle_gpu_hours",
+                     steps.SQL_M2)
+    assert "idle_gpu_hours * t.tco" in steps.SQL_M2
+
+
+def test_m2_identity_gap_from_loaded_columns():
+    # I2: gap = group_total − model_cost_sum − test_cost − idle_cost − unattributed — 적재되는 별칭끼리 계산
+    assert ("group_total_cost_krw - model_cost_sum_krw - test_cost_krw - idle_cost_krw - unattributed_cost_krw"
+            in steps.SQL_M2)
+    assert "(serving_gpu_hours + standby_gpu_hours) * t.tco" in steps.SQL_M2   # Σ C = (serving+standby)×TCO
+    assert "test_gpu_hours * t.tco" in steps.SQL_M2                            # 실험 비용(그룹 귀속)
+    # R1(scan-B D3): unattributed = (flagged + other) × TCO — other = 비FAIL 행 중 category ∉ {serving,standby,test}
+    assert "(flagged_gpu_hours + gp.other_gpu_hours) * t.tco" in steps.SQL_M2
+    assert "flagged_gpu_hours * t.tco" not in steps.SQL_M2
+    assert re.search(r"toUInt8\(isNull\(t\.tco\)\)\s+AS tco_missing", steps.SQL_M2)
+    assert "reported_gpu_hours_total / allocated_gpu_hours" in steps.SQL_M2    # utilization
+    assert "allocated_gpu_hours = 0, NULL" in steps.SQL_M2                     # 0 할당 → NULL(0 나눗셈 방지)
+
+
+def test_m2_cost_from_fact_by_gpu_type_not_m1():
+    assert "agg_token_model_cost_1d" not in steps.SQL_M2
+    assert "agg_token_model_share_1d" not in steps.SQL_M2 and "token_metrics_check_1d" not in steps.SQL_M2
+    assert "tco" in steps.SQL_M2
+    assert steps.SUB_EFF_TCO in steps.SQL_M2
+    assert f"{DB_FACT}.raw_token_metrics_gpu_1d_dist AS g" in steps.SQL_M2
+    assert "token_usage_1d" not in steps.SQL_M2                # 토큰 측 무관(GPU-only 테이블)
+
+
+def test_m2_excludes_unknown_gpu_type_allocation():
+    assert "gpu_type != 'unknown'" in steps.SUB_EFF_ALLOC and steps.SUB_EFF_ALLOC in steps.SQL_M2
+    # alloc 키 = 앵커 서비스가 있는 그룹만 (설계 §6.1 "그룹 내 서비스 앵커 ≥1")
+    assert f"al.service_group GLOBAL IN (SELECT service_group FROM {steps.SUB_ANCHOR})" in steps.SQL_M2
+    assert f"g.service GLOBAL IN {steps._M3_ANCHORED}" in steps.SQL_M2
+
+
+def test_m2_hours_five_way_split_and_fail_pred():
+    grp = steps._M2_GRP
+    assert grp in steps.SQL_M2
+    assert f"sumIf(g.gpu_hours, g.category = 'serving' AND NOT {steps.FAIL_PRED})" in grp
+    assert f"sumIf(g.gpu_hours, g.category = 'standby' AND NOT {steps.FAIL_PRED})" in grp
+    assert f"sumIf(g.gpu_hours, g.category = 'test' AND NOT {steps.FAIL_PRED})" in grp
+    assert "sum(g.gpu_hours)" in grp and "AS reported_gpu_hours_total" in grp   # 플래그 포함 전체
+    assert f"sumIf(g.gpu_hours, {steps.FAIL_PRED})" in grp and "AS flagged_gpu_hours" in grp
+    # R1(scan-B D3): other = 비FAIL 행 중 category ∉ {serving,standby,test} — unattributed_cost_krw에 합류
+    assert (f"sumIf(g.gpu_hours, g.category NOT IN ('serving', 'standby', 'test') AND NOT {steps.FAIL_PRED})"
+            in grp and "AS other_gpu_hours" in grp)
+    assert "GROUP BY g.service_group, g.gpu_type" in grp
+
+
+def test_m2_quality_priority_order():
+    sql = steps.SQL_M2
+    order = [sql.index(f"'{f}'") for f in ("over_report", "no_tco", "no_allocation", "flagged", "normal")]
+    assert order == sorted(order)
+    assert "multiIf(" in sql and "'normal')" in sql
+    assert "'partial'" not in sql and "'manual'" not in sql       # M1 전용 플래그 없음
+
+
+def test_m2_expected_key_tuple():
+    assert "uniqExact((service_group, gpu_type))" in steps.EXPECTED_SQL_M2
+    assert "\n    UNION ALL\n" in steps.EXPECTED_SQL_M2
+    assert "UNION DISTINCT" in steps.SQL_M2
+    for frag in (steps._M2_GPU_KEYS, steps._M2_ALLOC_KEYS):
+        assert frag in steps.SQL_M2 and frag in steps.EXPECTED_SQL_M2
+    assert "{d:Date}" in steps.EXPECTED_SQL_M2 and "GLOBAL IN" in steps.EXPECTED_SQL_M2
+
+
+def test_run_m2_returns_rows_group_from_verify_actual_and_routes_to_m2():
+    gate = FakeGate(exists=True, verify_actual=4, expected_overrides={"m2": 4})
+    out = steps.run_m2(gate, M2_DATE)
+    assert out == {"rows_group": 4, "warns": []}
+    assert gate.order == [("exists", "m2"), ("delete", "m2"), ("insert", "m2"), ("query", "m2"), ("verify", "m2")]
+    assert gate.delete_preds == [("m2", "")]
+    assert gate.written[0][1] == steps.SQL_M2 and gate.written[0][2] == {"d": M2_DATE}
+    assert gate.query_calls[0][1] == steps.EXPECTED_SQL_M2
+    assert gate.verify_calls == [("m2", M2_DATE, 4)]
+
+
+def test_run_m2_zero_rows_day_is_success_and_dup_or_verify_paths():
+    empty = FakeGate(exists=False, verify_actual=0, expected_overrides={"m2": 0})
+    assert steps.run_m2(empty, M2_DATE) == {"rows_group": 0, "warns": []}   # gpu·할당 모두 없는 날
+    assert ("delete", "m2") not in empty.order
+    dup = FakeGate(exists=True, verify_actual=5, expected_overrides={"m2": 3})
+    out = steps.run_m2(dup, M2_DATE)
+    assert out["rows_group"] == 5 and out["warns"] == [f"dup_suspect:{DB_MART}.agg_token_gpu_group_1d_dist"]
+    with pytest.raises(steps.StepError):
+        steps.run_m2(FakeGate(exists=True, verify_ok=False, verify_actual=1), M2_DATE)
+
+
+def test_m3_stretch_seven_names_after_t7():
+    assert [n for n, _ in steps.M3_BLOCKS_STRETCH] == M3_STRETCH_NAMES_T7
+    blocks = steps.M3_BLOCKS_CORE + steps.M3_BLOCKS_STRETCH
+    assert len(blocks) == 20
+    assert len(set(n for n, _ in blocks)) == 20
+    assert steps.build_m3_sql(blocks).count("\nUNION ALL\n") == 19
+    assert steps.build_m3_expected(blocks).count("\nUNION ALL\n") == 19
+    stretch = dict(steps.M3_BLOCKS_STRETCH)
+    assert "'FAIL' AS severity" in stretch["sum_hours_over_allocation"]
+    for name in ("no_allocation", "gpu_block_empty_unexpected", "serving_block_empty_unexpected"):
+        assert "'WARN' AS severity" in stretch[name], name
+
+
+def test_m3_t7_blocks_follow_core_discipline():
+    stretch = dict(steps.M3_BLOCKS_STRETCH)
+    for name in T7_GROUP_BLOCKS | T7_ANCHOR_BLOCKS:
+        sql = stretch[name]
+        assert sql.startswith("SELECT\n"), name
+        assert _m3_select_header_aliases(sql) == list(steps.M3_COLUMNS), name
+        assert f"'{name}' AS check_name" in sql, name
+        assert "    {d:Date} AS date," in sql, name
+        assert "'token-metrics-pipeline' AS created_by" in sql, name
+        assert "\nUNION ALL\n" not in sql and "\nUNION DISTINCT\n" not in sql, name
+        assert "coalesce(" not in sql.lower() and "SELECT *" not in sql and "%(" not in sql, name
+        header = sql.split("\nFROM", 1)[0]
+        assert next(ln for ln in header.splitlines() if ln.endswith(" AS model,")).strip() == "'' AS model,", name
+        gpu_line = next(ln for ln in header.splitlines() if ln.endswith(" AS gpu_type,")).strip()
+        svc_line = next(ln for ln in header.splitlines() if ln.endswith(" AS service,")).strip()
+        if name in T7_GROUP_BLOCKS:
+            assert gpu_line == "x.gpu_type AS gpu_type," and svc_line == "'' AS service,", name
+            assert "x.service_group AS service_group," in sql and "concat('gpu_type=', x.gpu_type) AS detail" in sql, name
+            assert steps._M2_GRP in sql and steps.SUB_EFF_ALLOC in sql, name
+            assert "toNullable(toFloat64(x.reported_gpu_hours_total)) AS observed" in sql, name
+        else:
+            assert gpu_line == "'' AS gpu_type," and svc_line == "an.service AS service,", name
+            assert "an.service_group AS service_group," in sql and "an.source_type AS source_type," in sql, name
+            assert steps.SUB_ANCHOR in sql and steps.SUB_REG in sql, name
+            assert "toNullable(toFloat64(1)) AS threshold" in sql, name
+        assert "reported_service" not in header, name          # detail/헤더에 응답 원문 없음(§5.6)
+
+
+def test_m3_no_allocation_and_over_allocation_predicates():
+    stretch = dict(steps.M3_BLOCKS_STRETCH)
+    no_alloc = stretch["no_allocation"]
+    assert "WHERE isNull(al.allocated_gpu_count)" in no_alloc            # = M2 allocated_gpu_hours NULL
+    assert "toNullable(toFloat64(0)) AS threshold" in no_alloc
+    over = stretch["sum_hours_over_allocation"]
+    assert "WHERE x.reported_gpu_hours_total > al.allocated_gpu_count * 24" in over
+    assert "toNullable(toFloat64(al.allocated_gpu_count * 24)) AS threshold" in over
+    for sql in (no_alloc, over):
+        assert "GLOBAL LEFT JOIN" in sql and "al.service_group = x.service_group AND al.gpu_type = x.gpu_type" in sql
+
+
+def test_m3_block_empty_unexpected_pair_uses_registry_expectation():
+    stretch = dict(steps.M3_BLOCKS_STRETCH)
+    gpu = stretch["gpu_block_empty_unexpected"]
+    assert "WHERE r.expect_gpu = 1 AND an.gpu_rows = 0" in gpu
+    assert "'expect_gpu=1' AS detail" in gpu and "toNullable(toFloat64(an.gpu_rows)) AS observed" in gpu
+    serving = stretch["serving_block_empty_unexpected"]
+    assert "WHERE r.expect_serving = 1 AND an.serving_rows = 0" in serving
+    assert "'expect_serving=1' AS detail" in serving and "toNullable(toFloat64(an.serving_rows)) AS observed" in serving
+    for sql in (gpu, serving):
+        assert f"FROM {steps.SUB_ANCHOR} AS an" in sql
+        assert f"GLOBAL LEFT JOIN {steps.SUB_REG} AS r ON r.service = an.service" in sql
+
+
+def test_run_m3_default_includes_t7_stretch_blocks():
+    gate = M3Gate([], rows=1)
+    steps.run_m3(gate, M2_DATE)
+    inserted_sql = gate.inserted[0][0]
+    for name in M3_STRETCH_NAMES_T7:
+        assert f"'{name}' AS check_name" in inserted_sql, name
+    assert inserted_sql.count("\nUNION ALL\n") == 19

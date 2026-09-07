@@ -396,3 +396,34 @@ def test_c4_provider_reported_denominator_matches_sql_formula_and_python_referen
         for s in consumers:
             assert alloc_ref[s] / C == pytest.approx(consumer_shares[s])
 
+
+def test_group_overhead_reference_matches_m2_semantics():
+    """Plan 6c T7: SQL_M2 규칙 = group_overhead — allocated×24 입력, idle = greatest(allocated − reported, 0),
+    over_report = reported > allocated, gap = group_total − Σ C − test − idle − unattributed (I2).
+    R1(scan-B D3): SQL_M2는 flagged_gpu_hours + gp.other_gpu_hours(비FAIL 행 중 category ∉
+    {serving,standby,test})의 합을 이 참조 구현의 `flagged` 인자로 넘긴다 — group_overhead의
+    시그니처 자체는 바뀌지 않는다(app/mart.py는 수정 대상이 아니다)."""
+    ok = group_overhead(48.0, 32.0, 24.0, 8.0, 0.0, 0.0, 5000.0)     # 할당 2장×24h, 보고 32h
+    assert ok["idle_gpu_hours"] == 16.0 and ok["over_report"] == 0
+    assert ok["group_total_cost_krw"] == 240000.0 and ok["model_cost_sum_krw"] == 160000.0
+    assert ok["idle_cost_krw"] == 80000.0 and ok["identity_gap_krw"] == 0.0
+    assert abs(ok["utilization"] - 32.0 / 48.0) < 1e-12
+    over = group_overhead(24.0, 32.0, 24.0, 8.0, 0.0, 0.0, 5000.0)   # 할당 1장×24h < 보고 32h (I1 위반)
+    assert over["idle_gpu_hours"] == 0.0 and over["over_report"] == 1
+    assert over["identity_gap_krw"] == -40000.0                      # 120000 − 160000 − 0 − 0 − 0
+    # SQL_M2와 같은 NULL 규칙: 할당 없음 → idle/utilization/group_total/gap None, 비용 3종은 산출
+    no_alloc = group_overhead(None, 32.0, 24.0, 8.0, 0.0, 0.0, 5000.0)
+    assert no_alloc["idle_gpu_hours"] is None and no_alloc["over_report"] == 0
+    assert no_alloc["group_total_cost_krw"] is None and no_alloc["identity_gap_krw"] is None
+    assert no_alloc["model_cost_sum_krw"] == 160000.0
+    # TCO 없음 → 비용 6키 전부 None (SQL_M2: Nullable 산술 전파 + tco_missing=1)
+    no_tco = group_overhead(48.0, 32.0, 24.0, 8.0, 0.0, 0.0, None)
+    for key in ("group_total_cost_krw", "model_cost_sum_krw", "test_cost_krw",
+                "idle_cost_krw", "unattributed_cost_krw", "identity_gap_krw"):
+        assert no_tco[key] is None, key
+    assert no_tco["idle_gpu_hours"] == 16.0
+    # R1: unknown-category(other) 행 포함 — flagged 2h + other 3h = SQL_M2의 (flagged_gpu_hours + other_gpu_hours)
+    mixed = group_overhead(48.0, 37.0, 24.0, 8.0, 0.0, 2.0 + 3.0, 5000.0)   # reported_total 37 = 24+8+0+2+3
+    assert mixed["idle_gpu_hours"] == 11.0
+    assert mixed["unattributed_cost_krw"] == 25000.0
+    assert mixed["identity_gap_krw"] == 0.0   # 240000 − 160000 − 0 − 55000 − 25000

@@ -653,12 +653,6 @@ def _stub_runners(monkeypatch, m4_rows=7):
     return calls
 
 
-def test_runners_order_m1_m3_m4():
-    assert [k for k, _ in batch.RUNNERS] == ["rows_mart", "rows_check", "rows_share"]
-    assert batch.RUNNERS[2][1] is run_m4
-    assert [fn.__name__ for _, fn in batch.RUNNERS] == ["run_m1", "run_m3", "run_m4"]
-
-
 def test_token_mart_absent_skips_m4_rows_share_zero(monkeypatch):
     calls = _stub_runners(monkeypatch, m4_rows=7)
     out = batch.run_batch(Config(), T6_DATE, gate=_T6Gate(), token_mart_present=False)
@@ -690,3 +684,83 @@ def test_m0b_query_decides_skip_share_when_flag_not_given(monkeypatch):
     gate2 = _T6Gate(token_rows=12)
     out2 = batch.run_batch(Config(), T6_DATE, gate=gate2)
     assert out2.skip_share is False and calls["m4"] == [T6_DATE] and "rows_share=2 warn=0" in out2.line
+
+
+# ============================================================================
+# T7 — RUNNERS 4개 완성(M1→M3→M4→M2) · rows_group 마커 미포함(로그만) · M2 실패 = FAILURE
+# ============================================================================
+from app.steps import run_m2  # noqa: E402
+
+T7_DATE = "2026-09-03"
+
+
+def _stub_four_runners(monkeypatch, rows_group=4, m2_raises=None):
+    """RUNNERS를 4개 스텁으로 교체(M1 3행·M3 5행·M4 7행·M2 rows_group행). 반환 = 호출 순서 기록."""
+    calls = []
+
+    def m1(gate, date):
+        calls.append("rows_mart")
+        return {"rows_mart": 3, "warns": []}
+
+    def m3(gate, date):
+        calls.append("rows_check")
+        return {"rows_check": 5, "warns": []}
+
+    def m4(gate, date):
+        calls.append("rows_share")
+        return {"rows_share": 7, "warns": []}
+
+    def m2(gate, date):
+        calls.append("rows_group")
+        if m2_raises is not None:
+            raise m2_raises
+        return {"rows_group": rows_group, "warns": []}
+
+    monkeypatch.setattr(batch, "RUNNERS", [("rows_mart", m1), ("rows_check", m3),
+                                           ("rows_share", m4), ("rows_group", m2)])
+    return calls
+
+
+def test_runners_final_order_four():
+    assert [k for k, _ in batch.RUNNERS] == ["rows_mart", "rows_check", "rows_share", "rows_group"]
+    assert [fn.__name__ for _, fn in batch.RUNNERS] == ["run_m1", "run_m3", "run_m4", "run_m2"]
+    assert batch.RUNNERS[3][1] is run_m2 and batch.RUNNERS[3][1] is steps.run_m2
+    assert batch._MARKER_ROW_KEYS == ("rows_mart", "rows_check", "rows_share")   # Plan 6a H 고정
+    assert "rows_group" not in batch._MARKER_ROW_KEYS
+
+
+def test_marker_has_no_rows_group_field(monkeypatch, caplog):
+    calls = _stub_four_runners(monkeypatch, rows_group=4)
+    with caplog.at_level("INFO", logger="app.batch"):
+        out = batch.run_batch(Config(), T7_DATE, gate=full_gate(), token_mart_present=True)
+    assert calls == ["rows_mart", "rows_check", "rows_share", "rows_group"]
+    m = MARKER_RE.match(out.line)
+    assert m, out.line
+    assert m.group("status") == "SUCCESS" and out.exit_code == 0
+    assert (m.group("rows_mart"), m.group("rows_check"), m.group("rows_share")) == ("3", "5", "7")
+    assert "rows_group" not in out.line                       # 마커 필드 고정(Plan 6a H)
+    assert out.rows == {"rows_mart": 3, "rows_check": 5, "rows_share": 7, "rows_group": 4}
+    assert "M2 rows_group=4" in caplog.text                    # 로그로만 노출
+
+
+def test_m2_runs_even_when_token_mart_absent(monkeypatch):
+    # M0b token_mart_absent는 M4만 스킵 — M2는 GPU-only라 실행된다(설계 §6.1 M0b)
+    calls = _stub_four_runners(monkeypatch, rows_group=2)
+    out = batch.run_batch(Config(), T7_DATE, gate=full_gate(), token_mart_present=False)
+    assert calls == ["rows_mart", "rows_check", "rows_group"]
+    assert out.skip_share is True and out.rows["rows_share"] == 0 and out.rows["rows_group"] == 2
+    assert "rows_mart=3 rows_check=5 rows_share=0 warn=1" in out.line and "status=SUCCESS" in out.line
+
+
+def test_m2_failure_marks_batch_failure(monkeypatch, capsys):
+    msg = (f"verify_count failed: {DB_MART}.agg_token_gpu_group_1d_dist date={T7_DATE} "
+           "written_rows=0 expected=3 actual=1")
+    calls = _stub_four_runners(monkeypatch, m2_raises=StepError(msg))
+    out = batch.run_batch(Config(), T7_DATE, gate=full_gate(), token_mart_present=True)
+    assert calls == ["rows_mart", "rows_check", "rows_share", "rows_group"]   # M2가 마지막 러너
+    m = MARKER_RE.match(out.line)
+    assert m, out.line
+    assert out.exit_code == 1 and m.group("status") == "FAILURE" and m.group("reason") == "verify_count"
+    assert (m.group("rows_mart"), m.group("rows_check"), m.group("rows_share")) == ("3", "5", "7")   # 선행 3개 반영
+    assert out.rows["rows_group"] == 0
+    assert "verify_count failed" in capsys.readouterr().err   # 상세는 stderr(마커 오염 금지)

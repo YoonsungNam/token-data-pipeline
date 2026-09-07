@@ -999,3 +999,188 @@ M3_BLOCKS_STRETCH.extend([
     ("vendor_price_missing", _M3_VENDOR_PRICE_MISSING),
     ("consumer_tokens_exceed_provider", _M3_CONSUMER_TOKENS_EXCEED_PROVIDER),
 ])
+
+
+# ============================================================================
+# M2 agg_token_gpu_group_1d — 그룹 귀속·유휴 (설계 §6.1 M2, §6.4 (2)(7); 정의서 3.1/3.3/3.4, I1/I2; Plan 6c T7)
+#
+# grain: date × service_group × gpu_type (쿼터 보유 단위). 행 = grp 키(앵커 서비스의 gpu 행이 있는
+# (그룹, 기종)) ∪ alloc 키(`unknown` 아닌 date 유효 할당 행 AND 그 그룹에 앵커 서비스 ≥ 1) — UNION DISTINCT.
+# 비용은 M1을 읽지 않고 fact 시간 × 그 기종 TCO를 outer에서 직접 곱한다(그레인이 기종 단위라
+# Σ_model (serving+standby)×TCO = 그룹 (serving+standby)×TCO — M1 합과 같되 M1의 "기종 하나라도 NULL이면
+# 모델 C NULL" 규칙과 무관하게 기종별로 닫힌다; 설계 해석 T7-1). TCO NULL이면 Nullable 산술로
+# 비용 6컬럼(group_total/model_cost_sum/test_cost/idle_cost/unattributed/identity_gap)이 전부 NULL.
+#   allocated_gpu_hours = allocated_gpu_count × 24 (할당 행 없음 → NULL)
+#   idle_gpu_hours      = greatest(allocated − reported_total, 0)  (I1 클램프; over_report = reported > allocated)
+#   identity_gap_krw    = group_total − model_cost_sum − test_cost − idle_cost − unattributed  (I2, 적재 컬럼끼리 계산)
+#   unattributed_cost_krw = (flagged + other) × TCO — other = 비FAIL 행 중 category ∉ {serving,standby,test} (설계 해석 D3-2: I2 항등 유지)
+# 참조 구현 app/mart.py group_overhead()와 같은 규칙 — tests/test_mart.py가 대조한다.
+# ============================================================================
+
+# gpu fact(앵커 서비스만) → (그룹, 기종) 집계 — grp CTE와 키 조각이 같은 꼬리를 공유
+_M2_GPU_TAIL = f"""FROM {DB_FACT}.raw_token_metrics_gpu_1d_dist AS g
+    WHERE g.date = {{d:Date}} AND g.service GLOBAL IN {_M3_ANCHORED}
+    GROUP BY g.service_group, g.gpu_type"""
+
+# 할당 행(unknown 제외, date 유효 최신) 중 앵커 서비스가 1개 이상인 그룹만
+_M2_ALLOC_TAIL = f"""FROM {SUB_EFF_ALLOC} AS al
+    WHERE al.service_group GLOBAL IN (SELECT service_group FROM {SUB_ANCHOR})"""
+
+# 키 조각 — SQL_M2의 keys(UNION DISTINCT)와 EXPECTED_SQL_M2(UNION ALL + uniqExact) 공유
+_M2_GPU_KEYS = f"""SELECT g.service_group AS service_group, g.gpu_type AS gpu_type
+    {_M2_GPU_TAIL}"""
+_M2_ALLOC_KEYS = f"""SELECT al.service_group AS service_group, al.gpu_type AS gpu_type
+    {_M2_ALLOC_TAIL}"""
+
+# grp — 시간 5분류(그룹 합): serving/standby/test는 비FAIL 행만, reported_total은 플래그 포함 전체,
+# flagged는 FAIL 행 전체(카테고리 무관), other는 비FAIL 행 중 category가 serving/standby/test 어디에도
+# 속하지 않는 나머지(R1: unattributed_cost_krw = (flagged + other) × TCO — I2 항등 유지).
+# M3 no_allocation/sum_hours_over_allocation 블록도 같은 조각을 쓴다.
+_M2_GRP = f"""SELECT g.service_group                                                  AS service_group,
+           g.gpu_type                                                       AS gpu_type,
+           sumIf(g.gpu_hours, g.category = 'serving' AND NOT {FAIL_PRED})   AS serving_gpu_hours,
+           sumIf(g.gpu_hours, g.category = 'standby' AND NOT {FAIL_PRED})   AS standby_gpu_hours,
+           sumIf(g.gpu_hours, g.category = 'test' AND NOT {FAIL_PRED})      AS test_gpu_hours,
+           sum(g.gpu_hours)                                                 AS reported_gpu_hours_total,
+           sumIf(g.gpu_hours, {FAIL_PRED})                                  AS flagged_gpu_hours,
+           sumIf(g.gpu_hours, g.category NOT IN ('serving', 'standby', 'test') AND NOT {FAIL_PRED})
+                                                                             AS other_gpu_hours,
+           count()                                                          AS gpu_rows
+    {_M2_GPU_TAIL}"""
+
+SQL_M2 = f"""
+INSERT INTO {DB_MART}.{T_M2}_dist
+    (date, service_group, gpu_type,
+     allocated_gpu_hours, group_total_cost_krw,
+     serving_gpu_hours, standby_gpu_hours, test_gpu_hours, reported_gpu_hours_total, flagged_gpu_hours,
+     model_cost_sum_krw, test_cost_krw, idle_gpu_hours, idle_cost_krw, unattributed_cost_krw,
+     identity_gap_krw, utilization, over_report, equiv_gpu_count, tco_missing,
+     allocation_source, quality_flag, created_by)
+WITH
+    grp AS (
+        {_M2_GRP}
+    ),
+    keys AS (
+        {_M2_GPU_KEYS}
+        UNION DISTINCT
+        {_M2_ALLOC_KEYS}
+    )
+SELECT
+    {{d:Date}}                                                        AS date,
+    k.service_group                                                   AS service_group,
+    k.gpu_type                                                        AS gpu_type,
+    al.allocated_gpu_count * 24                                       AS allocated_gpu_hours,
+    allocated_gpu_hours * t.tco                                       AS group_total_cost_krw,
+    gp.serving_gpu_hours                                              AS serving_gpu_hours,
+    gp.standby_gpu_hours                                              AS standby_gpu_hours,
+    gp.test_gpu_hours                                                 AS test_gpu_hours,
+    gp.reported_gpu_hours_total                                       AS reported_gpu_hours_total,
+    gp.flagged_gpu_hours                                              AS flagged_gpu_hours,
+    (serving_gpu_hours + standby_gpu_hours) * t.tco                   AS model_cost_sum_krw,
+    test_gpu_hours * t.tco                                            AS test_cost_krw,
+    if(isNull(allocated_gpu_hours), NULL,
+       greatest(allocated_gpu_hours - reported_gpu_hours_total, 0))   AS idle_gpu_hours,
+    idle_gpu_hours * t.tco                                            AS idle_cost_krw,
+    (flagged_gpu_hours + gp.other_gpu_hours) * t.tco                  AS unattributed_cost_krw,
+    group_total_cost_krw - model_cost_sum_krw - test_cost_krw - idle_cost_krw - unattributed_cost_krw
+                                                                      AS identity_gap_krw,
+    if(isNull(allocated_gpu_hours) OR allocated_gpu_hours = 0, NULL,
+       reported_gpu_hours_total / allocated_gpu_hours)                AS utilization,
+    toUInt8(ifNull(reported_gpu_hours_total > allocated_gpu_hours, 0)) AS over_report,
+    reported_gpu_hours_total / 24                                     AS equiv_gpu_count,
+    toUInt8(isNull(t.tco))                                            AS tco_missing,
+    al.source                                                         AS allocation_source,
+    -- 우선순위 고정(설계 해석 T7-2): over_report > no_tco > no_allocation > flagged > normal
+    multiIf(
+        over_report = 1,                 'over_report',
+        tco_missing = 1,                 'no_tco',
+        isNull(allocated_gpu_hours),     'no_allocation',
+        flagged_gpu_hours > 0,           'flagged',
+        'normal')                                                     AS quality_flag,
+    '{CREATED_BY}'                                                    AS created_by
+FROM keys AS k
+GLOBAL LEFT JOIN grp AS gp ON gp.service_group = k.service_group AND gp.gpu_type = k.gpu_type
+GLOBAL LEFT JOIN {SUB_EFF_ALLOC} AS al ON al.service_group = k.service_group AND al.gpu_type = k.gpu_type
+GLOBAL LEFT JOIN {SUB_EFF_TCO} AS t ON t.gpu_type = k.gpu_type
+"""
+
+EXPECTED_SQL_M2 = f"""
+SELECT uniqExact((service_group, gpu_type)) FROM (
+    {_M2_GPU_KEYS}
+    UNION ALL
+    {_M2_ALLOC_KEYS}
+)
+"""
+# ↑ grp(GROUP BY 키 유니크)·eff_alloc(GROUP BY service_group, gpu_type)·eff_tco(GROUP BY gpu_type)는
+# 전부 키 유니크라 keys 좌측에 fan-out이 없다 — 적재 행수 = keys의 distinct 키 수.
+
+
+def run_m2(gate, date: str) -> dict:
+    """M2 — mart.agg_token_gpu_group_1d 1테이블. 반환 {"rows_group": actual, "warns": [...]}.
+    rows_group는 마커 필드가 아니다(Plan 6a H 고정) — batch.py가 로그 `M2 rows_group=<n>`만 남긴다.
+    gpu 행도 할당 행도 없는 날은 0행 적재(expected 0 = actual 0)로 성공 — 절대 FAILURE 아님."""
+    warns: list = []
+    rows = _run_table(gate, date, f"{DB_MART}.{T_M2}_dist", f"{DB_MART}.{T_M2}_local",
+                      SQL_M2, EXPECTED_SQL_M2, warns)
+    return {"rows_group": rows, "warns": warns}
+
+
+# ============================================================================
+# M3 stretch — 그룹·앵커 4블록 (설계 §6.1 M3 stretch, §6.4 (2) I1; Plan 6c T7)
+#   17·18은 M2와 같은 조각(_M2_GRP·SUB_EFF_ALLOC)을 써서 M2 quality_flag 판정과 문자 단위로 같은 집합을
+#   본다(그룹 단위 — service '', gpu_type 채움). 19·20은 앵커(summary) × 레지스트리 기대(expect_*)
+#   — 서비스 단위(service 채움, gpu_type ''). 4블록 모두 model ''. detail은 이름·수만(§5.6).
+# ============================================================================
+
+# --- 17) no_allocation WARN — gpu 행이 있는 (그룹, 기종)에 date 유효 할당(unknown 제외)이 없거나 NULL
+#         (= M2 allocated_gpu_hours NULL·quality_flag no_allocation과 같은 술어 isNull(al.allocated_gpu_count))
+_M3_NO_ALLOCATION = _m3_select(
+    "no_allocation", "WARN",
+    service_group="x.service_group", service="''", gpu_type="x.gpu_type",
+    observed="x.reported_gpu_hours_total", threshold="0",
+    detail="concat('gpu_type=', x.gpu_type)",
+    body=f"""FROM
+(
+    {_M2_GRP}
+) AS x
+GLOBAL LEFT JOIN {SUB_EFF_ALLOC} AS al ON al.service_group = x.service_group AND al.gpu_type = x.gpu_type
+WHERE isNull(al.allocated_gpu_count)""")
+
+# --- 18) sum_hours_over_allocation FAIL — 보고 합(플래그 포함) > 할당 × 24 (I1 idle < 0 → M2 over_report=1·idle 0 클램프)
+_M3_SUM_HOURS_OVER_ALLOCATION = _m3_select(
+    "sum_hours_over_allocation", "FAIL",
+    service_group="x.service_group", service="''", gpu_type="x.gpu_type",
+    observed="x.reported_gpu_hours_total", threshold="al.allocated_gpu_count * 24",
+    detail="concat('gpu_type=', x.gpu_type)",
+    body=f"""FROM
+(
+    {_M2_GRP}
+) AS x
+GLOBAL LEFT JOIN {SUB_EFF_ALLOC} AS al ON al.service_group = x.service_group AND al.gpu_type = x.gpu_type
+WHERE x.reported_gpu_hours_total > al.allocated_gpu_count * 24""")
+
+# --- 19) gpu_block_empty_unexpected WARN — 앵커는 있는데 gpu 블록 0행이고 레지스트리가 expect_gpu=1
+_M3_GPU_BLOCK_EMPTY_UNEXPECTED = _m3_select(
+    "gpu_block_empty_unexpected", "WARN",
+    service_group="an.service_group", service="an.service",
+    observed="an.gpu_rows", threshold="1", detail="'expect_gpu=1'", source_type="an.source_type",
+    body=f"""FROM {SUB_ANCHOR} AS an
+GLOBAL LEFT JOIN {SUB_REG} AS r ON r.service = an.service
+WHERE r.expect_gpu = 1 AND an.gpu_rows = 0""")
+
+# --- 20) serving_block_empty_unexpected WARN — 앵커는 있는데 serving 블록 0행이고 레지스트리가 expect_serving=1
+_M3_SERVING_BLOCK_EMPTY_UNEXPECTED = _m3_select(
+    "serving_block_empty_unexpected", "WARN",
+    service_group="an.service_group", service="an.service",
+    observed="an.serving_rows", threshold="1", detail="'expect_serving=1'", source_type="an.source_type",
+    body=f"""FROM {SUB_ANCHOR} AS an
+GLOBAL LEFT JOIN {SUB_REG} AS r ON r.service = an.service
+WHERE r.expect_serving = 1 AND an.serving_rows = 0""")
+
+M3_BLOCKS_STRETCH.extend([
+    ("no_allocation", _M3_NO_ALLOCATION),
+    ("sum_hours_over_allocation", _M3_SUM_HOURS_OVER_ALLOCATION),
+    ("gpu_block_empty_unexpected", _M3_GPU_BLOCK_EMPTY_UNEXPECTED),
+    ("serving_block_empty_unexpected", _M3_SERVING_BLOCK_EMPTY_UNEXPECTED),
+])
+# ↑ 20블록 완성: core 13 + stretch 7(T6 3 + T7 4). run_m3 기본 = M3_BLOCKS_CORE + M3_BLOCKS_STRETCH.
