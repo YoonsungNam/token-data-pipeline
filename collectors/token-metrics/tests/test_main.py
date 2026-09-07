@@ -720,3 +720,172 @@ def test_main_range_mutation_budget_reason_in_aggregate_line(monkeypatch, capsys
                                             "services_failed=2 services_skipped=0 rows=0 ")
     assert out[-1].endswith(" final=0 reason=mutation_budget")
     assert _batch_status["line"] == out[-1]
+
+
+# ---- manual 모드 (T7 — 설계 §5.5 · §5.2 표 manual 행) -------------------------------------
+from pathlib import Path
+
+from app.main import MANUAL_INPUT_PREFIX
+
+TEMPLATES = Path(__file__).resolve().parents[3] / "docs" / "templates"
+MANUAL_ARGS = ["--manual-gpu", str(TEMPLATES / "token_metrics_manual_v0_gpu.csv"),
+               "--manual-serving", str(TEMPLATES / "token_metrics_manual_v0_serving.csv"),
+               "--manual-engine", str(TEMPLATES / "token_metrics_manual_v0_engine.csv")]
+MANUAL_DATE = "2026-08-26"                      # 템플릿 예시 행의 날짜 (api_since 2026-09-09 보다 앞 — manual 은 게이트 없음)
+RANGE = ["--from", MANUAL_DATE, "--to", MANUAL_DATE]
+M_A = ServiceEntry(service_group="Mock Group", service="Mock Service A", base_url="http://mock",
+                   enabled=True, api_since=date(2026, 9, 9), coverage_since=date(2026, 8, 26), until=None)
+M_B = ServiceEntry(service_group="Mock Group", service="Mock Service B", base_url="http://mock-b",
+                   enabled=True, api_since=date(2026, 9, 9), coverage_since=date(2026, 8, 26), until=None)
+LINE_A = ("SERVICE_RESULT status=SUCCESS module=token-metrics service=Mock Service A "
+          "source_type=manual-v0 rows=5 pages=1 warn=0 rejected=0")
+LINE_B = ("SERVICE_RESULT status=SUCCESS module=token-metrics service=Mock Service B "
+          "source_type=manual-v0 rows=4 pages=1 warn=0 rejected=0")
+
+
+def _manual_env(monkeypatch, writer, entries=None):
+    monkeypatch.setattr("app.main.load_config", lambda: Config())
+    monkeypatch.setattr("app.main.load_endpoints", lambda p: entries if entries is not None else [M_A, M_B])
+    monkeypatch.setattr("app.main.MetricsWriter", lambda cfg: writer)
+
+
+def test_manual_mode_markers_and_no_registry_sync(capsys, monkeypatch):
+    w = FakeWriter()
+    _manual_env(monkeypatch, w)
+    code = main(MANUAL_ARGS + RANGE)
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert code == 0
+    assert lines[0] == (f"{MANUAL_INPUT_PREFIX} rows_gpu=4 rows_serving=5 rows_engine=2 "
+                        "rows_outside_range=0 rows_other_service=0")
+    assert LINE_A in lines and LINE_B in lines                     # api_since 이전 날짜여도 before_since 없음
+    assert out.count("MANUAL_INPUT") == 1 and out.count("BATCH_RESULT") == 1
+    batch = lines[-1]
+    assert batch.startswith("BATCH_RESULT status=SUCCESS module=token-metrics services_ok=2 "
+                            "services_failed=0 services_skipped=0 rows=9 elapsed=")
+    assert " slot=" in batch and batch.endswith(" final=0")         # manual 은 최종 슬롯 판정 없음
+    assert w.sync_calls == 0                                        # §5.5 레지스트리 동기화 없음
+    assert len(w.batches) == 1 and sorted(w.batches[0][1]) == ["Mock Service A", "Mock Service B"]  # 날짜당 replace_batch 1회
+    assert "CHECK WARN" not in out
+    assert "claude-sonnet-5" not in out and "queueWaitMs" not in out  # 페이로드·행 원문 금지 (§3 전제 11)
+
+
+def test_manual_mode_requires_pair_and_range(capsys, monkeypatch):
+    w = FakeWriter()
+    _manual_env(monkeypatch, w)
+    assert main(MANUAL_ARGS[:2] + RANGE) == 2                       # --manual-gpu 만
+    assert "--manual-gpu/--manual-serving must be given together" in capsys.readouterr().err
+    assert main(MANUAL_ARGS[2:4] + RANGE) == 2                      # --manual-serving 만
+    assert "must be given together" in capsys.readouterr().err
+    assert main(MANUAL_ARGS) == 2                                   # --from/--to 없음
+    assert "manual mode requires --from/--to" in capsys.readouterr().err
+    assert main(["--generated-at", "2026-08-27T09:00:00+09:00"] + RANGE) == 2
+    assert "require --manual-gpu/--manual-serving" in capsys.readouterr().err
+    assert main(MANUAL_ARGS[4:] + RANGE) == 2                       # --manual-engine 단독
+    assert "require --manual-gpu/--manual-serving" in capsys.readouterr().err
+    assert w.batches == [] and w.sync_calls == 0
+
+
+def test_manual_input_error_exits_2_without_load(capsys, monkeypatch, tmp_path):
+    w = FakeWriter()
+    _manual_env(monkeypatch, w)
+    bad = tmp_path / "gpu.csv"
+    bad.write_text("date,service,model\n", encoding="utf-8")
+    code = main(["--manual-gpu", str(bad), "--manual-serving", MANUAL_ARGS[3]] + RANGE)
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "manual input error:" in captured.err and ":1: header mismatch" in captured.err
+    assert "MANUAL_INPUT" not in captured.out and "BATCH_RESULT" not in captured.out
+    assert w.batches == []
+    assert main(MANUAL_ARGS + ["--from", "2026-08-27", "--to", "2026-08-26"]) == 2     # 역순 범위
+    assert "--from must not be after --to" in capsys.readouterr().err
+    missing = str(tmp_path / "absent.csv")                                              # 파일 없음(OSError) → 2
+    assert main(["--manual-gpu", missing, "--manual-serving", MANUAL_ARGS[3]] + RANGE) == 2
+    assert "manual input error:" in capsys.readouterr().err
+    assert w.batches == []
+
+
+def test_manual_already_loaded_without_replace(capsys, monkeypatch):
+    w = FakeWriter()
+    w.anchors.add((MANUAL_DATE, "Mock Service A"))
+    _manual_env(monkeypatch, w)
+    code = main(MANUAL_ARGS + RANGE)
+    out = capsys.readouterr().out
+    assert code == 0
+    assert ("SERVICE_RESULT status=SKIPPED module=token-metrics service=Mock Service A "
+            "source_type=manual-v0 rows=0 pages=1 warn=0 rejected=0 reason=already_loaded") in out
+    assert LINE_B in out
+    assert len(w.batches) == 1 and w.batches[0][1] == ["Mock Service B"]
+    assert "services_ok=1 services_failed=0 services_skipped=1 rows=4" in out
+
+    w2 = FakeWriter()
+    w2.anchors.add((MANUAL_DATE, "Mock Service A"))
+    _manual_env(monkeypatch, w2)
+    code = main(MANUAL_ARGS + RANGE + ["--replace"])
+    out = capsys.readouterr().out
+    assert code == 0 and "reason=already_loaded" not in out and LINE_A in out
+    assert len(w2.batches) == 1 and sorted(w2.batches[0][1]) == ["Mock Service A", "Mock Service B"]
+    assert w2.sync_calls == 0
+
+
+def test_manual_disabled_gate_and_service_filter(capsys, monkeypatch):
+    disabled_b = ServiceEntry(service_group="Mock Group", service="Mock Service B", base_url="http://mock-b",
+                              enabled=False, api_since=date(2026, 9, 9), coverage_since=date(2026, 8, 26),
+                              until=None)
+    w = FakeWriter()
+    _manual_env(monkeypatch, w, entries=[M_A, disabled_b])
+    assert main(MANUAL_ARGS + RANGE) == 0
+    out = capsys.readouterr().out
+    assert ("SERVICE_RESULT status=SKIPPED module=token-metrics service=Mock Service B "
+            "source_type=manual-v0 rows=0 pages=1 warn=0 rejected=0 reason=disabled") in out   # 모든 모드 공통
+    assert w.batches[0][1] == ["Mock Service A"]
+
+    w2 = FakeWriter()
+    _manual_env(monkeypatch, w2)
+    assert main(MANUAL_ARGS + RANGE + ["--service", "Mock Service A"]) == 0
+    out = capsys.readouterr().out
+    assert (f"{MANUAL_INPUT_PREFIX} rows_gpu=2 rows_serving=3 rows_engine=2 "
+            "rows_outside_range=0 rows_other_service=4") in out         # B 행 gpu 2 + serving 2 는 무시·카운트
+    assert LINE_A in out and "service=Mock Service B" not in out
+    assert w2.batches[0][1] == ["Mock Service A"]
+
+    w3 = FakeWriter()
+    _manual_env(monkeypatch, w3)
+    assert main(MANUAL_ARGS + RANGE + ["--service", "nope"]) == 2       # T6 필터: unknown service → exit 2
+    assert "unknown service: nope" in capsys.readouterr().err
+    assert w3.batches == []
+
+
+def test_manual_multi_day_no_rows_no_anchor_and_single_batch_line(capsys, monkeypatch):
+    w = FakeWriter()
+    _manual_env(monkeypatch, w)
+    code = main(MANUAL_ARGS + ["--from", MANUAL_DATE, "--to", "2026-08-27",
+                               "--generated-at", "2026-08-28T09:00:00+09:00"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert out.count("BATCH_RESULT") == 1 and out.count("MANUAL_INPUT") == 1
+    assert out.count("SERVICE_RESULT status=SUCCESS") == 2                 # 08-26 서비스 2개만
+    assert "status=NODATA" not in out                                      # 08-27 행 없음 → 페이로드·앵커 없음(NODATA 아님)
+    assert "services_ok=2 services_failed=0 services_skipped=0 rows=9" in out
+    assert [d for d, _ in w.batches] == [MANUAL_DATE]                      # 행 있는 날짜만 replace_batch, 08-27 은 호출 없음
+    assert sorted(w.batches[0][1]) == ["Mock Service A", "Mock Service B"]
+
+
+def test_manual_generated_at_offset_mismatch_is_warn(capsys, monkeypatch):
+    w = FakeWriter()
+    _manual_env(monkeypatch, w)
+    assert main(MANUAL_ARGS + RANGE + ["--generated-at", "2026-08-27T00:00:00+00:00"]) == 0
+    out = capsys.readouterr().out
+    assert "CHECK WARN service=Mock Service A generated_at_offset_mismatch=1" in out
+    assert "service=Mock Service A source_type=manual-v0 rows=5 pages=1 warn=1 rejected=0" in out
+
+
+def test_manual_mutation_budget_promoted_to_batch_reason(capsys, monkeypatch):
+    w = FakeWriter(raise_budget=True)
+    _manual_env(monkeypatch, w)
+    code = main(MANUAL_ARGS + RANGE + ["--replace"])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert out.count("reason=mutation_budget") == 3                    # 서비스 2줄 + BATCH 1줄
+    assert out.splitlines()[-1].startswith("BATCH_RESULT status=FAILURE module=token-metrics services_ok=0 services_failed=2")
+    assert out.splitlines()[-1].endswith(" final=0 reason=mutation_budget")

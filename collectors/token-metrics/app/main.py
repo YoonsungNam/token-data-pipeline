@@ -30,12 +30,14 @@ from app.events import CollectError, Event
 from app.normalize import (SOURCE_API, SOURCE_MANUAL, MetricsPayload, NormalizeResult, PayloadError,
                            normalize_payload)
 from app.writer import MetricsWriter, MutationBudgetExceeded
+from app.manual import COUNT_KEYS, ManualCsvError, date_range, load_manual_csvs
 
 KST = timezone(timedelta(hours=9))
 MODULE = "token-metrics"
 MODE_REGULAR = "regular"
 MODE_RERUN = "rerun"
 MODE_MANUAL = "manual"
+MANUAL_INPUT_PREFIX = "MANUAL_INPUT module=token-metrics"   # §5.5 수기 입력 정보 마커(실행당 1줄, 카운트만)
 NOT_READY_REVISIT_CAP_S = 300            # §5.2 409: 큐 끝 1회 재방문, 대기 = min(Retry-After, 300)s
 REASON_DEADLINE = "deadline"
 REASON_LOAD_BUDGET = "load_budget"
@@ -348,6 +350,71 @@ def _run_dates(cfg: Config, entries: list[ServiceEntry], dim_entries: list[Servi
     return worst
 
 
+def _add_manual_args(parser: argparse.ArgumentParser) -> None:
+    """manual-v0 (§5.5) 전용 인자 4개 — 정기·rerun 인자(batch_time/--from/--to/--service/--replace)는 T6 그대로."""
+    parser.add_argument("--manual-gpu", dest="manual_gpu", default=None,
+                        help="manual-v0 gpu CSV (§5.5) — --manual-serving 과 쌍, --from/--to 필수")
+    parser.add_argument("--manual-serving", dest="manual_serving", default=None,
+                        help="manual-v0 serving CSV")
+    parser.add_argument("--manual-engine", dest="manual_engine", default=None,
+                        help="manual-v0 engine CSV (선택)")
+    parser.add_argument("--generated-at", dest="generated_at", default=None,
+                        help="manual-v0 generated_at ISO8601 (권장 +09:00; 없으면 적재 시각)")
+
+
+def _manual_args_error(args: argparse.Namespace) -> str:
+    """manual 인자 조합 검증 — 오류 메시지 또는 빈 문자열. 설정 로드·DB 접근 전에 호출된다."""
+    if bool(args.manual_gpu) != bool(args.manual_serving):
+        return "--manual-gpu/--manual-serving must be given together"
+    if args.manual_gpu and not (args.from_date and args.to_date):
+        return "manual mode requires --from/--to (KST, YYYY-MM-DD)"
+    if (args.manual_engine or args.generated_at) and not args.manual_gpu:
+        return "--manual-engine/--generated-at require --manual-gpu/--manual-serving"
+    return ""
+
+
+def _run_manual(cfg: Config, args, entries: list[ServiceEntry], all_entries: list[ServiceEntry],
+                started: float, clock=time.monotonic) -> int:
+    """manual-v0 (§5.5): CSV 3파일 → (date, service) MetricsPayload → API 와 동일한 normalize/replace 경로.
+
+    - 레지스트리 동기화 없음(register_dims=False — 정기 실행 전용 §4.3), api_since/until 게이트 없음(MODE_MANUAL),
+      enabled=0 은 SKIPPED disabled(모든 모드), 앵커 있으면 --replace 없이는 SKIPPED already_loaded(_prepare_one).
+    - 페이로드가 있는 (date, service) 만 대상 — 행 없는 (date, service) 는 fetch 하지 않고 앵커도 남기지 않는다
+      (6c metrics_missing). 날짜마다 대상 서비스 집합이 달라 _run_dates(고정 entries) 대신 날짜별 run_collection 을
+      직접 돌리되 writer·started·outcomes 를 공유해 뮤테이션 장부·소프트 데드라인·BATCH_RESULT 1줄은 _run_dates 와 같다.
+    - 뮤테이션 예산 가드·날짜당 replace_batch 1회 배칭·mutation_budget 승격은 run_collection/writer 공통.
+    - 파일 계약 위반(ManualCsvError)·날짜 인자 오류·파일 없음은 적재 없이 stderr + exit 2.
+    """
+    try:
+        dates = date_range(args.from_date, args.to_date)
+        payloads, counts = load_manual_csvs(
+            args.manual_gpu, args.manual_serving, args.manual_engine,
+            args.from_date, args.to_date, all_entries, args.service, args.generated_at or "")
+    except (ManualCsvError, ValueError, OSError) as exc:
+        print(f"manual input error: {exc}", file=sys.stderr)
+        return 2
+    print(f"{MANUAL_INPUT_PREFIX} " + " ".join(f"{k}={counts[k]}" for k in COUNT_KEYS), flush=True)
+    ctx = make_context(cfg, MODE_MANUAL, datetime.now(KST), replace=args.replace, source_type=SOURCE_MANUAL)
+
+    def fetcher(entry: ServiceEntry, target_date: str, _cfg: Config, _session) -> MetricsPayload:
+        return payloads[(target_date, entry.service)]                # 대상은 키가 있는 (date, service) 로만 좁힌다
+
+    writer = MetricsWriter(cfg)                                      # 날짜 전체가 1개 writer 공유(뮤테이션 장부 누적)
+    all_outcomes: list[ServiceOutcome] = []
+    worst = 0
+    for d in dates:
+        targets = [e for e in entries if (d, e.service) in payloads]  # --service 필터 후 entries 기준(disabled 포함 → gate)
+        if not targets:                                              # 그날 행 없음 → fetch·적재·앵커 없음
+            continue
+        code = run_collection(cfg, targets, d, ctx, clock=clock, fetcher=fetcher, writer=writer,
+                              register_dims=False, emit_batch=False, outcomes_sink=all_outcomes, started=started)
+        worst = max(worst, code)
+    line = _batch_line(all_outcomes, started, clock, ctx, reason=_batch_reason(all_outcomes))
+    _batch_status["line"] = line
+    print(line, flush=True)
+    return worst
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="token-metrics-collector")
     parser.add_argument("batch_time", nargs="?", default=None,
@@ -357,7 +424,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--service", default=None, help="단일 서비스만 (레지스트리 동기화는 전체 기준)")
     parser.add_argument("--replace", action="store_true",
                         help="앵커가 있어도 교체 (rerun 전용 — 정기 실행은 뮤테이션 0 보장)")
+    _add_manual_args(parser)
     args = parser.parse_args(argv)
+    manual_err = _manual_args_error(args)
+    if manual_err:
+        print(manual_err, file=sys.stderr)
+        return 2
 
     signal.signal(signal.SIGTERM, _sigterm_handler)
     try:
@@ -372,6 +444,8 @@ def main(argv: list[str] | None = None) -> int:
         if not entries:
             print(f"unknown service: {args.service}", file=sys.stderr)
             return 2
+    if args.manual_gpu:
+        return _run_manual(cfg, args, entries, all_entries, started=time.monotonic())
     try:
         batch_time = _parse_batch_time(args.batch_time)
         dates, mode = _target_dates(args, batch_time)
