@@ -1,0 +1,87 @@
+name: test-mart-metrics
+
+# Plan 6c mart/token-metrics 전용 워크플로 — 기존 test-mart.yml(mart/token-usage)과 분리 (설계 §7.5).
+# 트리거 경로: 모듈 자체 + 읽는 DDL(6a fact/dim, model-catalog dim) + T9 불변식 SQL + 이 파일.
+on:
+  push:
+    branches: [main]
+    paths: ["mart/token-metrics/**", "collectors/token-metrics/ddl/**", "assets/model-catalog/ddl/**",
+            "tools/verify/invariants_metrics.sql", ".github/workflows/test-mart-metrics.yml"]
+  pull_request:
+    paths: ["mart/token-metrics/**", "collectors/token-metrics/ddl/**", "assets/model-catalog/ddl/**",
+            "tools/verify/invariants_metrics.sql", ".github/workflows/test-mart-metrics.yml"]
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        run: |
+          docker buildx build --platform linux/amd64 \
+            -t token-mart-metrics:ci mart/token-metrics --load
+      # T8 Dockerfile은 ENTRYPOINT ["python", "-m", "app.batch"] — 인자만 붙인다 (python -m app.batch 재지정 금지)
+      - name: Test image
+        run: docker run --rm token-mart-metrics:ci --help
+
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Kustomize stage
+        run: kubectl kustomize mart/token-metrics/k8s/overlays/stage > /tmp/mm-stage.yaml
+      - name: Kustomize company
+        run: kubectl kustomize mart/token-metrics/k8s/overlays/company > /tmp/mm-company.yaml
+      - name: Kustomize company-verify
+        run: kubectl kustomize mart/token-metrics/k8s/overlays/company-verify > /tmp/mm-company-verify.yaml
+      - name: Contract fields locked
+        run: |
+          for f in /tmp/mm-stage.yaml /tmp/mm-company.yaml /tmp/mm-company-verify.yaml; do
+            grep -q 'schedule: 20 10 \* \* \*' "$f"
+            grep -q 'timeZone: Asia/Seoul' "$f"
+            grep -q 'concurrencyPolicy: Forbid' "$f"
+            grep -q 'startingDeadlineSeconds: 1800' "$f"
+            grep -q 'activeDeadlineSeconds: 1800' "$f"
+            grep -q 'backoffLimit: 1' "$f"
+            grep -q 'memory: 1Gi' "$f"
+            grep -q 'memory: 256Mi' "$f"
+            grep -q 'name: registry-pull-secret' "$f"
+            grep -q 'name: token-mart-metrics-ch-secret' "$f"
+            ! grep -q 'EXPECTED_LATE_SERVICES' "$f"
+          done
+          grep -q 'ghcr.io/yoonsungnam/token-mart-metrics' /tmp/mm-stage.yaml
+          # company-verify: nameSuffix -verify (CronJob) + Secret 이름 패치 (설계 §7.5 격리 검증)
+          grep -q 'name: token-mart-metrics-verify$' /tmp/mm-company-verify.yaml
+          grep -q 'name: token-mart-metrics-ch-secret-verify$' /tmp/mm-company-verify.yaml
+          # production 이름은 verify 렌더에 남지 않는다 (공존 보장). CronJob은 metadata.name(2칸 들여쓰기)만 검사 —
+          # 컨테이너 이름 `- name: token-mart-metrics`(nameSuffix 미적용, 12칸 들여쓰기)은 verify 렌더에도 남는 것이 정상.
+          ! grep -qE '^  name: token-mart-metrics$' /tmp/mm-company-verify.yaml
+          # Secret은 envFrom secretRef.name(overlay 패치 대상)이 production 이름이면 안 된다 — 들여쓰기 무관
+          ! grep -q 'name: token-mart-metrics-ch-secret$' /tmp/mm-company-verify.yaml
+
+  unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mart/token-metrics
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      # tests/e2e/ 에는 test_*.py 가 없다(시드·기대값 스크립트만) — 별도 --ignore 불필요
+      - run: python -m pytest -q
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # clickhouse-connect(seed_metrics.py·run_invariants.py)는 requirements.txt 경유
+      - run: pip install -r mart/token-metrics/requirements-dev.txt
+      - name: Run E2E
+        run: bash mart/token-metrics/tests/e2e/run_e2e.sh
