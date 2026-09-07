@@ -1,18 +1,37 @@
 #!/usr/bin/env python3
-"""E2E 시드 - Plan 6c T10 시나리오(Mock Service A/B/C/D)를 단일노드 CH에 적재한다.
+"""E2E 시드 — Plan 6c T10 시나리오(Mock Service A/B/C/D)를 단일노드 CH에 적재한다.
 
-적재 대상(모두 <db>.<table>_dist - run_e2e.sh가 단일노드 MergeTree로 만든 대역):
+적재 대상(모두 <db>.<table>_dist — run_e2e.sh가 단일노드 MergeTree로 만든 대역):
   gpu_data.dim_token_service_dist          토큰 측 레지스트리(A/B/C/D enabled=1)
-  gpu_data.dim_token_metrics_service_dist  메트릭 레지스트리(A/B/C - C는 앵커 없음 -> metrics_missing FAIL, coverage 2/3)
+  gpu_data.dim_token_metrics_service_dist  메트릭 레지스트리(A/B/C — C는 앵커 없음 → metrics_missing FAIL, coverage 2/3)
   fact.raw_token_metrics_gpu_1d_dist       gpu 6행(A: Qwen3-32B/H100 serving·standby·test, B: claude-sonnet-5 3행 + FAIL 1)
   fact.raw_token_metrics_serving_1d_dist   serving 2행(A: ttft_ms·output_tps)
   fact.raw_token_metrics_summary_1d_dist   앵커 2행(A metrics-api-v1 rejected 1, B manual-v0)
-  mart.token_usage_1d_dist                 토큰 6행(A/B/D x 합성 사용자 2 - Qwen3-32B)
+  mart.token_usage_1d_dist                 토큰 6행(A/B/D × 합성 사용자 2 — Qwen3-32B)
   mart.agg_token_service_1d_dist           서비스 집계 3행(A/B/D)
 
-결정성: 수치는 전부 모듈 상수, 합성 user_id는 sha256(f"{service}|{date}|{k}") 앞 12자 - random 미사용.
+결정성: 수치는 전부 모듈 상수, 합성 user_id는 sha256(f"{service}|{date}|{k}") 앞 12자 — random 미사용.
 정본 이원화: TCO_KRW/ALLOCATION/ALIASES/VENDOR_PRICE는 tests/e2e/ddl_test_dims.sql 시드의 파이썬 재현이며
 tests/test_e2e_seed.py가 두 파일을 교차 대조한다(값을 고치면 둘 다 고친다).
+
+## 값 커버리지(현재 시드) — fix1 Important 2/Minor 6/8: 시드는 이번 라운드에서 확장하지 않는다(로컬에
+도커가 없어 새 시나리오의 파이썬 미러가 SQL과 어긋나도 로컬에서 못 잡고 CI에서만 드러난다) — 대신
+현재 시드가 무엇을 실제로 커버하는지 명시한다:
+  denominator_mode: 이 시드가 실제로 만드는 M4 행은 전부 `all_services`뿐이다(Qwen3-32B 3행 +
+    claude-sonnet-5 1행). `provider_reported`/`token_not_reported`/`no_provider`/`provider_ambiguous`/
+    `external_api` 5종은 SQL_M4의 각 분기(단일 INSERT … SELECT의 multiIf/CASE)가 매 실행 파싱·실행은
+    되지만 이 시드에서는 0행이다(usage_includes_consumers=1 서비스도, 제공자 후보가 겹치거나 없는
+    모델도, gpu 없는 모델도 만들지 않기 때문).
+  M3: 20블록 중 실제로 1건 이상 나는 건 6개뿐이다 — metrics_missing, rows_rejected, hours_over_count,
+    gpu_type_no_tco, no_allocation, manual_source(mart_expectations.m3_counts_breakdown 참조).
+    나머지 14블록도 SQL_M3(단일 INSERT … UNION ALL 20블록)로 매 실행 파싱·실행되지만 이 시드에서는
+    0행이다 — E2E는 그 블록들이 "SQL 오류 없이 통과"하는 것만 보증하고, 개별 판정 로직까지 검증하지는
+    않는다.
+  시드를 확장해 위 모드/블록을 실제로 채우려면 이 파일의 시나리오 상수뿐 아니라
+  `verify_expected_results.sql`의 하드코드 리터럴도 함께 고쳐야 한다 — `m1_no_gpu_cost_null`의
+  `toInt64(2)`, `m1_flags`/`m4_qwen_mode_all_services`의 `toInt64(4)`/`toInt64(3)`,
+  `m2_a100_alloc_only_normal`의 `96`, 그리고 `'Mock Service A'` 등 하드코드된 서비스명 리터럴 —
+  이 값들은 전부 지금 시나리오(서비스 정확히 A/B/C/D 4개, gpu 6행)에 맞춰 고정돼 있다.
 
 사용법: CH_HOST=127.0.0.1 CH_PORT=18124 python3 tests/e2e/seed_metrics.py 2026-09-03
 """
@@ -79,7 +98,7 @@ SERVING_ROWS = (
 )
 # (service, gpu_rows, serving_rows, custom_rows, rejected_rows, merged_dups, source_type)
 SUMMARY_ROWS = ((SVC_A, 3, 2, 0, 1, 0, SOURCE_API), (SVC_B, 3, 0, 0, 0, 0, SOURCE_MANUAL))
-# (service, input_tokens, cache_read_tokens, cache_creation_tokens, output_tokens, requests) - 모델은 전부 Qwen3-32B
+# (service, input_tokens, cache_read_tokens, cache_creation_tokens, output_tokens, requests) — 모델은 전부 Qwen3-32B
 TOKEN_SCENARIO = (
     (SVC_A, 2_000_000, 5_000_000, 0, 250_000, 100),
     (SVC_B, 4_000_000, 10_000_000, 0, 500_000, 200),
@@ -116,7 +135,7 @@ SEED_TABLES = {
 
 
 def synthetic_user_id(service: str, date: str, k: int) -> str:
-    """합성 user_id - 결정적(sha256), 실제 사번/이메일 형태 아님."""
+    """합성 user_id — 결정적(sha256), 실제 사번/이메일 형태 아님."""
     return "u-" + hashlib.sha256(f"{service}|{date}|{k}".encode("utf-8")).hexdigest()[:12]
 
 
@@ -130,7 +149,7 @@ def _base_url(service: str) -> str:
 
 
 def build_seed(date: str) -> dict:
-    """date(YYYY-MM-DD) 하루치 시드 - SEED_TABLES 키 순서의 {key: [tuple, ...]} (컬럼 순서 = SEED_TABLES[key][1])."""
+    """date(YYYY-MM-DD) 하루치 시드 — SEED_TABLES 키 순서의 {key: [tuple, ...]} (컬럼 순서 = SEED_TABLES[key][1])."""
     d = date_cls.fromisoformat(date)
     next_day = d + timedelta(days=1)
     generated_at = datetime.combine(next_day, time(2, 5), tzinfo=KST)   # 수집기 계약: D+1 02:05 KST 생성
@@ -175,7 +194,7 @@ def build_seed(date: str) -> dict:
 
 
 def seed_all(client, date: str) -> dict:
-    """build_seed(date)를 SEED_TABLES 순서로 INSERT - {key: rows}. 멱등 아님(run_e2e.sh가 새 컨테이너에 1회 호출)."""
+    """build_seed(date)를 SEED_TABLES 순서로 INSERT — {key: rows}. 멱등 아님(run_e2e.sh가 새 컨테이너에 1회 호출)."""
     counts = {}
     for key, rows in build_seed(date).items():
         table, cols = SEED_TABLES[key]
@@ -185,7 +204,7 @@ def seed_all(client, date: str) -> dict:
 
 
 def _client():
-    """clickhouse_connect는 여기서만 import - 단위 테스트(tests/test_e2e_seed.py)는 드라이버 없이 build_seed만 쓴다."""
+    """clickhouse_connect는 여기서만 import — 단위 테스트(tests/test_e2e_seed.py)는 드라이버 없이 build_seed만 쓴다."""
     import clickhouse_connect
     return clickhouse_connect.get_client(
         host=os.getenv("CH_HOST", "127.0.0.1"),

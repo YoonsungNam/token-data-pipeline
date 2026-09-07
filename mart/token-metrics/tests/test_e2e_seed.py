@@ -311,7 +311,7 @@ def test_m4_share_sum_and_allocation_identity_r1(sm, me):
             continue
         shares = [r["share"] for r in model_rows.values() if r["share"] is not None]
         if not shares:
-            continue        # ë¶ëª¨(w_all/D) 0 â ìë¬´ë ì´ ëª¨ë¸ì ë³´ê³ íì§ ìì(share ì ë¶ NULL, ì ì)
+            continue        # 분모(w_all/D) 0 — 아무도 이 모델을 보고하지 않음(share 전부 NULL, 정상)
         assert sum(shares) == pytest.approx(1.0, abs=1e-9), (model, mode, shares)
         if mode in ("all_services", "provider_reported"):
             cost = next(iter(model_rows.values()))["model_cost_krw"]
@@ -332,7 +332,6 @@ def test_m2_rows_handles_other_category_and_keeps_identity_gap_zero(sm, me):
     seed = sm.build_seed(DATE)
     gcols = sm.SEED_TABLES["gpu"][1]
     idx = {c: i for i, c in enumerate(gcols)}
-    extra = [None] * len(gcols)
     template = seed["gpu"][0]                              # (A, Qwen3-32B, H100, serving, ...) 행을 복제해 변형
     extra = list(template)
     extra[idx["category"]] = "other"                       # 정상 3분류 밖의 카테고리 — SQL_M2 other_gpu_hours 경로

@@ -6,6 +6,10 @@
 --   델타 1: TCO의 H100 2026-08-26 4300 이력 행은 넣지 않는다 — 2026-09-03 유효 TCO를 4200으로 고정해
 --           C(Qwen3-32B) = (40+8)×4200 = 201,600 검산을 유지(이력 argMax 경로는 T3 단위 테스트가 검증).
 --   델타 2: alias에 e2e 전용 identity 1행(Qwen3-32B) 추가 — unregistered_model WARN 0건 유지.
+--   델타 3(fix1 Minor 9): 전 행 effective_from을 '2026-01-01'로 고정했다 — stage fixture 원본은
+--           '2026-08-01'이지만, 이 값은 "date 유효 최신 이력"만 있으면 되는 시드라 날짜 자체는
+--           임의로 당겨도 되고(단, 대상일 2026-09-03 이전이어야 함), 2026-01-01 쪽이 다른 파일들의
+--           registry_updated_at 관례(seed_metrics.py)와 맞아 떨어져 그대로 썼다.
 -- 주의: run_e2e.sh가 세미콜론으로 문장을 나눈다 — 주석·문자열에 세미콜론 금지(이 주석 포함).
 -- 이 파일의 파이썬 재현(TCO_KRW/ALLOCATION/ALIASES/VENDOR_PRICE)은 tests/e2e/seed_metrics.py 상단 상수 —
 -- tests/test_e2e_seed.py가 두 정본을 교차 대조한다(값을 고치면 둘 다 고친다).

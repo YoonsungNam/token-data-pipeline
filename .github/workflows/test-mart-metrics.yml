@@ -1,15 +1,20 @@
 name: test-mart-metrics
 
 # Plan 6c mart/token-metrics 전용 워크플로 — 기존 test-mart.yml(mart/token-usage)과 분리 (설계 §7.5).
-# 트리거 경로: 모듈 자체 + 읽는 DDL(6a fact/dim, model-catalog dim) + T9 불변식 SQL + 이 파일.
+# 트리거 경로: 모듈 자체 + 읽는 DDL(6a fact/dim, model-catalog dim, 기존 token-usage DDL) +
+# tools/verify/**(run_invariants.py --sql·invariants_metrics.sql — E2E의 유일한 소비자) + 이 파일.
+# (fix1 Important 1: 브리프의 목록이 불완전했다 — E2E가 mart/token-usage·collectors/token-usage DDL을
+#  읽고 run_invariants.py --sql을 실행하므로 그 경로들도 트리거해야 한다.)
 on:
   push:
     branches: [main]
     paths: ["mart/token-metrics/**", "collectors/token-metrics/ddl/**", "assets/model-catalog/ddl/**",
-            "tools/verify/invariants_metrics.sql", ".github/workflows/test-mart-metrics.yml"]
+            "tools/verify/**", "mart/token-usage/ddl/**", "collectors/token-usage/ddl/**",
+            ".github/workflows/test-mart-metrics.yml"]
   pull_request:
     paths: ["mart/token-metrics/**", "collectors/token-metrics/ddl/**", "assets/model-catalog/ddl/**",
-            "tools/verify/invariants_metrics.sql", ".github/workflows/test-mart-metrics.yml"]
+            "tools/verify/**", "mart/token-usage/ddl/**", "collectors/token-usage/ddl/**",
+            ".github/workflows/test-mart-metrics.yml"]
 
 jobs:
   image:

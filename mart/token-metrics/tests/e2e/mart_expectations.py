@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""E2E 기대값 산출 - seed_metrics.build_seed(date)를 app.mart(T2)의 비용 함수와 M3/M4/M2 규칙(T4/T6/T7)으로
+"""E2E 기대값 산출 — seed_metrics.build_seed(date)를 app.mart(T2)의 비용 함수와 M3/M4/M2 규칙(T4/T6/T7)으로
 재계산해 `key=value` 9줄을 출력한다(줄마다 1개). run_e2e.sh가 셸 연관배열 EXP[...]에 담아
 verify_expected_results.sql의 {EXP_*} 토큰을 sed로 치환한다 (Plan 6c T10).
 
@@ -9,25 +9,43 @@ verify_expected_results.sql의 {EXP_*} 토큰을 sed로 치환한다 (Plan 6c T1
     ...
     EXP_COVERAGE=2/3
 
-정본 이원화 주의: 여기의 판정 규칙은 app/steps.py SQL의 파이썬 재현이다 - SQL 술어를 고치면 여기도 고친다
-(어긋나면 verify_expected_results.sql expect-empty가 실패한다 - 그것이 이 파일의 존재 이유).
+정본 이원화 주의: 여기의 판정 규칙은 app/steps.py SQL의 파이썬 재현이다 — SQL 술어를 고치면 여기도 고친다
+(어긋나면 verify_expected_results.sql expect-empty가 실패한다 — 그것이 이 파일의 존재 이유).
 
 R1(controller ruling, scan-C N-5 / scan-B C4): provider_reported/all_services의 share·배분 계산은
 app.mart.allocate_shared / provider_self_weight 를 그대로 호출한다(공식을 인라인으로 재구현하지 않는다).
 C4(app/steps.py 헤더 ~:709, tests/test_mart.py::test_c4_*가 고정): provider_reported 모드의 분모
-D = max(W(provider), Sigma_{s != provider} W(s)) - 제공자 자기분 = provider_self_weight(w_provider, others),
+D = max(W(provider), Sigma_{s != provider} W(s)) — 제공자 자기분 = provider_self_weight(w_provider, others),
 wt = {..consumers.., provider: 자기분} 로 만든 뒤 D = sum(wt.values()), allocate_shared(cost, wt)를 호출하면
 Sigma share = 1, Sigma allocated = C 가 그대로 성립한다(I3).
-R2(scan-B D3-secondary, T7에 반영): m2_rows는 SQL_M2의 unattributed = (flagged + other) x TCO를 그대로
-따른다 - "other" = 비FAIL 행 중 category NOT IN (serving, standby, test).
+R2(scan-B D3-secondary, T7에 반영): m2_rows는 SQL_M2의 unattributed = (flagged + other) × TCO를 그대로
+따른다 — "other" = 비FAIL 행 중 category NOT IN (serving, standby, test).
+
+## 알려진 SQL과의 차이(현재 시드에서는 0행이라 드러나지 않음) — fix1 Minor 8, 이 파일이 SQL의 참조
+구현이 아니라 근사 미러임을 명시한다. 아래 네 항목은 이 시드로는 값이 갈리지 않아 드러나지 않지만,
+시드를 확장하기 전에 먼저 SQL에 맞춰 정렬해야 한다(SQL이 정본, 이 파일이 틀렸으면 이 파일을 고친다):
+  1. `m4_rows`의 파이썬 키는 `(model, service)`인데 SQL(`agg_token_model_share_1d`)의 grain은
+     `(model, service, provider_service)`다 — `provider_ambiguous`처럼 같은 (model, service)에
+     provider_service가 다른 행이 여러 개 나올 수 있는 경우 파이썬 dict가 마지막 행으로 덮어써 행을
+     잃는다(이 시드는 provider_ambiguous가 0건이라 드러나지 않는다).
+  2. `identity_drift`: 파이썬은 앵커 자신의 `service_group` 필드 + `source_type == 'metrics-api-v1'`
+     필터로 비교하는데, SQL(app/steps.py:601-614, `_M3_IDENTITY_DRIFT`)은 앵커를 레지스트리(`SUB_REG`)에
+     조인한 `r.service_group`과 비교한다 — 이 시드는 앵커/레지스트리 service_group이 항상 같은 값이라
+     드러나지 않는다.
+  3. `service_not_in_usage_registry`: 파이썬은 `reg_enabled - usage_svc` 집합 차만 보고, SQL은 그 위에
+     `coverage_since <= d AND (until IS NULL OR d <= until)` 창을 추가로 건다 — 창 밖 서비스가 있으면
+     파이썬이 과다 계상할 수 있다(이 시드는 전 레지스트리 행이 창 안이라 드러나지 않는다).
+  4. `vendor_price_missing`: 파이썬은 이미 계산된 M4 `quality_flag == 'vendor_price_missing'`에서
+     역산하는데, SQL은 `external_api` 모드에서 토큰-모델 조인으로 벤더 단가 부재를 직접 판정한다 —
+     이 시드는 `external_api` 모드 자체가 0행이라 드러나지 않는다.
 """
 import pathlib
 import sys
 from types import SimpleNamespace
 
 HERE = pathlib.Path(__file__).resolve().parent            # mart/token-metrics/tests/e2e
-sys.path.insert(0, str(HERE.parents[1]))                   # mart/token-metrics  -> `from app import mart`
-sys.path.insert(0, str(HERE))                              # tests/e2e           -> `import seed_metrics`
+sys.path.insert(0, str(HERE.parents[1]))                   # mart/token-metrics  → `from app import mart`
+sys.path.insert(0, str(HERE))                              # tests/e2e           → `import seed_metrics`
 
 from app import mart              # noqa: E402
 import seed_metrics as sm         # noqa: E402
@@ -36,7 +54,7 @@ EXP_KEYS = ("EXP_M1_ROWS", "EXP_M1_QWEN_COST", "EXP_M3_FAIL_ROWS", "EXP_M3_WARN_
             "EXP_M4_QWEN_SUM", "EXP_M2_ROWS", "EXP_M2_IDLE_H100", "EXP_COVERAGE")
 TOKEN_FIELDS = ("input_tokens", "cache_read_tokens", "cache_creation_tokens", "output_tokens", "requests")
 # T4 core 13 + T6 stretch 3 + T7 stretch 4 = 20블록, severity는 steps.M3_BLOCKS_CORE + M3_BLOCKS_STRETCH와 동일
-# (R6 - tests/test_e2e_seed.py::test_m3_severity_matches_steps_module이 app.steps 대조로 이 표를 고정한다)
+# (R6 — tests/test_e2e_seed.py::test_m3_severity_matches_steps_module이 app.steps 대조로 이 표를 고정한다)
 M3_SEVERITY = {
     "metrics_missing": "FAIL", "partial_load": "FAIL", "rows_rejected": "WARN", "unregistered_model": "WARN",
     "hours_over_count": "FAIL", "unknown_violation": "FAIL", "pct_non_monotone": "FAIL",
@@ -105,7 +123,7 @@ def _partial(c, svc: str) -> bool:
 
 
 def m1_rows(seed) -> dict:
-    """M1 agg_token_model_cost_1d - (service, canon) -> {model_cost_krw, weighted_tokens, requests, has_*, quality_flag}."""
+    """M1 agg_token_model_cost_1d — (service, canon) → {model_cost_krw, weighted_tokens, requests, has_*, quality_flag}."""
     c = _ctx(seed)
     out = {}
     for key in sorted(set(c.gpu) | set(c.tokens)):
@@ -130,7 +148,7 @@ def m1_rows(seed) -> dict:
 
 
 def _providers(c, model: str) -> list:
-    """§6.4 (4) provider(m) = FAIL 없는 serving/standby gpu 행이 있는 (앵커) 서비스 - 정렬."""
+    """§6.4 (4) provider(m) = FAIL 없는 serving/standby gpu 행이 있는 (앵커) 서비스 — 정렬."""
     return sorted({svc for (svc, m), rows in c.gpu.items() if m == model
                    and any(cat in ("serving", "standby") and not mart.is_fail(flags) for cat, _, _, flags in rows)})
 
@@ -143,7 +161,7 @@ def _vendor_price(model: str):
 
 
 def m4_rows(seed) -> dict:
-    """M4 agg_token_model_share_1d - (model, service) -> {provider_service, is_provider, denominator_mode, share,
+    """M4 agg_token_model_share_1d — (model, service) → {provider_service, is_provider, denominator_mode, share,
     allocated_cost_krw, quality_flag, model_cost_krw}. 모드 판정 순서 = SQL_M4 mode CTE(T6).
 
     R1: provider_reported/all_services의 share·배분은 app.mart.allocate_shared / provider_self_weight를
@@ -167,7 +185,7 @@ def m4_rows(seed) -> dict:
         w_prov = wtokens.get(provider, 0.0) if provider else 0.0
         others = sum(w for s, w in wtokens.items() if s != provider)
 
-        # R1: provider_reported 전용 wt/D/배분 - provider_self_weight + allocate_shared(cost, wt)로만 계산.
+        # R1: provider_reported 전용 wt/D/배분 — provider_self_weight + allocate_shared(cost, wt)로만 계산.
         wt_pr: dict = {}
         d_pr = 0.0
         alloc_pr: dict = {}
@@ -192,7 +210,7 @@ def m4_rows(seed) -> dict:
         else:
             mode = "all_services"
 
-        # all_services 전용 배분 - allocate_shared(cost, wtokens) 그대로(§6.4 (4)).
+        # all_services 전용 배분 — allocate_shared(cost, wtokens) 그대로(§6.4 (4)).
         alloc_all = mart.allocate_shared(cost, wtokens) if (mode == "all_services" and cost is not None) else {}
 
         vendor, price = _vendor_price(model) if mode == "external_api" else ("", (None, None, None, None))
@@ -238,13 +256,13 @@ def m4_rows(seed) -> dict:
 
 
 def m2_rows(seed) -> dict:
-    """M2 agg_token_gpu_group_1d - (service_group, gpu_type) -> group_overhead(...) + reported/allocated/quality.
+    """M2 agg_token_gpu_group_1d — (service_group, gpu_type) → group_overhead(...) + reported/allocated/quality.
     행 집합 = 앵커 서비스의 gpu 행이 있는 그룹 UNION (unknown 아닌 할당 행 AND 그룹 내 앵커 서비스 >= 1).
 
     R2(scan-B D3-secondary, T7에 반영): SQL_M2는 non-FAIL 행 중 category가 {serving,standby,test}에
-    속하지 않는 행("other")을 flagged 행과 합쳐 unattributed_cost_krw = (flagged + other) x TCO로 만든다
+    속하지 않는 행("other")을 flagged 행과 합쳐 unattributed_cost_krw = (flagged + other) × TCO로 만든다
     (steps.SQL_M2의 other_gpu_hours 필드 + "(flagged_gpu_hours + gp.other_gpu_hours) * t.tco"). 여기서도
-    "other" 버킷을 명시로 분리해 group_overhead()의 6번째 인자(flagged)에 flagged+other 합을 넘긴다 -
+    "other" 버킷을 명시로 분리해 group_overhead()의 6번째 인자(flagged)에 flagged+other 합을 넘긴다 —
     row["flagged_gpu_hours"]는 FAIL 전용(적재되는 값)으로 그대로 둔다.
     """
     c = _ctx(seed)
@@ -284,9 +302,9 @@ def m2_rows(seed) -> dict:
 
 
 def m3_counts(seed) -> dict:
-    """M3 token_metrics_check_1d - 20블록 이름 -> 기대 행수(T4/T6/T7 술어의 파이썬 재현).
+    """M3 token_metrics_check_1d — 20블록 이름 → 기대 행수(T4/T6/T7 술어의 파이썬 재현).
 
-    R3(D-1): 테이블명은 token_metrics_check_1d(check_token_metrics_1d 아님) - 이 docstring이 정본.
+    R3(D-1): 테이블명은 token_metrics_check_1d(check_token_metrics_1d 아님) — 이 docstring이 정본.
     """
     c = _ctx(seed)
     n = {name: 0 for name in M3_SEVERITY}
@@ -348,7 +366,7 @@ def m3_counts(seed) -> dict:
 
 
 def expect(date: str) -> dict:
-    """run_e2e.sh 계약 - EXP_KEYS 순서의 9키."""
+    """run_e2e.sh 계약 — EXP_KEYS 순서의 9키."""
     seed = sm.build_seed(date)
     c = _ctx(seed)
     m1, m3, m4, m2 = m1_rows(seed), m3_counts(seed), m4_rows(seed), m2_rows(seed)

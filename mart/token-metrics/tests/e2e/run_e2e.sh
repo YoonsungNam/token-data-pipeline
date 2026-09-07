@@ -118,7 +118,8 @@ grep -qF "CHECK WARN metrics_missing severity=FAIL count=1" <<<"$RUN2" || { echo
 grep -qF "CHECK WARN hours_over_count severity=FAIL count=1" <<<"$RUN2" || { echo "E2E FAILED: hours_over_count CHECK line missing"; exit 1; }
 grep -qF "CHECK INFO manual_source severity=INFO count=1" <<<"$RUN2" || { echo "E2E FAILED: manual_source CHECK INFO line missing"; exit 1; }
 
-# verify — {DATE} + {EXP_*} 8토큰 치환 후 expect-empty. -f 대신 HTTP 코드 캡처(서버 오류 본문 노출 — 원형과 동일 원칙).
+# verify — {DATE} + {EXP_*} 8토큰 치환 후 expect-empty(잔여 토큰 검사는 일반화된 {[A-Z_]+} 패턴).
+# -f 대신 HTTP 코드 캡처(서버 오류 본문 노출 — 원형과 동일 원칙).
 sed -e "s/{DATE}/${DATE_ARG}/g" \
     -e "s/{EXP_M1_ROWS}/${EXP[EXP_M1_ROWS]}/g" \
     -e "s/{EXP_M1_QWEN_COST}/${EXP[EXP_M1_QWEN_COST]}/g" \
@@ -129,8 +130,10 @@ sed -e "s/{DATE}/${DATE_ARG}/g" \
     -e "s/{EXP_M2_ROWS}/${EXP[EXP_M2_ROWS]}/g" \
     -e "s/{EXP_M2_IDLE_H100}/${EXP[EXP_M2_IDLE_H100]}/g" \
     tests/e2e/verify_expected_results.sql > /tmp/verify_query_mart_metrics.sql
-if grep -q '{EXP_' /tmp/verify_query_mart_metrics.sql; then
-  echo "E2E FAILED: unreplaced token in verify query:"; grep -n '{EXP_' /tmp/verify_query_mart_metrics.sql; exit 1
+# fix1 Minor 5: {EXP_ 하나만 보던 잔여 토큰 검사를 일반화 — 이름을 잘못 붙인 토큰(예: {EXP_TYPO})도
+# 서버 문법 오류 대신 이 스크립트의 분명한 메시지로 먼저 잡는다.
+if grep -qE '\{[A-Z_]+\}' /tmp/verify_query_mart_metrics.sql; then
+  echo "E2E FAILED: unreplaced token in verify query:"; grep -nE '\{[A-Z_]+\}' /tmp/verify_query_mart_metrics.sql; exit 1
 fi
 VERIFY_HTTP=$(curl -s -o /tmp/verify_out_mart_metrics.tsv -w '%{http_code}' \
   --data-binary @/tmp/verify_query_mart_metrics.sql "http://127.0.0.1:${CH_PORT_HOST}/?default_format=TSV")
