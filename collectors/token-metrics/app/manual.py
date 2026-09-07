@@ -56,7 +56,10 @@ def read_csv_rows(path: str, expected_header: str) -> list[tuple[int, dict[str, 
                     raise ManualCsvError(path, lineno, "header mismatch")
                 header_seen = True
                 continue
-            cells = next(csv.reader([line]))
+            try:
+                cells = next(csv.reader([line]))
+            except csv.Error:
+                raise ManualCsvError(path, lineno, "unparsable line") from None
             if len(cells) != len(columns):
                 raise ManualCsvError(path, lineno, f"column count {len(cells)} != {len(columns)}")
             rows.append((lineno, {col: cell.strip() for col, cell in zip(columns, cells)}))

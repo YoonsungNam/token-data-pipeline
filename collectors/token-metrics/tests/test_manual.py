@@ -94,6 +94,16 @@ def test_quoted_cell_with_comma(tmp_path):
     assert read_csv_rows(path, GPU_HEADER)[0][1]["model"] == "m,v2"
 
 
+def test_unparsable_line_is_manual_csv_error_not_raw_csv_error(tmp_path):
+    # csv.reader 는 NUL 바이트(혹은 field_size_limit 초과)에 _csv.Error 를 던진다 — ValueError 가 아니므로
+    # main() 의 except (ManualCsvError, ValueError, OSError) 를 빠져나가지 않도록 ManualCsvError 로 감싼다.
+    path = write(tmp_path, "gpu.csv", f"{GPU_HEADER}\n{TDATE},Mock Service A,m,H100,serving,1\x002\n")
+    with pytest.raises(ManualCsvError) as ei:
+        read_csv_rows(path, GPU_HEADER)
+    assert ei.value.lineno == 2 and ei.value.what == "unparsable line"
+    assert str(ei.value).endswith(":2: unparsable line")
+
+
 # ---- _num / date_range --------------------------------------------------------------
 
 def test_num_conversion():
@@ -238,13 +248,30 @@ def test_engine_errors_and_optional(tmp_path):
 def test_outside_range_and_other_service_counted(tmp_path):
     g = gpu_csv(tmp_path,
                 f"{TDATE},Mock Service A,m,H100,serving,1,2",
-                "2026-08-27,Mock Service A,m,H100,serving,1,2",          # 범위 밖
-                f"{TDATE},Mock Service B,m,H100,serving,1,2")             # 다른 서비스
+                "2026-08-27,Mock Service A,m,H100,serving,1,2",          # 범위 밖(서비스는 대상)
+                f"{TDATE},Mock Service B,m,H100,serving,1,2",             # 다른 서비스(범위는 안)
+                "2026-08-27,Mock Service B,m,H100,serving,1,2")           # 둘 다: 다른 서비스 AND 범위 밖 → 앞 것만
     payloads, counts = load(g, serving_csv(tmp_path), only="Mock Service A")
     assert set(payloads) == {(TDATE, "Mock Service A")}
     assert len(payloads[(TDATE, "Mock Service A")].gpu) == 1
+    # "둘 다면 앞 것만"(§ load_manual_csvs 필터 순서) — other_service 판정이 range 판정보다 먼저이므로
+    # 마지막 행(다른 서비스 + 범위 밖)은 rows_outside_range 가 아니라 rows_other_service 에만 잡힌다.
     assert counts == {"rows_gpu": 1, "rows_serving": 0, "rows_engine": 0,
-                      "rows_outside_range": 1, "rows_other_service": 1}
+                      "rows_outside_range": 1, "rows_other_service": 2}
+
+
+def test_payload_keys_sorted_by_date_then_service(tmp_path):
+    # 입력 행 순서는 뒤섞여 있지만(27,B → 26,B → 27,A → 26,A) payloads 는 sorted((date, service)) 순서로 채워진다.
+    g = gpu_csv(tmp_path,
+                "2026-08-27,Mock Service B,m,H100,serving,1,2",
+                "2026-08-26,Mock Service B,m,H100,serving,1,2",
+                "2026-08-27,Mock Service A,m,H100,serving,1,2",
+                "2026-08-26,Mock Service A,m,H100,serving,1,2")
+    payloads, _ = load(g, serving_csv(tmp_path), frm="2026-08-26", to="2026-08-27")
+    assert list(payloads) == [
+        ("2026-08-26", "Mock Service A"), ("2026-08-26", "Mock Service B"),
+        ("2026-08-27", "Mock Service A"), ("2026-08-27", "Mock Service B"),
+    ]
 
 
 def test_empty_service_day_yields_no_payload(tmp_path):
