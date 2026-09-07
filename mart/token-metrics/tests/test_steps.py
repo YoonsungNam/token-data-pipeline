@@ -217,6 +217,13 @@ def test_sub_reg_is_unique_per_service():
     assert "LIMIT 1 BY service" in steps.SUB_REG
 
 
+def test_sub_reg_limit_1_by_service_is_deterministic():
+    # A6 — ORDER BY 없는 LIMIT 1 BY service는 중복 시 임의 행을 고른다(비결정적). updated_at
+    # DESC로 최신 동기화 행을 결정적으로 고정 — 공백 정규화(재포맷에는 안전, 순서/키 변경에는 실패).
+    sub_reg_norm = " ".join(steps.SUB_REG.split())
+    assert "ORDER BY service, updated_at DESC LIMIT 1 BY service" in sub_reg_norm
+
+
 def test_global_join_and_global_in_only():
     for name, sql in sql_constants().items():
         for m in re.finditer(r"\bLEFT JOIN\b", sql):

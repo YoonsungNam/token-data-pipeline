@@ -116,9 +116,13 @@ SUB_EFF_PRICE = f"""(SELECT provider, model,
         GROUP BY provider, model)"""
 
 # reg — 메트릭 레지스트리 전체 행(설계 §4.3; 6b가 원자 교체). until은 Nullable(Date).
+# A6 — LIMIT 1 BY service만으로는(ORDER BY 없이) 레지스트리에 (service) 중복 행이 남을 때 임의
+# 행이 뽑힌다. updated_at DESC로 최신 동기화 행을 결정적으로 고정한다(dim_token_metrics_service
+# ORDER BY (service) MergeTree — updated_at은 diff 비교 키에서 제외되지만 컬럼 자체는 존재).
 SUB_REG = f"""(SELECT service, service_group, enabled, coverage_since, until,
                expect_gpu, expect_serving, usage_includes_consumers
         FROM {DB_DIM}.dim_token_metrics_service_dist
+        ORDER BY service, updated_at DESC
         LIMIT 1 BY service)"""
 
 # usage_svc — 토큰 측 모집단(dim_token_service enabled=1; 읽기 계약 2컬럼 service/enabled).

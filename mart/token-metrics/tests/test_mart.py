@@ -326,6 +326,24 @@ def test_group_overhead_over_report_clamps_idle_and_null_propagation():
     }
 
 
+def test_group_overhead_zero_allocation():
+    """A2 — allocated_gpu_hours=0.0(할당 0, None 아님): utilization은 분모 0이라 None
+    (allocated > 0 가드가 ternary 단락 평가로 ZeroDivisionError를 막는다 — 코드 확인 결과 버그 아님),
+    idle은 max(0 − reported, 0)=0 클램프, 보고(120) > 할당(0)이므로 over_report=1.
+    reported_total도 0.0이면(보고=할당=0) over_report=0."""
+    zero_alloc = group_overhead(0.0, 120.0, 96.0, 24.0, 0.0, 0.0, 5000.0)
+    assert zero_alloc["utilization"] is None
+    assert zero_alloc["idle_gpu_hours"] == 0.0
+    assert zero_alloc["over_report"] == 1
+    assert zero_alloc["group_total_cost_krw"] == 0.0      # allocated_gpu_hours=0.0 × TCO
+    assert zero_alloc["identity_gap_krw"] == -600000.0    # 0 − model_cost_sum_krw(600,000) − 0 − 0 − 0
+
+    zero_both = group_overhead(0.0, 0.0, 96.0, 24.0, 0.0, 0.0, 5000.0)
+    assert zero_both["over_report"] == 0
+    assert zero_both["utilization"] is None
+    assert zero_both["idle_gpu_hours"] == 0.0
+
+
 def test_quality_flag_m1_priority():
     """§6.1 M1 quality_flag 우선순위 고정: partial > no_tco > flagged > manual > no_metrics > consumer_only > normal."""
     assert M1_FLAG_PRIORITY == ("partial", "no_tco", "flagged", "manual", "no_metrics", "consumer_only", "normal")

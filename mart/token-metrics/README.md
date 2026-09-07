@@ -79,10 +79,12 @@ BATCH_RESULT status=SUCCESS|FAILURE module=mart-metrics metrics_coverage=<presen
 
 ## 실행 순서
 
-M0 → M0b → M1 → M3 → M4 → M2 (날짜마다):
+읽기 계약 프리플라이트 → 변이 예산 선검사 → (날짜마다) M0 → M0b → M1 → M3 → M4 → M2:
 
-1. **M0** 읽기 계약 프리플라이트 — `DESCRIBE` 3테이블/13컬럼(`app/preflight.py`); 실패 시 적재 없이 `FAILURE reason=read_contract`.
-2. **M0b** 커버리지 — 레지스트리 `enabled=1` ∩ 앵커 `raw_token_metrics_summary_1d` → `metrics_coverage`·`missing_services`.
+0. 읽기 계약 프리플라이트(배치 시작 시 1회, 전 날짜 공통) — `DESCRIBE` 3테이블/13컬럼(`app/preflight.py`); 실패 시 적재 없이 전 날짜 `FAILURE reason=read_contract`.
+0b. 변이 예산 선검사(전 날짜 공통) — 대상 날짜 전체 × 4테이블 `exists` 합산 > `MART_METRICS_MAX_MUTATIONS_PER_RUN`이면 적재 없이 전 날짜 `FAILURE reason=mutation_budget`.
+1. **M0** 커버리지(날짜별) — 레지스트리 `enabled=1` ∩ 앵커 `raw_token_metrics_summary_1d` → `metrics_coverage`·`missing_services`.
+2. **M0b** 토큰 mart 존재(날짜별) — `agg_token_service_1d` 그 날짜 행 0이면 `CHECK WARN token_mart_absent` + M4 스킵(`rows_share=0`).
 3. **M1** `agg_token_model_cost_1d` — keys = 토큰 집계 ∪ GPU 집계, `model` 은 `dim_token_model_alias` 로 canonical 화, C = Σ(serving+standby, 비FAIL) gpu_hours × TCO(`dim_token_gpu_tco`, `effective_from <= date` 최신), 토큰 4종·`weighted_tokens`·`tokens_per_gpu_hour`, `quality_flag`(partial > no_tco > flagged > manual > no_metrics > consumer_only > normal).
 4. **M3** `token_metrics_check_1d` — 검사 행(FAIL/WARN/INFO, 핵심 13 + stretch 7 = 20블록): `metrics_missing`, 플래그·TCO 부재·중복 등(`app/steps.py` `M3_BLOCKS_CORE`/`M3_BLOCKS_STRETCH`).
 5. **M4** `agg_token_model_share_1d` — 공유 모델 비용 배분 share = W(s,m)/W(m), `denominator_mode` 6종(`all_services, provider_reported, token_not_reported, no_provider, provider_ambiguous, external_api`), 사외 API 는 `dim_token_vendor_price` 단가로 추정. 토큰 mart 부재일은 M4 자체를 건너뛴다(`token_mart_absent`).

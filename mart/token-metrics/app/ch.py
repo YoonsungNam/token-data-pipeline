@@ -15,6 +15,15 @@ CH_DB_MART/CH_DB_DIM을 따른다).
 상수는 모듈 import 시점에 1회 평가된다. steps.py의 SQL 상수는 이 모듈을 import하는
 시점에 f-string으로 DB명이 보간되어 문자열로 고정된다 — env는 프로세스 시작 시 1회
 읽히므로(CronJob env 주입 전제) 런타임 중 재평가되지 않는다. 이는 의도된 동작이다.
+
+`SESSION_SETTINGS = {"join_use_nulls": 0}`을 세션 전체(클라이언트 기본값 + 각 SELECT/INSERT
+호출)에 명시적으로 고정한다: EXPECTED_SQL/verify_count가 실행하는 카운트 쿼리와 INSERT...SELECT가
+LEFT JOIN 미스를 **동일하게** 키잉해야 한다 — 양쪽 모두 canon()의 `a.canonical = ''`/
+`if(a.canonical = '', ...)` 가드와 `ga.has_rows = 0`류 기본값이 join_use_nulls=0(미스=빈
+문자열/0)을 전제하기 때문이다. 서버/프로파일 기본값에 기대지 않고 클라이언트 생성 시
+(`get_client(settings=...)`)와 문장별(_count/query/insert_select) 양쪽에서 명시한다 —
+문장별 지정은 호출자가 클라이언트를 주입(테스트·company-verify)해도 동일하게 적용되도록 하기
+위함이다.
 """
 from __future__ import annotations
 
@@ -32,6 +41,9 @@ DB_MART = os.getenv("CH_DB_MART", "mart")                 # 6c가 쓰는 mart 4�
 DB_TOKEN_MART = os.getenv("CH_DB_TOKEN_MART", DB_MART)    # 읽기 계약: token_usage_1d·agg_token_service_1d
 DB_TOKEN_DIM = os.getenv("CH_DB_TOKEN_DIM", DB_DIM)       # 읽기 계약: dim_token_service
 
+# join_use_nulls=0 세션 고정 — canon()/`= ''` 가드와 LEFT JOIN 미스 기본값이 이를 전제(모듈 docstring).
+SESSION_SETTINGS = {"join_use_nulls": 0}
+
 KST = timezone(timedelta(hours=9))
 
 
@@ -46,7 +58,7 @@ class CHGate:
         self.cfg = cfg
         self.client = client or clickhouse_connect.get_client(
             host=cfg.ch_host, port=cfg.ch_port, username=cfg.ch_user,
-            password=cfg.ch_password)
+            password=cfg.ch_password, settings=SESSION_SETTINGS)
         self.clock = clock
         self.sleeper = sleeper
 
@@ -61,7 +73,7 @@ class CHGate:
     def _count(self, table_dist: str, date: str) -> int:
         r = self.client.query(
             f"SELECT count() FROM {table_dist} WHERE date = %(d)s",
-            parameters={"d": date})
+            parameters={"d": date}, settings=SESSION_SETTINGS)
         return int(r.result_rows[0][0]) if r.result_rows else 0
 
     def exists(self, table_dist: str, date: str) -> bool:
@@ -103,8 +115,10 @@ class CHGate:
         insert_deduplicate=0 필수(재삽입 중복제거 차단 — Global Constraints).
         cfg.insert_quorum이 설정된 경우만 insert_quorum 설정을 포함한다.
         distributed_product_mode='global': GLOBAL LEFT JOIN이 각 샤드에서 dim을
-        전역 조회하도록 강제(로컬 샤드만 보고 부분 조인하는 사고 방지 — §4.0 분산 조인 표준)."""
-        settings = {"insert_distributed_sync": 1, "insert_deduplicate": 0,
+        전역 조회하도록 강제(로컬 샤드만 보고 부분 조인하는 사고 방지 — §4.0 분산 조인 표준).
+        SESSION_SETTINGS(join_use_nulls=0)를 병합 — LEFT JOIN 미스가 EXPECTED_SQL/verify_count와
+        동일하게 키잉되도록(모듈 docstring)."""
+        settings = {**SESSION_SETTINGS, "insert_distributed_sync": 1, "insert_deduplicate": 0,
                     "distributed_product_mode": "global"}
         if self.cfg.insert_quorum:
             settings["insert_quorum"] = self.cfg.insert_quorum
@@ -129,7 +143,7 @@ class CHGate:
 
     def query(self, sql: str, params: dict | None = None) -> list[tuple]:
         """M0 커버리지·예산 선조회·인라인 검증용 범용 SELECT."""
-        r = self.client.query(sql, parameters=params)
+        r = self.client.query(sql, parameters=params, settings=SESSION_SETTINGS)
         return [tuple(row) for row in (r.result_rows or [])]
 
     def describe(self, table_dist: str) -> list[str]:

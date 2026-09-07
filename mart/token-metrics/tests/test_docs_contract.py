@@ -312,7 +312,7 @@ def test_design_required_panels():
     # 14) 출처 — source_type 별 서비스 수
     assert "GROUP BY time, source_type" in sql[14]
     # 15) 커버리지 분모 = 마커 metrics_coverage 분모와 같은 술어(T5 M0: enabled=1 AND coverage_since <= d AND (until IS NULL OR d <= until)),
-    #     레지스트리는 steps.SUB_REG 처럼 LIMIT 1 BY service 로 중복 제거해야 분모가 마커의 M(enabled 수)과 같아진다(app/steps.py:118-122)
+    #     레지스트리는 steps.SUB_REG 처럼 ORDER BY service, updated_at DESC + LIMIT 1 BY service 로 중복 제거해야 분모가 마커의 M(enabled 수)과 같아진다(app/steps.py:122-126, A6)
     assert "r.enabled = 1 AND r.coverage_since <= d.date AND (isNull(r.until) OR d.date <= r.until)" in sql[15]
     assert "AS expected_services" in sql[15] and "registered_services" not in sql[15]
     assert "LIMIT 1 BY service" in sql[15]
@@ -365,7 +365,8 @@ def test_deploy_doc_sections_and_placeholders():
         "RERUN REFUSED window (>=10:50 KST)",
         "token-mart-metrics-ch-secret-verify",
         "MART_METRICS_MAX_MUTATIONS_PER_RUN=64",
-        "reason=read_contract", "reason=mutation_budget", "token_mart_absent", "metrics_missing", "no_tco",
+        "reason=read_contract", "reason=mutation_budget", "reason=exception", "token_mart_absent",
+        "metrics_missing", "no_tco",
         "stage_seed_dim_token_",
         "manual_load.py",
         "ttlSecondsAfterFinished",
@@ -433,3 +434,14 @@ def test_module_readme_env_and_marker():
     assert "docs/cost-model-spec.md" in text
     assert "docs/operations/token-metrics-deploy.md" in text
     assert "bash tests/e2e/run_e2e.sh" in text
+
+
+def test_module_readme_execution_order_labels_m0_m0b_correctly():
+    """B2(M-1) — README '실행 순서' 라벨이 배치 코드(app/batch.py _check_m0/_token_mart_present)·
+    설계 §6.1과 일치해야 한다: M0=커버리지(metrics_coverage), M0b=토큰 mart 존재(token_mart_absent).
+    프리플라이트/예산 선검사는 date 루프 밖(0/0b)이라 M0/M0b 번호에서 제외한다."""
+    text = MOD_README.read_text(encoding="utf-8")
+    m0 = re.search(r"^\d+\.\s+\*\*M0\*\*.*$", text, re.M)
+    m0b = re.search(r"^\d+\.\s+\*\*M0b\*\*.*$", text, re.M)
+    assert m0 and "metrics_coverage" in m0.group(0), m0
+    assert m0b and "token_mart_absent" in m0b.group(0), m0b

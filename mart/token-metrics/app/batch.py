@@ -329,11 +329,23 @@ def main(argv=None) -> int:
         print("[ERROR] 대상 날짜 없음 — --from은 --to보다 늦을 수 없습니다", file=sys.stderr, flush=True)
         return 2
 
-    gate = CHGate(cfg)
-    if preflight_or_fail(gate):                    # 읽기 계약 불일치 — 첫 날짜 처리 전, 변이 0
-        return _fail_all(dates, "read_contract")
+    # B4(M-3) — CHGate 생성·읽기 계약 프리플라이트·예산 선검사(exists 합산)는 date 루프 밖의
+    # 단일 실패점이다. preflight_or_fail 자체는 내부에서 DESCRIBE 예외를 삼키지만(§7.5),
+    # CHGate(cfg) 생성 자체(서버 unreachable)나 plan_mutations의 exists() 호출(mart 테이블
+    # 부재 등)이 raise하면 이 가드가 없을 때 트레이스백만 남고 BATCH_RESULT 마커가 한 줄도
+    # 나가지 않는다(마커 기반 알림이 침묵) — read_contract/mutation_budget 경로는 그대로 두고
+    # 예상 밖 예외만 날짜별 FAILURE reason=exception 마커로 변환한다.
+    try:
+        gate = CHGate(cfg)
+        if preflight_or_fail(gate):                # 읽기 계약 불일치 — 첫 날짜 처리 전, 변이 0
+            return _fail_all(dates, "read_contract")
 
-    planned = plan_mutations(gate, dates)          # 첫 _run_table 전 한 번 (§4.0 장부)
+        planned = plan_mutations(gate, dates)      # 첫 _run_table 전 한 번 (§4.0 장부)
+    except Exception as exc:
+        print(f"ERROR before date loop: {type(exc).__name__}: {str(exc)[:200]}",
+              file=sys.stderr, flush=True)
+        return _fail_all(dates, "exception")
+
     log.info("mutation budget: planned=%d budget=%d dates=%d",
              planned, cfg.max_mutations_per_run, len(dates))
     if mutation_budget_exceeded(planned, cfg.max_mutations_per_run):

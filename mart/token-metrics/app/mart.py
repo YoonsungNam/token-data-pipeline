@@ -277,8 +277,11 @@ def group_overhead(allocated_gpu_hours, reported_total, serving, standby, test, 
     §6.4 (2)/(7) / 정의서 3.1·3.3·3.4 — M2 agg_token_gpu_group_1d 한 (date, service_group, gpu_type) 행.
 
     allocated_gpu_hours: 할당표 allocated_gpu_count × 24 (없으면 None)
-    reported_total:      Σ 보고 gpu_hours 전체(플래그 포함) = serving + standby + test + flagged
-    serving/standby/test: 비FAIL 카테고리별 합, flagged: FAIL 행 합
+    reported_total:      Σ 보고 gpu_hours 전체 = serving + standby + test + flagged(+other)
+    serving/standby/test: 비FAIL 카테고리별 합
+    flagged:              FAIL 행 합 + non-FAIL 행 중 category ∉ {serving,standby,test}("other") —
+                          호출자(SQL_M2 R1, mart_expectations)가 flagged_gpu_hours와 other_gpu_hours를
+                          더해서 이 인자로 넘긴다(A5: 이 함수 자체는 둘을 구분하지 않는다)
     tco:                 원/GPU·h (None이면 비용 키 전부 None)
 
     idle = max(allocated − reported_total, 0) (I1: 음수면 over_report=1 + 0 클램프)

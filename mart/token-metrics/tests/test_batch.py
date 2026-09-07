@@ -484,6 +484,29 @@ def test_read_contract_missing_fails_all_dates_without_mutation(monkeypatch, cap
     assert gate.delete_calls == [] and gate.exists_calls == [] and calls == []
 
 
+def test_exists_exception_before_date_loop_fails_all_dates_reason_exception(monkeypatch, capsys):
+    """B4(M-3) — plan_mutations의 exists()가 raise하면(마트 테이블 부재·서버 unreachable) date
+    루프 진입 전이라 예전에는 트레이스백만 남고 BATCH_RESULT가 한 줄도 안 나갔다(마커 기반 알림
+    침묵). 이제 date 루프 밖 예외를 잡아 날짜당 정확히 1줄 FAILURE reason=exception 마커로
+    바꾼다 — INSERT/DELETE는 issue되지 않는다(변이 0)."""
+    calls = stub_runners(monkeypatch)
+
+    class RaisingExistsGate(FakeGate):
+        def exists(self, table_dist, date):
+            raise RuntimeError("connection refused")
+
+    gate = RaisingExistsGate()
+    wire_main(monkeypatch, gate)
+    code = batch.main(["--from", "2026-09-01", "--to", "2026-09-03"])
+    lines = marker_lines(capsys.readouterr().out)
+    assert code == 1 and len(lines) == 3
+    for line in lines:
+        m = MARKER_RE.match(line)
+        assert m.group("status") == "FAILURE" and m.group("reason") == "exception"
+        assert (m.group("present"), m.group("enabled")) == ("0", "0")
+    assert gate.delete_calls == [] and calls == []
+
+
 def test_plan_mutations_counts_existing_date_table_pairs():
     gate = full_gate(exists_always=True)
     assert batch.plan_mutations(gate, ["2026-09-01", "2026-09-02"]) == 8

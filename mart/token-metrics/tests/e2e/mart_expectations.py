@@ -312,9 +312,11 @@ def m3_counts(seed) -> dict:
     n["metrics_missing"] = len([s for s in c.expected if s not in c.anchors])
     n["partial_load"] = (sum(1 for s in c.anchors if _partial(c, s)) + len(fact_svcs - set(c.anchors)))
     n["rows_rejected"] = sum(1 for a in c.anchors.values() if a["rejected_rows"] > 0)
-    models_seen = ({(r["service"], r["model"]) for r in c.gpu_raw if r["service"] in c.anchors}
-                   | {(r["service"], r["model"]) for r in c.serving_raw if r["service"] in c.anchors}
-                   | {(r["service"], r["model"]) for r in _rows(seed, "token_usage") if r["service"] in c.usage_svc})
+    # B3(M-2) — SQL(_M3_UNREGISTERED_MODEL, app/steps.py)은 raw_token_metrics_gpu_1d_dist(gpu
+    # 팩트)만, 앵커 있는 서비스로 스캔한다. serving/token_usage까지 넓게 보던 이전 미러는 그
+    # 둘에만 있는 미등록 모델을 SQL이 세지 않는데도 세는 다섯 번째(문서화 안 된) 발산이었다 —
+    # 현재 시드는 모든 모델이 ALIASES에 있어 양쪽 다 0이라 드러나지 않았다. SQL 스코프로 좁힌다.
+    models_seen = {(r["service"], r["model"]) for r in c.gpu_raw if r["service"] in c.anchors}
     n["unregistered_model"] = len({k for k in models_seen if k[1] not in sm.ALIASES})
     for flag in ("hours_over_count", "unknown_violation"):
         n[flag] = len({(r["service"], _canon(r["model"]), r["gpu_type"]) for r in c.gpu_raw

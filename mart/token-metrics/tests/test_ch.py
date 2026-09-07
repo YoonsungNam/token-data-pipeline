@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.ch import (CHGate, DB_DIM, DB_FACT, DB_MART, DB_TOKEN_DIM, DB_TOKEN_MART, KST,
-                    now_kst)
+                    SESSION_SETTINGS, now_kst)
 from app.config import Config
 
 MODULE_ROOT = Path(__file__).resolve().parent.parent
@@ -31,7 +31,7 @@ class FakeCH:
     """mart/token-usage FakeCH 클론 — command/query 호출 이력을 전부 기록한다.
 
     - commands: [(sql, parameters, settings), ...]  (client.command 호출)
-    - queries:  [(sql, parameters), ...]             (client.query 호출)
+    - queries:  [(sql, parameters, settings), ...]   (client.query 호출)
     - mutations_left: system.mutations/clusterAllReplicas 폴링 응답용 카운트다운.
       None이면 항상 pending(count=1) — 타임아웃 테스트 전용. 0이면 즉시 완료(no-op 대기).
     - count_sequence: exists/verify_count의 count() 응답을 순서대로 흉내(마지막 값은 유지).
@@ -54,9 +54,9 @@ class FakeCH:
         self.commands.append((" ".join(sql.split()), parameters, settings))
         return FakeSummary(self.insert_written_rows)
 
-    def query(self, sql, parameters=None):
+    def query(self, sql, parameters=None, settings=None):
         sql_n = " ".join(sql.split())
-        self.queries.append((sql_n, parameters))
+        self.queries.append((sql_n, parameters, settings))
         if sql_n.startswith("EXISTS TABLE"):
             return FakeResult([[self.table_exists]])
         if "system.mutations" in sql_n:
@@ -107,7 +107,7 @@ def test_delete_day_on_cluster_and_waits():
     g.delete_day("mart.agg_token_model_cost_1d_local", DATE)
     cmd = ch.commands[0][0]
     assert "ON CLUSTER 'gpu-monitoring'" in cmd and "DELETE WHERE date =" in cmd
-    assert any("clusterAllReplicas" in q for q, _ in ch.queries)   # 전 레플리카 폴링
+    assert any("clusterAllReplicas" in q for q, _, _s in ch.queries)   # 전 레플리카 폴링
 
 
 def test_delete_day_no_on_cluster_when_cluster_empty():
@@ -116,8 +116,8 @@ def test_delete_day_no_on_cluster_when_cluster_empty():
     g.delete_day("mart.agg_token_model_cost_1d_local", DATE)
     cmd = ch.commands[0][0]
     assert "ON CLUSTER" not in cmd
-    assert all("clusterAllReplicas" not in q for q, _ in ch.queries)
-    assert any("system.mutations" in q for q, _ in ch.queries)
+    assert all("clusterAllReplicas" not in q for q, _, _s in ch.queries)
+    assert any("system.mutations" in q for q, _, _s in ch.queries)
 
 
 def test_delete_day_extra_pred_created_by():     # 추가 술어 형식 'AND …' (§7.1)
@@ -169,7 +169,9 @@ def test_verify_count_exhausted_fails():
 
 def test_insert_select_settings_contract():
     # settings **정확 일치**: insert_distributed_sync=1 AND insert_deduplicate=0(재삽입 폐기 차단)
-    # AND distributed_product_mode='global'(§4.0 분산 조인 — 각 샤드 전역 조회). 그 외 키 없음.
+    # AND distributed_product_mode='global'(§4.0 분산 조인 — 각 샤드 전역 조회) AND
+    # join_use_nulls=0(SESSION_SETTINGS — LEFT JOIN 미스를 EXPECTED_SQL과 동일하게 키잉, I-1).
+    # 그 외 키 없음.
     ch = FakeCH(insert_written_rows=42)
     g = CHGate(Config(), client=ch)
     n = g.insert_select("INSERT INTO mart.agg_token_model_cost_1d_dist SELECT ...", {"d": DATE})
@@ -177,7 +179,7 @@ def test_insert_select_settings_contract():
     sql, params, settings = ch.commands[0]
     assert sql.startswith("INSERT INTO mart.agg_token_model_cost_1d_dist")
     assert params == {"d": DATE}
-    assert settings == {"insert_distributed_sync": 1, "insert_deduplicate": 0,
+    assert settings == {"join_use_nulls": 0, "insert_distributed_sync": 1, "insert_deduplicate": 0,
                         "distributed_product_mode": "global"}
 
 
@@ -189,8 +191,9 @@ def test_insert_select_quorum_only_when_configured():
 
     ch2 = FakeCH(insert_written_rows=5)
     CHGate(Config(insert_quorum="auto"), client=ch2).insert_select("INSERT ... SELECT ...")
-    assert ch2.commands[0][2] == {"insert_distributed_sync": 1, "insert_deduplicate": 0,
-                                  "distributed_product_mode": "global", "insert_quorum": "auto"}
+    assert ch2.commands[0][2] == {"join_use_nulls": 0, "insert_distributed_sync": 1,
+                                  "insert_deduplicate": 0, "distributed_product_mode": "global",
+                                  "insert_quorum": "auto"}
 
 
 def test_insert_select_without_written_rows_raises():
@@ -211,6 +214,41 @@ def test_query_returns_rows():
     g = CHGate(Config(), client=ch)
     result = g.query("SELECT service, count() FROM mart.agg_token_model_cost_1d_dist GROUP BY service")
     assert result == [("svc-a", 3), ("svc-b", 1)]
+
+
+def test_session_settings_join_use_nulls_sent_on_all_client_calls():
+    # B1(I-1) — join_use_nulls=0을 세션 전체에 명시: exists/verify_count/query/insert_select
+    # 각각이 client에 보내는 settings에 join_use_nulls=0이 포함돼야 EXPECTED_SQL(카운트 쿼리)과
+    # INSERT...SELECT가 LEFT JOIN 미스를 동일하게 키잉한다(canon()의 `= ''` 가드 전제).
+    ch = FakeCH(existing_count=5, insert_written_rows=1)
+    g = CHGate(Config(), client=ch)
+
+    g.exists("mart.agg_token_model_cost_1d_dist", DATE)
+    g.verify_count("mart.agg_token_model_cost_1d_dist", DATE, expected=1)
+    g.query("SELECT 1")
+    g.insert_select("INSERT INTO mart.agg_token_model_cost_1d_dist SELECT ...")
+
+    assert ch.queries, "query() 호출이 기록되지 않음"
+    for _, _, settings in ch.queries:
+        assert settings is not None and settings.get("join_use_nulls") == 0
+    assert ch.commands, "command() 호출이 기록되지 않음"
+    for _, _, settings in ch.commands:
+        assert settings.get("join_use_nulls") == 0
+
+
+def test_get_client_receives_session_settings_when_no_client_injected(monkeypatch):
+    # 클라이언트를 주입하지 않는 실배포 경로 — get_client(settings=SESSION_SETTINGS)로 세션
+    # 기본값을 고정(문장별 지정과는 별개 방어선, B1(I-1)).
+    captured = {}
+
+    def fake_get_client(**kwargs):
+        captured.update(kwargs)
+        return FakeCH()
+
+    monkeypatch.setattr("app.ch.clickhouse_connect.get_client", fake_get_client)
+    CHGate(Config())
+    assert captured["settings"] == SESSION_SETTINGS
+    assert captured["settings"]["join_use_nulls"] == 0
 
 
 def test_now_kst_is_aware():
@@ -261,8 +299,8 @@ def test_describe_returns_column_names():
                       ["service", "LowCardinality(String)", "", "", "", "", ""]])
     g = CHGate(Config(), client=ch)
     assert g.describe("mart.token_usage_1d_dist") == ["date", "service"]
-    assert [q for q, _ in ch.queries] == ["EXISTS TABLE mart.token_usage_1d_dist",
-                                          "DESCRIBE TABLE mart.token_usage_1d_dist"]
+    assert [q for q, _, _s in ch.queries] == ["EXISTS TABLE mart.token_usage_1d_dist",
+                                             "DESCRIBE TABLE mart.token_usage_1d_dist"]
 
 
 def test_describe_absent_table_returns_empty_without_describe():
@@ -270,4 +308,4 @@ def test_describe_absent_table_returns_empty_without_describe():
     ch = FakeCH(rows=[["date", "Date"]], table_exists=0)
     g = CHGate(Config(), client=ch)
     assert g.describe("mart.token_usage_1d_dist") == []
-    assert [q for q, _ in ch.queries] == ["EXISTS TABLE mart.token_usage_1d_dist"]
+    assert [q for q, _, _s in ch.queries] == ["EXISTS TABLE mart.token_usage_1d_dist"]

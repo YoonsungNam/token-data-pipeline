@@ -275,6 +275,7 @@ kubectl --context "$KUBE_CONTEXT" -n monitoring get jobs -l app=token-mart-metri
 | `reason=mutation_budget` | 한 Job 에 16일 초과 범위(> 64 변이) | 범위 축소 — §7 `rerun.py --chunk-days 7` 로 청크 실행 |
 | `reason=verify_count` | 적재 후 재조회 행수 ≠ 기대(EXPECTED) — 동시 쓰기·복제 지연 | 활성 Job 0 확인 후 해당 날짜 재실행; 반복되면 `dup_suspect` WARN·`invariants_metrics` 확인 |
 | `reason=sigterm` (`note=sigterm`) | `activeDeadlineSeconds`(1800) 초과·노드 축출 | 부분 적재 상태 — 같은 날짜 재실행(§7 멱등). 반복되면 범위 축소 |
+| `reason=exception` | date 루프 진입 전(CHGate 생성·읽기 계약 프리플라이트·예산 선검사) 또는 개별 날짜 처리 중 예상 밖 예외(TimeoutError 등) — 트레이스백은 stderr `ERROR before date loop: …` 또는 `ERROR in run_batch(date=…): …`(200자 요약, `user_id` 없음) | stderr 로그로 예외 타입 확인(마트 테이블 부재·GRANT 누락·서버 unreachable 등) → 원인 조치 후 같은 범위 §7 재실행 |
 | `CHECK WARN token_mart_absent date=<d>` | 그 날짜 토큰 mart 행 0(토큰 배치 미완·GPU-only 격리) | 정상 — M4 스킵. 토큰 배치(`token-mart-daily`) 완료 후 §7 로 재실행하면 M4 채워짐 |
 | `CHECK WARN metrics_coverage missing=<n>` / M3 `metrics_missing` FAIL | enabled 서비스의 앵커(summary) 없음 — 6b 수집 실패·API 미응답·수기 미제출 | 6b 수집 로그(`token-metrics-collector` Job) 확인 → 수집 재실행(`--chain-mart`) 또는 `manual_load.py` 수기 적재 후 §7 |
 | `quality_flag=no_tco` / 비용 NULL | `dim_token_gpu_tco` 에 그 기종·날짜 유효 TCO 없음 | §1 생성기로 TCO dim 갱신(`--effective-from` 은 실제 적용일) 후 해당 범위 §7 재실행 |
