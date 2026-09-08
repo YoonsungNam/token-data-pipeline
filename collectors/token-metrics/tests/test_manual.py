@@ -1,6 +1,7 @@
 """manual-v0 CSV 파서 (설계 §5.5 · Plan 6a F) — 템플릿 3파일을 fixture로 그대로 사용."""
 from __future__ import annotations
 
+import csv
 from datetime import date, datetime
 from pathlib import Path
 
@@ -95,11 +96,17 @@ def test_quoted_cell_with_comma(tmp_path):
 
 
 def test_unparsable_line_is_manual_csv_error_not_raw_csv_error(tmp_path):
-    # csv.reader 는 NUL 바이트(혹은 field_size_limit 초과)에 _csv.Error 를 던진다 — ValueError 가 아니므로
+    # csv.reader 는 field_size_limit 초과에 _csv.Error 를 던진다 — ValueError 가 아니므로
     # main() 의 except (ManualCsvError, ValueError, OSError) 를 빠져나가지 않도록 ManualCsvError 로 감싼다.
-    path = write(tmp_path, "gpu.csv", f"{GPU_HEADER}\n{TDATE},Mock Service A,m,H100,serving,1\x002\n")
-    with pytest.raises(ManualCsvError) as ei:
-        read_csv_rows(path, GPU_HEADER)
+    # (NUL 바이트는 Python 3.11+ 의 csv 가 일반 문자로 받아들여 column count 오류가 되므로 트리거로 쓰지 않는다 —
+    #  CI 3.12 / 개발기 3.10 모두에서 같은 경로를 타도록 field_size_limit 을 잠시 줄인다.)
+    path = write(tmp_path, "gpu.csv", f"{GPU_HEADER}\n{TDATE},Mock Service A,m,H100,serving,1,2\n")
+    old_limit = csv.field_size_limit(4)
+    try:
+        with pytest.raises(ManualCsvError) as ei:
+            read_csv_rows(path, GPU_HEADER)
+    finally:
+        csv.field_size_limit(old_limit)
     assert ei.value.lineno == 2 and ei.value.what == "unparsable line"
     assert str(ei.value).endswith(":2: unparsable line")
 
