@@ -210,7 +210,7 @@ CREATE TABLE IF NOT EXISTS mart.agg_token_gpu_group_1d_local
     test_gpu_hours           Float64                 COMMENT '그룹 합, 비FAIL',
     reported_gpu_hours_total Float64                 COMMENT '플래그 포함 전체 보고 합',
     flagged_gpu_hours        Float64                 COMMENT 'FAIL 플래그 행 합',
-    model_cost_sum_krw       Nullable(Float64)       COMMENT 'Σ (serving+standby) gpu_hours × TCO — 기종별 계산; 한 모델이 TCO 결측 기종에 걸치면 Σ M1과 다를 수 있음(N6)',
+    model_cost_sum_krw       Nullable(Float64)       COMMENT 'Σ (serving+standby) gpu_hours × TCO — 기종별 계산 (한 모델이 TCO 결측 기종에 걸치면 Σ M1과 다를 수 있음, N6)',
     test_cost_krw            Nullable(Float64)       COMMENT '= Σ test × TCO — 그룹 귀속, 배분 안 함',
     idle_gpu_hours           Nullable(Float64)       COMMENT '= allocated − reported_total (음수면 0)',
     idle_cost_krw            Nullable(Float64)       COMMENT '= idle_gpu_hours × TCO',
