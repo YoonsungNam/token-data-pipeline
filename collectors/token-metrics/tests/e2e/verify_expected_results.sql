@@ -1,43 +1,45 @@
 -- --expect-empty 방식: 기대와 다른 행만 SELECT — 출력 없으면 통과 (기존 token-usage e2e 와 같은 형식)
 -- 실행 전 치환: {DATE} {SERVICE} {EXP_GPU_ROWS} {EXP_SERVING_ROWS} {EXP_GPU_HOURS}
 -- 실행 시점: 정기 2회(2회차 already_loaded) 직후 — 감사 0행·flags 빈 배열·앵커 1행이 전제 (§4.0 정기 = 뮤테이션 0)
+-- actual/expected 는 전 블록 Float64 로 맞춘다 — UNION ALL 공통 상위 타입: count() UInt64 와 sum(gpu_hours) Float64 는
+-- 공통 타입이 없어(NO_COMMON_TYPE, CH 24.8) 실패한다. token-usage e2e 는 정수 합만 있어 이 문제가 없었다.
 
-SELECT 'gpu_row_count' AS check_name, count() AS actual, {EXP_GPU_ROWS} AS expected
+SELECT 'gpu_row_count' AS check_name, toFloat64(count()) AS actual, toFloat64({EXP_GPU_ROWS}) AS expected
 FROM fact.raw_token_metrics_gpu_1d_dist
 WHERE date = '{DATE}' AND service = '{SERVICE}'
 HAVING count() != {EXP_GPU_ROWS}
 
 UNION ALL
 
-SELECT 'serving_row_count', count(), {EXP_SERVING_ROWS}
+SELECT 'serving_row_count', toFloat64(count()), {EXP_SERVING_ROWS}
 FROM fact.raw_token_metrics_serving_1d_dist
 WHERE date = '{DATE}' AND service = '{SERVICE}'
 HAVING count() != {EXP_SERVING_ROWS}
 
 UNION ALL
 
-SELECT 'gpu_hours_sum', sum(gpu_hours), {EXP_GPU_HOURS}
+SELECT 'gpu_hours_sum', sum(gpu_hours), toFloat64({EXP_GPU_HOURS})
 FROM fact.raw_token_metrics_gpu_1d_dist
 WHERE date = '{DATE}' AND service = '{SERVICE}'
 HAVING abs(sum(gpu_hours) - {EXP_GPU_HOURS}) > 0.05
 
 UNION ALL
 
-SELECT 'summary_anchor_once', count(), 1
+SELECT 'summary_anchor_once', toFloat64(count()), 1
 FROM fact.raw_token_metrics_summary_1d_dist
 WHERE date = '{DATE}' AND service = '{SERVICE}'
 HAVING count() != 1
 
 UNION ALL
 
-SELECT 'summary_source_type', count(), 0
+SELECT 'summary_source_type', toFloat64(count()), 0
 FROM fact.raw_token_metrics_summary_1d_dist
 WHERE date = '{DATE}' AND service = '{SERVICE}' AND source_type != 'metrics-api-v1'
 HAVING count() != 0
 
 UNION ALL
 
-SELECT 'summary_engine', count(), 0
+SELECT 'summary_engine', toFloat64(count()), 0
 FROM fact.raw_token_metrics_summary_1d_dist
 WHERE date = '{DATE}' AND service = '{SERVICE}'
   AND (engine_type != 'vllm' OR engine_version != '0.10.1')
@@ -45,7 +47,7 @@ HAVING count() != 0
 
 UNION ALL
 
-SELECT 'summary_counts', count(), 0
+SELECT 'summary_counts', toFloat64(count()), 0
 FROM fact.raw_token_metrics_summary_1d_dist
 WHERE date = '{DATE}' AND service = '{SERVICE}'
   AND (gpu_rows != {EXP_GPU_ROWS} OR serving_rows != {EXP_SERVING_ROWS})
@@ -54,7 +56,7 @@ HAVING count() != 0
 UNION ALL
 
 -- 2회 실행은 already_loaded 로 DELETE·감사 INSERT 가 없다 (§5.2 표 · §5.4 (2))
-SELECT 'audit_empty', count(), 0
+SELECT 'audit_empty', toFloat64(count()), 0
 FROM fact.collect_audit_metrics_1d_dist
 WHERE date = '{DATE}' AND service = '{SERVICE}'
 HAVING count() != 0
@@ -62,7 +64,7 @@ HAVING count() != 0
 UNION ALL
 
 -- 정기 실행의 레지스트리 diff-sync 결과 (§4.3) — endpoints 1건 = 행 1건
-SELECT 'registry_synced', count(), 1
+SELECT 'registry_synced', toFloat64(count()), 1
 FROM gpu_data.dim_token_metrics_service_dist
 WHERE service = '{SERVICE}'
 HAVING count() != 1
@@ -71,7 +73,7 @@ UNION ALL
 
 -- toHour(collected_at) NOT BETWEEN 0 AND 23 는 항상 거짓(아무 것도 걸러내지 않음)이라 제외했다 —
 -- 남은 두 시간창 조건만으로 "적재 시각이 지금 근방(과거 2시간 ~ 미래 10분)" 을 검사한다 (컨트롤러 판정).
-SELECT 'collected_at_kst_sane', count(), 0
+SELECT 'collected_at_kst_sane', toFloat64(count()), 0
 FROM fact.raw_token_metrics_gpu_1d_dist
 WHERE date = '{DATE}' AND service = '{SERVICE}'
   AND (collected_at < now('Asia/Seoul') - INTERVAL 2 HOUR
@@ -81,7 +83,7 @@ HAVING count() != 0
 UNION ALL
 
 -- 시나리오 OFF 기본 데이터 — gpu·serving 모두 flags 빈 배열 (T3)
-SELECT 'no_flags_on_clean_run', count(), 0
+SELECT 'no_flags_on_clean_run', toFloat64(count()), 0
 FROM (
     SELECT flags FROM fact.raw_token_metrics_gpu_1d_dist
     WHERE date = '{DATE}' AND service = '{SERVICE}'
