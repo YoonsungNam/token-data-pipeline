@@ -44,4 +44,6 @@ jobs:
           done
           curl -sf http://127.0.0.1:18000/healthz
           curl -sf "http://127.0.0.1:18000/v1/usage/summary?date=$(TZ=Asia/Seoul date -d yesterday +%F)" | grep -q "CI Smoke Svc"
+          YDAY="$(TZ=Asia/Seoul date -d yesterday +%F)"
+          curl -fsS "http://127.0.0.1:18000/v1/metrics?date=${YDAY}" | grep -q '"gpu"'
           docker stop mock-smoke

@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# namespace 고정 없음 — install.sh -n 일원화 (company overlay와 동일 사유)
+# 격리 검증 전용(설계 §7.5 — 선택) — company와 동일 이미지·리소스,
+# CronJob/Secret/ConfigMap 이름만 -verify 접미로 분리해 production 리소스와 공존시킨다.
+# ca-bundle ConfigMap(token-metrics-ca-bundle)은 접미 없이 공용 (base volumes[1], optional).
+nameSuffix: -verify
+resources:
+  - ../../base
+patches:
+  - target:
+      kind: CronJob
+      name: token-metrics-collector
+    patch: |-
+      - op: replace
+        path: /spec/jobTemplate/spec/template/spec/containers/0/envFrom/0/secretRef/name
+        value: token-metrics-ch-secret-verify
+      - op: replace
+        path: /spec/jobTemplate/spec/template/spec/volumes/0/configMap/name
+        value: token-metrics-endpoints-verify
+# 이미지 주소는 install.sh가 --registry/--tag로 kubectl set image 주입 (company overlay와 동일)

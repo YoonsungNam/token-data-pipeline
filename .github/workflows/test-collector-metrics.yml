@@ -1,0 +1,89 @@
+name: test-collector-metrics
+
+# Plan 6b T11 — token-metrics 수집기 전용 CI (설계 §5.6). 기존 test-collector.yml 은 무수정(§7.5 zero-diff).
+on:
+  push:
+    branches: [main]
+    paths: ["collectors/token-metrics/**", "tools/mock-provider/**",
+            ".github/workflows/test-collector-metrics.yml"]
+  pull_request:
+    paths: ["collectors/token-metrics/**", "tools/mock-provider/**",
+            ".github/workflows/test-collector-metrics.yml"]
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: collectors/token-metrics
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest tests/ -v --ignore=tests/e2e
+      - name: E2E expectations are deterministic (mock datagen, no docker)
+        run: |
+          python tests/e2e/ci_expectations.py 2026-09-10 e2e-seed-1 "claude-opus-4-8,claude-sonnet-5,claude-haiku-4-5" \
+            | grep -q '^rows_gpu=5 rows_serving=9 gpu_hours_sum='
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r collectors/token-metrics/requirements-dev.txt
+      - name: Build mock image
+        run: docker build -t token-mock-provider:e2e tools/mock-provider
+      - name: Run E2E
+        run: ./collectors/token-metrics/tests/e2e/run_e2e.sh
+
+  image:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: collectors/token-metrics
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t token-metrics-collector:ci .
+      - name: Container smoke test
+        run: |
+          # CH 없이 argparse 도움말이 exit 0으로 떠야 함 (이미지 엔트리 검증 — T6 CLI)
+          docker run --rm token-metrics-collector:ci python -m app.main --help
+
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render overlays
+        run: |
+          for o in stage company company-verify; do
+            kubectl kustomize "collectors/token-metrics/k8s/overlays/${o}" > "/tmp/metrics-${o}.yaml"
+          done
+      - name: Contract fields locked (§5.2/§7.2 — T8 계약 문자열)
+        run: |
+          for f in /tmp/metrics-stage.yaml /tmp/metrics-company.yaml /tmp/metrics-company-verify.yaml; do
+            grep -q 'schedule: 5 2-9 \* \* \*' "$f"
+            grep -q 'timeZone: Asia/Seoul' "$f"
+            grep -q 'startingDeadlineSeconds: 540' "$f"
+            grep -q 'activeDeadlineSeconds: 3000' "$f"
+            grep -q 'backoffLimit: 0' "$f"
+            grep -q 'concurrencyPolicy: Forbid' "$f"
+            grep -q 'memory: 1Gi' "$f"
+            grep -q 'memory: 256Mi' "$f"
+            grep -q 'name: registry-pull-secret' "$f"
+            grep -q 'name: token-metrics-ch-secret' "$f"
+            grep -q 'name: token-metrics-endpoints' "$f"
+            grep -q 'name: token-metrics-ca-bundle' "$f"
+            grep -q 'METRICS_MAX_MUTATIONS_PER_RUN' "$f"
+            # 기존 모듈 이름 누출 0 (§5.1 이름 전면 교체) — 부정 연산자(느낌표) 반전은 set -e 를 우회하므로 if/exit 로 쓴다
+            if grep -q 'token-usage' "$f"; then echo "token-usage leaked in $f"; exit 1; fi
+          done
+          grep -q 'ghcr.io/yoonsungnam/token-metrics-collector' /tmp/metrics-stage.yaml
+          grep -q 'name: token-metrics-collector-verify' /tmp/metrics-company-verify.yaml
+          grep -q 'name: token-metrics-ch-secret-verify' /tmp/metrics-company-verify.yaml
+          grep -q 'name: token-metrics-endpoints-verify' /tmp/metrics-company-verify.yaml
