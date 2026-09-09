@@ -18,6 +18,7 @@ class Config:
         default_factory=lambda: ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"]
     )
     retention_days: int = 90
+    metrics_retention_days: int = 14        # /v1/metrics 보존 일수 (계약: 14일 초과 → 404)
 
 
 def load_config() -> Config:
@@ -32,9 +33,12 @@ def load_config() -> Config:
         anon_users=_int_env("MOCK_ANON_USERS", 10),
         models=models or ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"],
         retention_days=_int_env("MOCK_RETENTION_DAYS", 90),
+        metrics_retention_days=_int_env("MOCK_METRICS_RETENTION_DAYS", 14),
     )
     if cfg.users < 0 or cfg.anon_users < 0:
         raise ValueError("MOCK_USERS/MOCK_ANON_USERS must be >= 0")
     if cfg.retention_days < 1:
         raise ValueError("MOCK_RETENTION_DAYS must be >= 1")
+    if cfg.metrics_retention_days < 1:
+        raise ValueError("MOCK_METRICS_RETENTION_DAYS must be >= 1")
     return cfg

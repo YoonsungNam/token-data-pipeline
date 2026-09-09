@@ -1,0 +1,6 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# namespace 고정 없음 — install.sh -n 일원화 (stage overlay와 동일 사유)
+resources:
+  - ../../base
+# 이미지 주소는 install.sh가 --registry/--tag로 kubectl set image 주입 (사내 Harbor 주소 커밋 금지 — 설계 §7.2)

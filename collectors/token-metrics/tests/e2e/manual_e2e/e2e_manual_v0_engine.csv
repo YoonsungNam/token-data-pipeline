@@ -1,0 +1,3 @@
+# E2E manual-v0 engine — 서비스당 1행 (헤더 = ENGINE_HEADER); 0.8.4 는 mock 의 0.10.1 과 구별되는 값
+service,engine_type,engine_version
+Mock Service A,vllm,0.8.4

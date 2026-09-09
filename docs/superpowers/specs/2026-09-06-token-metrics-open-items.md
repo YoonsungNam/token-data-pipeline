@@ -25,7 +25,7 @@
 | M14 | 서비스별 `apiSince`·이력 제공 여부 | 서비스 담당자 | 9/8 EOD | `apiSince=2026-09-09`, `coverageSince=2026-08-26`, API backfill 없음 | 9/10 backfill 범위 | default |
 | M14-수기 | manual-v0 수기 수치 8/26~9/8 (템플릿 3파일) | 서비스 담당자 | **9/9 12:00** | 없음 — HARD ②(해당 서비스 구간 `metrics_missing`) | ② | open |
 | M24 | 서비스별 블록 제공 범위 — `expectGpu`/`expectServing`(레지스트리 키) + 추론엔진 `/metrics` 노출 여부(예/아니오) | 서비스 담당자 | 9/8 EOD | 둘 다 true, 엔진 `/metrics` 미노출 | 없음(오답이면 `*_block_empty_unexpected`·`serving_missing_for_gpu_model` WARN 소음만, 데이터 손실 없음) | open |
-| M23 | 메타데이터 시트 `모델` 탭 CSV(canonical·aliases·defining_service) — 신규 ID(§9에 없음; Plan 6a 체크리스트 L54가 이를 "(M18)"로 오라벨 — 6b 착수 시 같이 정정) | 시트 소유자 | 9/8 EOD | identity-only alias(플레이스홀더 시드) — 모델명이 원문 그대로 표시 | alias 실값 | default |
+| M23 | 메타데이터 시트 `모델` 탭 CSV(canonical·aliases·defining_service) — 신규 ID(§9에 없음; Plan 6a 체크리스트 L54 "(M18)" 오라벨은 6b 착수 시 M23으로 정정함) | 시트 소유자 | 9/8 EOD | identity-only alias(플레이스홀더 시드) — 모델명이 원문 그대로 표시 | alias 실값 | default |
 | M3 | GPU 할당표(serviceGroup × gpu_type × 장수)·출처·허용 오차 | GPU 대시보드 소유자 | 9/8 EOD (stretch) | 수기 시드 없음 → M2 패널 제외, 오차 ±1원 | 9/14 M2 패널 | default |
 | Harbor | 이미지 2종 반입 슬롯(`token-metrics-collector`, `token-mart-metrics`, sha7) | 사내 admin | 9/9 | 없음 — HARD ② | ② | open |
 | M8 | batch_result 대시보드 라벨(`module=token-metrics` 8줄/일·`final=1`·부재=FAILURE, `module=mart-metrics`) | 모니터링 소유자 | 9/10 | §7.5 fallback: `metrics_missing` 패널 + 임시 LogsQL | 없음(이월 가능) | default |

@@ -51,7 +51,7 @@
 **사람 요청 발송 체크리스트(9/7 월 오전 발송 — 이 플랜의 Task 10 템플릿·Task 3 DDL 초안을 첨부)**:
 - [ ] TCO(원/GPU·h) 값·산정 기준(basis)·이력 시작일 — 재무/인프라(M1); 회신 형식 = Task 9 `--table gpu_tco` CSV 헤더
 - [ ] GPU 할당표(serviceGroup × gpu_type × 장수) 출처·수치 — GPU 대시보드 소유자(M3); 회신 형식 = `--table gpu_allocation` CSV 헤더
-- [ ] 메타데이터 시트 `모델` 탭 CSV(canonical·aliases·defining_service) — 시트 소유자(M18); 회신 형식 = Task 8 CSV 헤더
+- [ ] 메타데이터 시트 `모델` 탭 CSV(canonical·aliases·defining_service) — 시트 소유자(M23); 회신 형식 = Task 8 CSV 헤더
 - [ ] 서비스별 `apiSince`·이력(backfill) 제공 여부 — 서비스 담당자(M14; 기본 apiSince=2026-09-09·coverageSince=2026-08-26)
 - [ ] 수기 manual-v0 엑셀(8/26~9/8) — 서비스 담당자; **Task 10 템플릿 3파일 첨부**
 - [ ] DDL 리뷰 예고(이 PR 링크) — fact/gpu_data/mart 소유자(M6), 사인오프 9/8 오전

@@ -1,0 +1,490 @@
+openapi: 3.1.0
+
+info:
+  title: Service Metrics Provider API
+  version: 0.1.0
+  description: |
+    사내 각 AI 서비스가 **모델별 GPU Hour**와 **성능 메트릭**(TTFT·ITL·Output TPS·E2E)을 노출하기 위해
+    구현해야 하는 **표준 조회 API 계약(contract)**.
+    기존 토큰 사용량 조회 API([token-usage-api-spec](https://github.com/YoonsungNam/token-usage-api-spec),
+    `GET /v1/usage`)의 **자매 스펙**으로, 호출 방식(pull)·식별자·응답 규칙을 그대로 상속한다.
+    사람용 스펙 문서는 `docs/METRICS_COLLECTION_SPEC.md` 참조.
+
+    ## 호출 방향
+    - 각 서비스가 이 스펙대로 `GET` 엔드포인트를 구현(노출)한다.
+    - 대시보드 운영자의 수집기가 매일 새벽 **호출(pull)** 한다. 크론·재시도·장애 감지는 운영자 책임.
+    - 운영자는 **02:00(KST)** 부터 직전날(`date` = 어제) 데이터를 호출하고, `409` 면 1시간 간격으로
+      재시도하며, 09:00까지 미확정이면 담당자에게 알림한다. 따라서 서비스는 **02:00 이전에
+      전일 데이터를 확정**해 제공할 수 있어야 한다.
+    - 사내 신뢰 네트워크 내 호출을 전제로 하며, 별도 인증(API Key 등)은 요구하지 않는다.
+
+    ## 집계 기간 / 시간대
+    - 모든 일자(`date`)는 **KST(Asia/Seoul, +09:00)** 기준이며, 해당 일자의
+      **00:00 ~ 24:00 하루 전체** 집계를 의미한다.
+    - **같은 `date` 재호출 시 동일 결과**를 반환해야 한다 (운영자가 재수집해도 안전).
+    - 최근 **14일**까지 재수집(backfill)될 수 있다. 정정이 필요하면 서비스가 재집계 후
+      운영자에게 재수집을 요청한다.
+    - 행 수가 적으므로(모델 × 기종 × 용도) 페이지네이션은 없다.
+
+    ## 식별자
+    - `(serviceGroup, service, model)` 은 메타데이터 시트의 공식 표기 및 **기존 토큰 API와
+      같은 문자열**이어야 한다 — 이 일치가 토큰↔GPU↔성능 데이터 JOIN 의 성립 조건이다.
+    - `model` 은 canonical 표기를 쓴다. `"unknown"` 은 gpu 블록의 `category=test` 에서만 허용.
+
+    ## gpu 블록 — 모델별 GPU Hour
+    - **model × gpuType × category 단위 행**으로 일별 제공한다.
+    - `gpuHours`(장수 × 매핑·할당 시간의 적분)가 **비용의 유일한 근거**다
+      (비용 = gpuHours × 기종 단가, 단가 단위는 원/GPU·hour).
+      `gpuCount`(그날 최대 장수)는 표시·검증용이며 **비용 계산에 쓰지 않는다**.
+    - `category`: `serving`(프로덕션) / `standby`(HA 대기) / `test`(실험 — model `"unknown"` 허용).
+      **유휴는 제공하지 않는다** — 운영자가 `할당(고정 쿼터) − Σ제공` 으로 산출한다.
+    - 하루 중 장수 증감은 gpuHours 에 반영되고, **기종 변경·시간 분할(주간/야간 모델)은 행을
+      나눠** 제공한다.
+    - 운영자 검증(위반 시 담당자 알림): 기종별 Σ gpuHours ≤ 할당 GPU-hours ·
+      행별 gpuHours ≤ gpuCount × 24 · serving/standby 의 model `"unknown"` 금지.
+    - **사내 플랫폼 사용분은 행을 쓰지 않는다** (GPU 는 플랫폼이 제공 — 이중 계상 방지.
+      메타데이터 시트의 consumes 로만 등록).
+
+    ## serving 블록 — 성능 메트릭
+    - **자체 GPU 로 모델을 서빙하는 모든 팀(케이스 A~D·F)이 직접 집계해 작성한다.**
+      사외 AI 모델 API 전용(케이스 E)·사내 플랫폼 소비 전용 서비스만 빈 배열 허용.
+    - Prometheus 엔진 팀(케이스 A~C)은 추가로 엔진 `/metrics` 를 운영자에게 개방한다 —
+      운영자가 스크랩 값으로 자기신고 serving 값을 **교차 검증**한다 (집계 실수 감지).
+      A~C 는 엔진 히스토그램(그날 증가분 버킷)에서 percentile 을 산출할 수 있다.
+    - **모델 단위가 정본** — 각 행은 그 모델로 처리된 요청만의 분포로 계산한다
+      (모델 간 표본 혼합 금지). 레플리카가 여러 대면 전체 로그·버킷을 모아 한 번에 percentile 을
+      계산한다 (레플리카별 p99 의 평균 ≠ 전체 p99).
+    - 표본 단위: TTFT·Output TPS 는 **요청당 1표본**, ITL 은 **토큰 간격당 1표본**.
+    - 비스트리밍(케이스 F)은 TTFT/ITL 대신 **`e2eMs`(필수)·`custom`(선택)** 으로 채운다.
+    - serving 에는 **gpu 블록에 serving 행이 있는 모델의 성능 행**을 넣는다 — 사내 플랫폼에서
+      소비하는 모델의 행은 넣지 않는다 (성능은 플랫폼이 집계·제공). standby·test 만 있는 모델과
+      그날 요청이 0건이었던 모델은 성능 행 의무가 없다.
+
+    ## 데이터 확정 / 응답 규칙 (기존 토큰 API와 동일)
+    - 이 API 는 **확정된 데이터만** `200` 으로 반환한다.
+    - 아직 집계 전이면 `409` (빈 `200` 으로 응답하지 말 것 — "실제 0" 과 구분되어야 한다).
+    - 사용·가동이 실제로 0 이면 `200` + 빈 배열(`gpu: []`).
+    - 당일/미래 `date` 는 `400`, 보존 기간(최근 14일) 초과는 `404`.
+    - 응답에는 집계 산출 시각 `generatedAt`(KST, `+09:00`)을 포함한다.
+
+servers:
+  - url: https://{serviceHost}
+    description: 메트릭을 노출하는 각 서비스의 베이스 URL
+    variables:
+      serviceHost:
+        default: ds-assistant.internal.example.com
+        description: 서비스별 호스트
+
+security: []
+
+tags:
+  - name: metrics
+    description: 모델별 GPU Hour·성능 메트릭 조회
+
+paths:
+  /v1/metrics:
+    get:
+      operationId: getMetrics
+      summary: 일자별 모델 GPU Hour·성능 메트릭 조회
+      description: |
+        지정한 일자(`date`)의 확정된 **모델별 GPU Hour**(gpu 블록)와 **성능 메트릭**(serving 블록 —
+        자체 GPU 서빙 팀 전체)을 단건 반환한다.
+      tags: [metrics]
+      parameters:
+        - name: date
+          in: query
+          required: true
+          description: 집계 대상 일자 (KST, YYYY-MM-DD). 보통 어제. 당일/미래는 400, 보존(14일) 초과는 404.
+          schema:
+            type: string
+            format: date
+            examples: ['2026-08-18']
+      responses:
+        '200':
+          description: "확정된 일자 메트릭 (사용·가동이 실제 0 이면 `gpu: []`)"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsReport'
+              examples:
+                caseA-vllm:
+                  summary: 케이스 A (vLLM) — gpu + serving (엔진 히스토그램에서 집계)
+                  value:
+                    date: '2026-08-18'
+                    serviceGroup: ds-assistant
+                    service: ds-assistant-portal
+                    generatedAt: '2026-08-19T01:30:00+09:00'
+                    engine: { type: vllm, version: 0.8.4 }
+                    gpu:
+                      - { model: llama3.3-70b, gpuType: H100, gpuCount: 4, gpuHours: 96.0, category: serving }
+                      - { model: llama3.3-70b, gpuType: H100, gpuCount: 1, gpuHours: 24.0, category: standby }
+                    serving:
+                      - model: llama3.3-70b
+                        ttftMs: { p50: 280, p90: 560, p95: 720, p99: 1200 }
+                        itlMs: { p50: 24, p90: 38, p95: 47, p99: 80 }
+                        outputTps: { p50: 41.0 }
+                caseD-custom-serving:
+                  summary: 케이스 D (자체 구현) — serving 블록 채움
+                  value:
+                    date: '2026-08-18'
+                    serviceGroup: search
+                    service: doc-summary
+                    generatedAt: '2026-08-19T01:10:00+09:00'
+                    engine: { type: custom }
+                    gpu:
+                      - { model: qwen3-32b, gpuType: A100, gpuCount: 2, gpuHours: 48.0, category: serving }
+                    serving:
+                      - model: qwen3-32b
+                        ttftMs: { p50: 320, p90: 640, p95: 850, p99: 1450 }
+                        itlMs: { p50: 28, p90: 45, p95: 58, p99: 95 }
+                        outputTps: { p50: 35.2 }
+                caseE-external-api:
+                  summary: 케이스 E (사외 AI 모델 API 연동) — gpu 빈 배열
+                  value:
+                    date: '2026-08-18'
+                    serviceGroup: hr
+                    service: hr-chatbot
+                    generatedAt: '2026-08-19T01:05:00+09:00'
+                    gpu: []
+                    serving:
+                      - model: claude-sonnet-4.5
+                        ttftMs: { p50: 850, p90: 1600, p95: 2100, p99: 3200 }
+                        itlMs: { p50: 22, p90: 38, p95: 49, p99: 80 }
+                caseF-non-streaming:
+                  summary: 케이스 F (비스트리밍) — e2eMs 필수 + custom 선택
+                  value:
+                    date: '2026-08-18'
+                    serviceGroup: docs
+                    service: doc-parser
+                    generatedAt: '2026-08-19T01:20:00+09:00'
+                    engine: { type: custom }
+                    gpu:
+                      - { model: docparse-3b, gpuType: A100, gpuCount: 1, gpuHours: 24.0, category: serving }
+                    serving:
+                      - model: docparse-3b
+                        e2eMs: { p50: 1400, p90: 2600, p95: 3300, p99: 5200 }
+                        custom:
+                          - { name: queueWaitMs, unit: ms, p50: 120, p99: 900 }
+                          - { name: batchSize, unit: requests, p50: 8 }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/DataNotReady'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+components:
+  responses:
+    BadRequest:
+      description: 잘못된 요청 (파라미터 형식 오류, 당일/미래 `date`)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            invalidDate:
+              value:
+                code: invalid_date
+                message: 'date must be a past date in YYYY-MM-DD (KST)'
+    NotFound:
+      description: 보존 기간(최근 14일) 초과로 해당 일자 데이터를 제공할 수 없음
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            retentionExceeded:
+              value:
+                code: data_not_retained
+                message: 'metrics for the requested date is past the retention window'
+    DataNotReady:
+      description: 해당 일자 데이터가 아직 확정 전 ("실제 0" 과 구분). `Retry-After` 후 재시도.
+      headers:
+        Retry-After:
+          description: 재시도까지 권장 대기 시간(초)
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            notReady:
+              value:
+                code: data_not_ready
+                message: 'metrics for the requested date is not finalized yet; retry later'
+    TooManyRequests:
+      description: 호출 빈도 제한 초과
+      headers:
+        Retry-After:
+          description: 재시도까지 권장 대기 시간(초)
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            rateLimited:
+              value:
+                code: rate_limited
+                message: 'too many requests; retry after the indicated delay'
+    InternalError:
+      description: 서버 내부 오류 (백오프 후 재시도 가능)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            internalError:
+              value:
+                code: internal_error
+                message: 'unexpected server error'
+    ServiceUnavailable:
+      description: 일시적 서비스 불가 (백오프 후 재시도 가능)
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            serviceUnavailable:
+              value:
+                code: service_unavailable
+                message: 'service temporarily unavailable; retry with backoff'
+
+  schemas:
+    GpuCategory:
+      type: string
+      description: |
+        GPU 용도 분류.
+        - `serving`: 프로덕션 서빙 (model `"unknown"` 금지)
+        - `standby`: HA 대기 — failover 용 (model `"unknown"` 금지)
+        - `test`: 테스트·실험 (model `"unknown"` 허용)
+
+        유휴(어느 용도에도 쓰이지 않은 잔여)는 제공하지 않는다 — 운영자가
+        `할당(고정 쿼터) − Σ제공` 으로 산출한다.
+      enum: [serving, standby, test]
+
+    GpuRecord:
+      type: object
+      description: |
+        model × gpuType × category 단위 하루치 행.
+        하루 중 장수 증감은 `gpuHours` 에 반영하고(예: 2장×12h + 4장×12h → gpuHours 72, gpuCount 4),
+        기종 변경·시간 분할(주간/야간 모델)은 행을 나눈다.
+        여러 행의 `gpuCount` 를 합산하지 말 것 — 시간 분할 시 할당 초과로 보이는 착시가 생긴다
+        (장수 합산은 Σ gpuHours ÷ 24).
+      required: [model, gpuType, gpuCount, gpuHours, category]
+      properties:
+        model:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: |
+            모델 canonical 표기 (메타데이터 시트·기존 토큰 API와 동일 문자열).
+            `"unknown"` 은 `category=test` 에서만 허용.
+          examples: ['llama3.3-70b']
+        gpuType:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: 단순 기종 표기 — 운영자 단가표의 키
+          examples: ['H100', 'A100']
+        gpuCount:
+          type: number
+          exclusiveMinimum: 0
+          description: |
+            해당일 이 행(모델×기종×용도)에 매핑된 GPU 장수 (하루 중 증감 시 **최대** 기준).
+            "몇 장 점유" 의 표시·검증용 — **비용 계산에 쓰지 않는다**
+            (gpuCount × 단가로 계산하면 장수가 이중으로 곱해진다).
+        gpuHours:
+          type: number
+          minimum: 0
+          description: |
+            GPU 장수 × 모델에 매핑·할당된 시간의 적분 (단위: GPU·hour).
+            **비용의 유일한 근거** — 비용 = gpuHours × 단가(원/GPU·hour).
+            행별로 gpuHours ≤ gpuCount × 24 여야 한다 (운영자 검증).
+          examples: [96.0]
+        category:
+          $ref: '#/components/schemas/GpuCategory'
+      allOf:
+        # serving/standby → model "unknown" 금지 (test 만 허용)
+        - if:
+            properties:
+              category:
+                enum: [serving, standby]
+            required: [category]
+          then:
+            properties:
+              model:
+                not:
+                  const: unknown
+
+    LatencyPercentiles:
+      type: object
+      description: 지연 분포 percentile (단위 ms). p50/p90/p95/p99 모두 필수.
+      required: [p50, p90, p95, p99]
+      properties:
+        p50: { type: number, minimum: 0 }
+        p90: { type: number, minimum: 0 }
+        p95: { type: number, minimum: 0 }
+        p99: { type: number, minimum: 0 }
+      additionalProperties: false
+
+    OutputTps:
+      type: object
+      description: |
+        요청당 초당 생성 토큰(tokens/s)의 p50.
+        avg 없음 — 요청별 비율의 평균은 왜곡되며, 총 처리량은 토큰 API 에서 파생 가능(이중 소스 금지).
+        상위 percentile 없음 — TPS 의 나쁜 꼬리는 낮은 쪽이며 ITL p99 가 대변한다.
+      required: [p50]
+      properties:
+        p50: { type: number, minimum: 0 }
+      additionalProperties: false
+
+    CustomMetric:
+      type: object
+      description: |
+        표준 지표(TTFT/ITL/TPS/E2E)로 표현되지 않는 서비스 고유 지표.
+        `unit` 필수, 표준 지표로 표현 가능한 값은 custom 에 넣지 않는다.
+        해당 서비스의 개괄·상세 화면에 표시되며, 서비스 간 비교·랭킹·SLO 판정에는 쓰지 않는다.
+        percentile 키(p50/p90/p95/p99) 중 최소 1개를 포함해야 한다.
+      required: [name, unit]
+      minProperties: 3
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: "지표 이름 (예: queueWaitMs, batchSize)"
+        unit:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: "단위 표기 (예: ms, requests) — 단위 착오 방지를 위해 필수"
+        p50: { type: number }
+        p90: { type: number }
+        p95: { type: number }
+        p99: { type: number }
+      additionalProperties: false
+
+    ServingRecord:
+      type: object
+      description: |
+        모델 단위 성능 메트릭 행. 그 모델로 처리된 요청만의 분포로 계산한다
+        (모델 간 표본 혼합 금지 · 레플리카 로그는 모아서 한 번에 percentile).
+        스트리밍(케이스 A~D): ttftMs·itlMs·outputTps 채움.
+        비스트리밍(케이스 F): e2eMs 필수, custom 선택.
+      required: [model]
+      minProperties: 2
+      properties:
+        model:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: 모델 canonical 표기
+        ttftMs:
+          $ref: '#/components/schemas/LatencyPercentiles'
+          description: Time To First Token — 요청 수신 → 첫 토큰 (요청당 1표본)
+        itlMs:
+          $ref: '#/components/schemas/LatencyPercentiles'
+          description: Inter-Token Latency — 토큰 간 간격 (토큰 간격당 1표본)
+        outputTps:
+          $ref: '#/components/schemas/OutputTps'
+        e2eMs:
+          $ref: '#/components/schemas/LatencyPercentiles'
+          description: 요청 수신 → 응답 완료 전체 지연 — 비스트리밍(케이스 F) 필수, 스트리밍은 선택
+        custom:
+          type: array
+          items:
+            $ref: '#/components/schemas/CustomMetric'
+      additionalProperties: false
+
+    Engine:
+      type: object
+      description: |
+        추론 엔진 자기신고 (권장). 메타데이터 시트 값과 불일치하면 운영자가 알림한다.
+        버전을 여기로 신고하므로 시트의 수기 갱신이 불필요하다.
+      required: [type]
+      properties:
+        type:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: 엔진 종류
+          examples: ['vllm', 'sglang', 'custom']
+        version:
+          type: string
+          maxLength: 64
+          description: 엔진 버전
+          examples: ['0.8.4']
+
+    MetricsReport:
+      type: object
+      description: 일자별 메트릭 응답 본문
+      required: [date, serviceGroup, service, generatedAt, gpu, serving]
+      properties:
+        date:
+          type: string
+          format: date
+          description: 집계 대상일 (KST)
+          examples: ['2026-08-18']
+        serviceGroup:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: 서비스 그룹 표기 — 메타데이터 시트·기존 토큰 API와 동일 문자열
+          examples: ['ds-assistant']
+        service:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: 서비스 표기 — 메타데이터 시트·기존 토큰 API와 동일 문자열
+          examples: ['ds-assistant-portal']
+        generatedAt:
+          type: string
+          format: date-time
+          description: 집계 산출 시각 (KST, `+09:00` 오프셋 포함)
+          examples: ['2026-08-19T01:30:00+09:00']
+        engine:
+          oneOf:
+            - $ref: '#/components/schemas/Engine'
+            - type: 'null'
+        gpu:
+          type: array
+          description: 모델별 GPU Hour 행 목록. 사용·가동이 실제 0 이거나 사내 GPU 가 없으면 빈 배열.
+          items:
+            $ref: '#/components/schemas/GpuRecord'
+        serving:
+          type: array
+          description: |
+            성능 메트릭 행 목록 — **자체 GPU 서빙 팀 전체(케이스 A~D·F)가 채운다.**
+            사외 AI 모델 API 전용(케이스 E)·사내 플랫폼 소비 전용 서비스만 빈 배열 (키 생략 불가).
+          items:
+            $ref: '#/components/schemas/ServingRecord'
+
+    Error:
+      type: object
+      description: 오류 응답 본문 (기존 토큰 API와 동일 형식)
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: 기계 판독용 오류 코드
+          examples: ['data_not_ready']
+        message:
+          type: string
+          description: 사람 판독용 설명
+      additionalProperties: false

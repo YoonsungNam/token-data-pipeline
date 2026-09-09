@@ -1,0 +1,4 @@
+# E2E manual-v0 gpu — {DATE} 는 run_e2e.sh 가 DATE2 로 치환해 tests/e2e/.tmp/ 에 생성 (§5.5, 헤더 = app/manual.py GPU_HEADER)
+date,service,model,gpuType,category,gpuCount,gpuHours
+{DATE},Mock Service A,claude-opus-4-8,H100,serving,4,96
+{DATE},Mock Service A,claude-opus-4-8,H100,standby,1,24

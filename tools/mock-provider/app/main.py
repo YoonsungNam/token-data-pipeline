@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import load_config
 from app.cursors import CursorError, decode_cursor, encode_cursor
-from app.datagen import build_records, build_summary, generated_at, to_api_dict
+from app.datagen import build_metrics, build_records, build_summary, generated_at, to_api_dict
 from app.scenarios import ScenarioState
 
 KST = timezone(timedelta(hours=9))
@@ -52,8 +52,14 @@ def _shared_gate() -> JSONResponse | None:
     return None
 
 
-def _date_gate(raw_date: str) -> tuple[date_cls | None, JSONResponse | None]:
-    """계약의 date 규칙: 당일/미래 400, 보존 초과 404, 미확정 409."""
+def _date_gate(raw_date: str, retention_days: int | None = None,
+               subject: str = "usage") -> tuple[date_cls | None, JSONResponse | None]:
+    """계약의 date 규칙: 당일/미래 400, 보존 초과 404, 미확정 409.
+
+    retention_days/subject는 /v1/metrics용 additive 인자 — 기본값이면 기존 usage 동작·메시지와 바이트 동일.
+    """
+    if retention_days is None:
+        retention_days = CFG.retention_days
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_date):
         return None, _err(400, "invalid_date", "date must be YYYY-MM-DD")
     try:
@@ -65,11 +71,11 @@ def _date_gate(raw_date: str) -> tuple[date_cls | None, JSONResponse | None]:
         return None, _err(400, "invalid_date", "date must be a past day (KST)")
     if time.monotonic() - STARTED_AT < SCN.not_ready_until_uptime_s:
         return None, _err(409, "data_not_ready",
-                          "usage for the requested date is not finalized yet; retry later",
+                          f"{subject} for the requested date is not finalized yet; retry later",
                           retry_after=SCN.retry_after_s)
-    if d < today - timedelta(days=CFG.retention_days):
+    if d < today - timedelta(days=retention_days):
         return None, _err(404, "data_not_retained",
-                          "usage data for the requested date is past the retention window")
+                          f"{subject} data for the requested date is past the retention window")
     return d, None
 
 
@@ -144,6 +150,21 @@ def get_usage_summary(date: str | None = Query(None)):
             "generatedAt": generated_at(date), **summary}
 
 
+@app.get("/v1/metrics")
+def get_metrics(date: str | None = Query(None)):
+    """token-metric-api @6a552d2 GET /v1/metrics — 단건, 보존 CFG.metrics_retention_days(기본 14)."""
+    if (gate := _shared_gate()) is not None:
+        return gate
+    if date is None:
+        return _err(400, "invalid_date", "date query parameter is required")
+    _, date_err = _date_gate(date, retention_days=CFG.metrics_retention_days, subject="metrics")
+    if date_err is not None:
+        return date_err
+    payload = build_metrics(CFG, date, SCN)
+    payload["serviceGroup"], payload["service"] = _identity()
+    return payload
+
+
 _SCENARIO_RULES: dict[str, tuple[type, int | float]] = {
     # field: (required type, minimum)
     "not_ready_until_uptime_s": (float, 0),
@@ -154,6 +175,13 @@ _SCENARIO_RULES: dict[str, tuple[type, int | float]] = {
     "name_drift": (str, 0),
     "generated_at_change_at_page": (int, 0),
     "not_ready_at_page": (int, 0),
+    # /v1/metrics 전용 int 플래그 6종 (0=OFF, 1=ON; 최대값 검사 없음 — 0/1만 의미)
+    "metrics_gpu_hours_over": (int, 0),
+    "metrics_unknown_serving": (int, 0),
+    "metrics_pct_non_monotone": (int, 0),
+    "metrics_dup_gpu_rows": (int, 0),
+    "metrics_empty_gpu": (int, 0),
+    "metrics_engine_null": (int, 0),
 }
 
 
