@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - "collectors/token-metrics/**"
+      - "mart/token-metrics/**"
       - ".github/workflows/release-images-metrics.yml"
   workflow_dispatch:
 
@@ -22,6 +23,8 @@ jobs:
         include:
           - context: collectors/token-metrics
             image: token-metrics-collector
+          - context: mart/token-metrics
+            image: token-mart-metrics
     steps:
       - uses: actions/checkout@v4
 
